@@ -1,0 +1,7 @@
+rules:
+  - term: 형 / 오빠 / 누나 / 언니
+    rule: 친족이 아닌 친근한 호칭은 문자 그대로 번역하지 말고 이름이나 관계 뉘앙스로 의역.
+    bad: "Hermano, ¿comiste?"
+    good: "Oye, ¿ya comiste?"
+  - term: 존댓말 → 반말 전환
+    rule: 한국어의 말단 높임 전환은 관계 변화의 연출. tú/usted 전환 또는 어휘 격식 변화로 표현.
