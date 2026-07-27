@@ -69,7 +69,7 @@ class FindingRow(Base):
     __tablename__ = "findings"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     target_version_id: Mapped[str] = mapped_column(ForeignKey("target_versions.id"))
-    segment_id: Mapped[str] = mapped_column(String)
+    segment_id: Mapped[str] = mapped_column(ForeignKey("segments.id"))
     category: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(String)
     original_text: Mapped[str] = mapped_column(String)
