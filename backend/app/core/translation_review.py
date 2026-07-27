@@ -23,16 +23,20 @@ async def run_translation_review(pairs: List[AlignedPair], profile: dict,
     pair_by_id = {p.id: p for p in pairs}
     findings = []
     for rf in raw_findings:
-        pair = pair_by_id[rf["segment_id"]]
-        findings.append(Finding(
-            id=f"finding_{rf['segment_id']}_{rf['category']}",
-            target_version_id=target_version_id,
-            segment_id=rf["segment_id"],
-            category=rf["category"],
-            description=rf["description"],
-            original_text=pair.target.text if pair.target else "",
-            suggested_text=rf["suggested_text"],
-            confidence=rf["confidence"],
-            source="llm",
-        ))
+        try:
+            pair = pair_by_id[rf["segment_id"]]
+            findings.append(Finding(
+                id=f"finding_{rf['segment_id']}_{rf['category']}",
+                target_version_id=target_version_id,
+                segment_id=rf["segment_id"],
+                category=rf["category"],
+                description=rf["description"],
+                original_text=pair.target.text if pair.target else "",
+                suggested_text=rf["suggested_text"],
+                confidence=rf["confidence"],
+                source="llm",
+            ))
+        except KeyError:
+            # Skip malformed items (unknown segment_id or missing required fields)
+            continue
     return findings
