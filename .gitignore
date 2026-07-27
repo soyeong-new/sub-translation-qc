@@ -4,3 +4,10 @@
 /PT
 /docs
 .worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+backend/venv/
