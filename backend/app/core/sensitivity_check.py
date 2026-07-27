@@ -26,7 +26,8 @@ async def run_sensitivity_check(pairs: List[AlignedPair], terms: List[str],
     if not hits:
         return []
     pair_dicts = [
-        {"id": p.id, "target_text": p.target.text if p.target else ""} for p in pairs
+        {"id": p.id, "target_text": p.target.text if p.target else ""}
+        for p in pairs if p.target is not None
     ]
     raw = await provider.check_sensitivity(pair_dicts, hits)
     pair_by_id = {p.id: p for p in pairs}
@@ -39,7 +40,7 @@ async def run_sensitivity_check(pairs: List[AlignedPair], terms: List[str],
                 target_version_id=target_version_id,
                 segment_id=r["segment_id"], category="sensitivity",
                 description=r["description"],
-                original_text=pair.target.text,
+                original_text=pair.target.text if pair.target else "",
                 suggested_text="", confidence=1.0, source="llm",
             ))
         except (KeyError, ValidationError):

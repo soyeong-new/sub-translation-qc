@@ -49,3 +49,38 @@ async def test_malformed_sensitivity_response_skips_invalid_item():
     assert len(findings) == 1
     assert findings[0].segment_id == "p1"
     assert findings[0].category == "sensitivity"
+
+
+@pytest.mark.asyncio
+async def test_targetless_pairs_do_not_crash():
+    """Test that pairs with target=None don't crash the function.
+    They are excluded from pair_dicts before calling the provider,
+    and if somehow included in the response, the None-guard in
+    original_text construction prevents AttributeError."""
+    pairs = [
+        AlignedPair(id="p1", korean=SegmentText(start=0, end=1, text="안녕"), target=None),
+        AlignedPair(id="p2", target=SegmentText(start=1, end=2, text="qué mierda pasa")),
+    ]
+    # Mock provider that might return a finding for the targetless pair
+    class TargetlessResponseMockProvider(MockProvider):
+        async def check_sensitivity(self, pair_dicts, hits):
+            # Return a finding (even though p1 shouldn't be in pair_dicts)
+            return [
+                {
+                    "segment_id": "p1",
+                    "description": "Some issue",
+                },
+                {
+                    "segment_id": "p2",
+                    "description": "Contiene un insulto",
+                },
+            ]
+
+    findings = await run_sensitivity_check(pairs, ["mierda"], TargetlessResponseMockProvider(), "tv1")
+    # Should successfully process without crashing on pair.target.text when target is None
+    # p1 will have None-guarded original_text, p2 will be normal
+    assert len(findings) == 2
+    assert findings[0].segment_id == "p1"
+    assert findings[0].original_text == ""  # None-guarded
+    assert findings[1].segment_id == "p2"
+    assert findings[1].original_text == "qué mierda pasa"
