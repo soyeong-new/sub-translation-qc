@@ -1,4 +1,5 @@
 from typing import List
+from pydantic import ValidationError
 from app.schemas import AlignedPair, Finding
 from app.providers.base import ModelProvider
 from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES
@@ -36,7 +37,8 @@ async def run_translation_review(pairs: List[AlignedPair], profile: dict,
                 confidence=rf["confidence"],
                 source="llm",
             ))
-        except KeyError:
-            # Skip malformed items (unknown segment_id or missing required fields)
+        except (KeyError, ValidationError):
+            # Skip malformed items (unknown segment_id, missing required fields,
+            # or invalid field values that fail Finding validation)
             continue
     return findings

@@ -69,6 +69,38 @@ class MissingFieldProvider(ModelProvider):
         return []
 
 
+class InvalidCategoryProvider(ModelProvider):
+    """Test provider that returns findings with invalid category values."""
+
+    async def transcribe(self, audio_path: str) -> List[dict]:
+        return []
+
+    async def analyze_characters(self, pairs: List[dict], profile: dict) -> dict:
+        return {"characters": [], "relationships": []}
+
+    async def review_translation(self, pairs: List[dict], knowledge: str,
+                                  profile: dict, format_constraint: str) -> List[dict]:
+        """Return one valid finding and one with invalid category."""
+        return [
+            {
+                "segment_id": "p1", "category": "translation",
+                "description": "테스트 오역",
+                "suggested_text": "texto corregido",
+                "confidence": 0.9,
+            },
+            {
+                # Malformed: invalid category value (not in Literal["gender", "register", "translation", ...])
+                "segment_id": "p1", "category": "mistranslation",
+                "description": "테스트 오류",
+                "suggested_text": "texto error",
+                "confidence": 0.8,
+            },
+        ]
+
+    async def check_sensitivity(self, pairs: List[dict], term_hits: List[dict]) -> List[dict]:
+        return []
+
+
 @pytest.mark.asyncio
 async def test_run_translation_review_wraps_provider_findings_as_finding_models():
     pairs = [AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="BAD_TRANSLATION aquí"))]
@@ -108,3 +140,14 @@ async def test_run_translation_review_skips_missing_required_field():
     # Should only have the valid finding, not the one missing 'confidence'
     assert len(findings) == 1
     assert findings[0].confidence == 0.9
+
+
+@pytest.mark.asyncio
+async def test_run_translation_review_skips_invalid_category():
+    """Test that malformed findings with invalid category values (ValidationError) are skipped."""
+    pairs = [AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="text"))]
+    profile = {"naturalness_check": {"llm_instruction": "..."}}
+    findings = await run_translation_review(pairs, profile, "지식베이스", InvalidCategoryProvider(), "tv1")
+    # Should only have the valid finding (category="translation"), not the one with invalid category
+    assert len(findings) == 1
+    assert findings[0].category == "translation"
