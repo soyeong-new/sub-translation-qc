@@ -75,6 +75,9 @@ class RunAnalysisIn(BaseModel):
 @app.post("/target-versions/{target_version_id}/run-analysis")
 async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
     async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")

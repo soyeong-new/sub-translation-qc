@@ -199,3 +199,21 @@ async def test_export_records_an_export_row():
     assert rows[0].finding_count == stats["finding_count"] == 2
     assert rows[0].reflection_rate == stats["reflection_rate"] == 0.5
     assert rows[0].exported_at is not None
+
+
+@pytest.mark.asyncio
+async def test_export_returns_404_for_unknown_target_version():
+    """존재하지 않는 target_version_id로 export하면 404여야 한다. ExportRow에
+    target_versions를 참조하는 FK가 있어, 가드가 없으면 감사 행을 넣는 순간
+    IntegrityError가 그대로 터져 500이 된다."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/target-versions/does-not-exist/export")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "target version not found"
+
+    # 실패한 export는 감사 행을 남기지 않는다.
+    async with async_session() as session:
+        rows = list((await session.execute(select(ExportRow))).scalars().all())
+    assert rows == []
