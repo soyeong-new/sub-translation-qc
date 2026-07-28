@@ -42,6 +42,39 @@ async def test_export_returns_srt_and_stats():
         assert body["stats"]["reflection_rate"] == 1.0
 
 
+@pytest.mark.asyncio
+async def test_export_skips_empty_segments_and_orders_by_start_time():
+    """정렬 실패로 target_text가 빈 세그먼트는 빈 큐로 나가면 안 되고, 세그먼트는
+    저장 순서(index)가 아니라 타임코드(start) 순으로 나가야 한다."""
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        # index 순서와 start 순서를 일부러 어긋나게 저장한다 (align()이 짝 없는
+        # 대상언어 세그먼트를 목록 뒤에 붙이는 상황 재현).
+        session.add_all([
+            Segment(target_version_id=tv.id, index=0, start=10.0, end=12.0,
+                    korean_text="한국어", target_text="tercero"),
+            Segment(target_version_id=tv.id, index=1, start=5.0, end=7.0,
+                    korean_text="한국어", target_text=""),  # 한국어 전용 고아 세그먼트
+            Segment(target_version_id=tv.id, index=2, start=0.0, end=2.0,
+                    korean_text="", target_text="primero"),
+        ])
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200
+        srt = r.json()["srt"]
+
+    assert srt.count("-->") == 2  # 빈 세그먼트는 큐로 나가지 않는다
+    assert "00:00:05,000 --> 00:00:07,000" not in srt
+    assert srt.index("primero") < srt.index("tercero")  # start 순서
+
+
 # --- Scope addition: safety-net check (design §5-1 point 3) must be wired
 # into the export endpoint. The brief's own export.py defines
 # safety_net_check() explicitly as "export 직전 안전망 (지점 3)" but the

@@ -246,9 +246,12 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
 @app.get("/target-versions/{target_version_id}/export")
 async def export_target_version(target_version_id: str):
     async with async_session() as session:
+        # export는 저장 순서(index)가 아니라 타임코드 순으로 내보낸다 —
+        # alignment.align()이 짝을 못 찾은 대상언어 세그먼트를 목록 뒤에 붙이므로
+        # index 순서는 실제 재생 순서와 다를 수 있다.
         seg_rows = (await session.execute(
             select(Segment).where(Segment.target_version_id == target_version_id)
-            .order_by(Segment.index)
+            .order_by(Segment.start)
         )).scalars().all()
         finding_rows = (await session.execute(
             select(FindingRow).where(FindingRow.target_version_id == target_version_id)
