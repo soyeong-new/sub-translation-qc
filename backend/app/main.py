@@ -5,7 +5,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment, SttCorrection
+from app.models import (
+    Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment,
+    SttCorrection, ExportRow,
+)
 from app.core.pipeline import run_pipeline
 from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
@@ -268,6 +271,17 @@ async def export_target_version(target_version_id: str):
     # 대상으로 줄 길이를 마지막으로 한 번 더 검사한다. 위반이 있어도 export
     # 자체는 막지 않고 참고용 경고로만 응답에 포함한다 (non-blocking).
     warnings = safety_net_check(segments, findings)
+
+    # export 이력/감사 기록 (exports 테이블). 응답으로 내려준 통계와 정확히 같은
+    # 값을 남긴다.
+    async with async_session() as session:
+        session.add(ExportRow(
+            target_version_id=target_version_id,
+            finding_count=stats.finding_count,
+            reflection_rate=stats.reflection_rate,
+        ))
+        await session.commit()
+
     return {
         "srt": srt,
         "stats": stats.model_dump(),

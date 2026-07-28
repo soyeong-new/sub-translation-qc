@@ -2,7 +2,8 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db import engine, async_session
-from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow
+from sqlalchemy import select
+from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, ExportRow
 
 
 @pytest.fixture(autouse=True)
@@ -156,3 +157,45 @@ async def test_export_format_warnings_checks_final_text_not_original():
         body = r.json()
         assert short_fixed in body["srt"]
         assert body["format_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_export_records_an_export_row():
+    """export 이력은 exports 테이블에 남아야 한다 (감사 기록). 저장된 통계는
+    응답의 stats와 정확히 일치해야 한다."""
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=2.0,
+                      korean_text="", target_text="texto malo")
+        session.add(seg); await session.flush()
+        session.add_all([
+            FindingRow(id="fa", target_version_id=tv.id, segment_id=seg.id,
+                       category="translation", description="근거",
+                       original_text="texto malo", suggested_text="texto bueno",
+                       confidence=0.9, status="approved", final_text="texto bueno"),
+            FindingRow(id="fb", target_version_id=tv.id, segment_id=seg.id,
+                       category="translation", description="근거",
+                       original_text="texto malo", suggested_text="otro",
+                       confidence=0.5, status="pending"),
+        ])
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200
+        stats = r.json()["stats"]
+
+    async with async_session() as session:
+        rows = list((await session.execute(
+            select(ExportRow).where(ExportRow.target_version_id == tv_id)
+        )).scalars().all())
+
+    assert len(rows) == 1
+    assert rows[0].finding_count == stats["finding_count"] == 2
+    assert rows[0].reflection_rate == stats["reflection_rate"] == 0.5
+    assert rows[0].exported_at is not None
