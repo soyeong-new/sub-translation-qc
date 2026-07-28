@@ -1,8 +1,11 @@
+from datetime import datetime, timezone
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion
+from app.models import Title, Episode, TargetVersion, FindingRow
 from app.core.pipeline import run_pipeline
 from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.providers.base import get_provider
@@ -99,3 +102,26 @@ async def list_findings(target_version_id: str):
              "suggested_text": r.suggested_text, "status": r.status}
             for r in rows
         ]
+
+
+class ReviewActionIn(BaseModel):
+    action: Literal["approved", "rejected", "modified"]
+    reviewer_name: str
+    final_text: str = ""
+
+
+@app.post("/findings/{finding_id}/review-action")
+async def review_action(finding_id: str, payload: ReviewActionIn):
+    async with async_session() as session:
+        finding = await session.get(FindingRow, finding_id)
+        if finding is None:
+            raise HTTPException(404, "finding not found")
+        finding.status = payload.action
+        finding.reviewer_name = payload.reviewer_name
+        finding.reviewed_at = datetime.now(timezone.utc)
+        if payload.action == "modified":
+            finding.final_text = payload.final_text
+        elif payload.action == "approved":
+            finding.final_text = finding.suggested_text
+        await session.commit()
+        return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
