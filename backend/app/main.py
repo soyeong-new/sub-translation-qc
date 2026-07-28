@@ -76,6 +76,8 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
         if tv is None:
             raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
 
     provider = get_provider()
     result = await run_pipeline(
