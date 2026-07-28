@@ -52,3 +52,20 @@ def test_compute_stats_calculates_reflection_rate():
     stats = compute_stats(findings)
     assert stats.finding_count == 4
     assert stats.reflection_rate == 0.5  # approved+modified = 2/4
+
+
+def test_reviewer_decision_beats_auto_applied_rule_fix_on_same_segment():
+    """자동보정된 온점 위반(source="rule", 저장 시점에 이미 approved)과 검수자가
+    승인한 오역 수정이 같은 세그먼트를 가리킬 수 있다. 기계적 자동보정이
+    검수자 판단을 덮어써선 안 되며, 결과가 finding 순서(=DB 행 반환 순서)에
+    좌우돼서도 안 된다."""
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "BAD aquí..."}]
+    rule_fix = {"segment_id": "p1", "status": "approved",
+                "final_text": "BAD aquí...", "source": "rule"}
+    reviewer_fix = {"segment_id": "p1", "status": "approved",
+                    "final_text": "texto corregido", "source": "llm"}
+
+    for findings in ([rule_fix, reviewer_fix], [reviewer_fix, rule_fix]):
+        srt = assemble_final_srt(segments, findings)
+        assert "texto corregido" in srt
+        assert "BAD aquí..." not in srt

@@ -138,6 +138,8 @@ async def list_characters(target_version_id: str):
         if tv is None:
             raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
         rows = (await session.execute(
             select(Character).where(Character.title_id == episode.title_id)
         )).scalars().all()
@@ -157,6 +159,8 @@ async def list_relationships(target_version_id: str):
         if tv is None:
             raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
+        if episode is None:
+            raise HTTPException(404, "episode not found")
         rows = (await session.execute(
             select(Relationship).where(Relationship.title_id == episode.title_id)
         )).scalars().all()
@@ -266,7 +270,10 @@ async def export_target_version(target_version_id: str):
         )).scalars().all()
 
     segments = [{"id": s.id, "start": s.start, "end": s.end, "text": s.target_text} for s in seg_rows]
-    findings = [{"segment_id": f.segment_id, "status": f.status, "final_text": f.final_text}
+    # source도 함께 넘긴다: 같은 세그먼트에 규칙 기반 자동보정과 검수자 판단이
+    # 동시에 걸린 경우 어느 쪽이 이겨야 하는지 결정하는 데 쓰인다.
+    findings = [{"segment_id": f.segment_id, "status": f.status,
+                 "final_text": f.final_text, "source": f.source}
                 for f in finding_rows]
     srt = assemble_final_srt(segments, findings)
     stats = compute_stats(findings)

@@ -97,6 +97,11 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             # Fix 4: 포맷 위반이 formatting finding으로 영속화된다.
             assert "translation" in by_category
             assert "formatting" in by_category
+            # 자동보정된 온점 위반은 검수자 판단이 필요 없으므로 검수 액션 전에
+            # 이미 approved 상태여야 한다. LLM 제안인 translation은 pending.
+            assert by_category["formatting"]["status"] == "approved"
+            assert by_category["formatting"]["final_text"] == "BAD_TRANSLATION aquí..."
+            assert by_category["translation"]["status"] == "pending"
 
             # Fix 4: 인물이 title 단위로 영속화돼 조회된다.
             r = await client.get(f"/target-versions/{tv_id}/characters")
@@ -129,9 +134,11 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
     # Fix 3: 타임코드 순.
     assert srt.index("texto corregido") < srt.index("Primera línea corta")
 
-    # 통계는 실제 저장된 finding 기준이어야 한다 (2건 중 1건 반영).
-    assert body["stats"]["finding_count"] == len(findings)
-    assert body["stats"]["reflection_rate"] == 1 / len(findings)
+    # 통계는 실제 저장된 finding 기준이어야 한다. 2건 모두 반영됐다 —
+    # translation은 검수자가 승인했고, 자동보정된 formatting은 저장 시점에
+    # 이미 approved였다.
+    assert body["stats"]["finding_count"] == len(findings) == 2
+    assert body["stats"]["reflection_rate"] == 1.0
 
     # Fix 6: export 이력이 남는다.
     async with async_session() as session:

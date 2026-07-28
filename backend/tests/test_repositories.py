@@ -233,6 +233,17 @@ async def test_save_pipeline_result_persists_format_violations_as_findings():
         # FK는 Fix 1의 네임스페이싱된 segment id를 가리켜야 한다.
         assert all(r.segment_id == f"{tv.id}:pair_1" for r in rows)
         by_rule = {r.description: r for r in rows}
-        assert by_rule["연속 온점 4개 이상 감지"].suggested_text == "texto..."
-        assert by_rule["1줄, 최대 줄 길이 60자"].suggested_text == ""
-        assert by_rule["1줄, 최대 줄 길이 60자"].original_text == "texto....."
+        ellipsis_row = by_rule["연속 온점 4개 이상 감지"]
+        line_length_row = by_rule["1줄, 최대 줄 길이 60자"]
+
+        # 자동보정된 온점 위반은 이미 텍스트에 적용된 기계적 규칙이라 검수자가
+        # 결정할 것이 없다 → 바로 approved로 확정된다.
+        assert ellipsis_row.suggested_text == "texto..."
+        assert ellipsis_row.status == "approved"
+        assert ellipsis_row.final_text == "texto..."
+
+        # 줄 길이 위반은 의미 보존이 필요한 판단이라 검수자에게 남긴다.
+        assert line_length_row.suggested_text == ""
+        assert line_length_row.original_text == "texto....."
+        assert line_length_row.status == "pending"
+        assert line_length_row.final_text == ""

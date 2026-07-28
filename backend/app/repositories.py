@@ -60,14 +60,23 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
         p.id: (p.target.text if p.target else "") for p in result["pairs"]
     }
     for v in result.get("format_violations", []):
+        # 자동보정된 위반(온점 4개 이상)은 판단 여지가 없는 기계적 규칙이라
+        # 파이프라인이 이미 텍스트에 적용해 놓은 상태다. 검수자가 결정할 것이
+        # 남아 있지 않으므로 대기열에 쌓아 두지 않고 바로 approved로 확정한다.
+        # 반면 줄 길이 위반은 의미를 보존하며 문장을 줄이는 판단이 필요하므로
+        # (format_rules.check_line_length가 자동 수정을 하지 않는 이유와 동일)
+        # pending으로 남겨 검수자에게 넘긴다.
+        suggested_text = v.fixed_text if v.auto_fixed else ""
         session.add(FindingRow(
             id=_ns(target_version_id, f"finding_{v.segment_id}_formatting_{v.rule}"),
             target_version_id=target_version_id,
             segment_id=_ns(target_version_id, v.segment_id),
             category="formatting", description=v.detail,
             original_text=target_text_by_pair.get(v.segment_id, ""),
-            suggested_text=v.fixed_text if v.auto_fixed else "",
-            confidence=1.0, source="rule", status="pending",
+            suggested_text=suggested_text,
+            confidence=1.0, source="rule",
+            status="approved" if v.auto_fixed else "pending",
+            final_text=suggested_text if v.auto_fixed else "",
         ))
 
     await _save_characters_and_relationships(session, target_version_id, result)

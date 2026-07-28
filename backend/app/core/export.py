@@ -4,6 +4,22 @@ from app.core.format_rules import check_line_length
 from app.schemas import AlignedPair, SegmentText, ExportStats
 
 
+def _final_text_by_segment(findings: List[dict]) -> dict:
+    """세그먼트별 최종 텍스트 맵.
+
+    한 세그먼트에 여러 finding이 걸릴 수 있다 (예: 자동보정된 온점 위반과
+    검수자가 승인한 오역 수정이 같은 세그먼트를 가리키는 경우). 자동 적용된
+    기계적 규칙(source="rule")이 검수자/LLM 판단을 덮어쓰면 안 되므로 규칙
+    기반 finding을 먼저 적용하고 나머지를 나중에 적용해 뒤에 오는 쪽이 이기게
+    한다. 이 정렬이 없으면 결과가 DB의 행 반환 순서에 좌우된다."""
+    reflected = [
+        f for f in findings
+        if f["status"] in ("approved", "modified") and f["final_text"]
+    ]
+    reflected.sort(key=lambda f: f.get("source") != "rule")
+    return {f["segment_id"]: f["final_text"] for f in reflected}
+
+
 def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
     """최종 SRT를 조립한다.
 
@@ -15,10 +31,7 @@ def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
        alignment.align()이 짝을 못 찾은 대상언어 세그먼트를 뒤에 몰아 붙이기
        때문에 index 순서는 시간 순서와 일치하지 않는다.
     """
-    final_by_segment = {
-        f["segment_id"]: f["final_text"]
-        for f in findings if f["status"] in ("approved", "modified") and f["final_text"]
-    }
+    final_by_segment = _final_text_by_segment(findings)
     entries = []
     for seg in sorted(segments, key=lambda s: s["start"]):
         text = final_by_segment.get(seg["id"], seg["text"])
@@ -32,10 +45,7 @@ def safety_net_check(segments: List[dict], findings: List[dict]) -> list:
     """export 직전 안전망 (design §5-1의 3번 지점). 검수자의 직접 수정 텍스트
     까지 포함한 최종 텍스트를 대상으로 줄 길이 규칙을 마지막으로 한 번 더
     검사한다."""
-    final_by_segment = {
-        f["segment_id"]: f["final_text"]
-        for f in findings if f["status"] in ("approved", "modified") and f["final_text"]
-    }
+    final_by_segment = _final_text_by_segment(findings)
     pairs = [
         AlignedPair(id=seg["id"], target=SegmentText(
             start=seg["start"], end=seg["end"],
