@@ -38,6 +38,15 @@ export const submitReviewAction = (findingId, action, reviewerName, finalText = 
     body: JSON.stringify({ action, reviewer_name: reviewerName, final_text: finalText }),
   });
 
+export const listSegments = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/segments`);
+
+export const listCharacters = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/characters`);
+
+export const listRelationships = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/relationships`);
+
 export const confirmGender = (characterId, gender) =>
   request(`/characters/${characterId}/confirm-gender`, {
     method: "POST", body: JSON.stringify({ gender }),
