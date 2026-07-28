@@ -17,7 +17,7 @@ class Title(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String)
     type: Mapped[str] = mapped_column(String)  # movie | series
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Episode(Base):
@@ -104,6 +104,6 @@ class ExportRow(Base):
     __tablename__ = "exports"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     target_version_id: Mapped[str] = mapped_column(ForeignKey("target_versions.id"))
-    exported_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     finding_count: Mapped[int] = mapped_column()
     reflection_rate: Mapped[float] = mapped_column(Float)

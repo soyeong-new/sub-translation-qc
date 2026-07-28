@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 8702514a59e7
+Revision ID: b77cea8efb37
 Revises: 
-Create Date: 2026-07-27 16:23:55.293554
+Create Date: 2026-07-28 09:08:00.032189
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '8702514a59e7'
+revision: str = 'b77cea8efb37'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -25,7 +25,7 @@ def upgrade() -> None:
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
     sa.Column('type', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('characters',
@@ -67,7 +67,7 @@ def upgrade() -> None:
     op.create_table('exports',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('target_version_id', sa.String(), nullable=False),
-    sa.Column('exported_at', sa.DateTime(), nullable=False),
+    sa.Column('exported_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('finding_count', sa.Integer(), nullable=False),
     sa.Column('reflection_rate', sa.Float(), nullable=False),
     sa.ForeignKeyConstraint(['target_version_id'], ['target_versions.id'], ),
