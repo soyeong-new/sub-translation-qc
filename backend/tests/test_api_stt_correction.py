@@ -1,8 +1,9 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select
 from app.main import app
 from app.db import engine, async_session
-from app.models import Base, TargetVersion, Episode, Title, Segment
+from app.models import Base, TargetVersion, Episode, Title, Segment, SttCorrection
 
 
 @pytest.fixture(autouse=True)
@@ -36,3 +37,13 @@ async def test_correct_stt_updates_segment_and_records_correction(monkeypatch):
         )
         assert r.status_code == 200
         assert r.json()["korean_text"] == "안녕하세요"
+
+    async with async_session() as session:
+        rows = await session.execute(
+            select(SttCorrection).where(SttCorrection.segment_id == seg_id)
+        )
+        corrections = list(rows.scalars().all())
+        assert len(corrections) == 1
+        assert corrections[0].original_text == "안뇽하세요"
+        assert corrections[0].corrected_text == "안녕하세요"
+        assert corrections[0].reviewer_name == "김검수"
