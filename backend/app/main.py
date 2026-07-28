@@ -100,7 +100,8 @@ async def list_findings(target_version_id: str):
         return [
             {"id": r.id, "segment_id": r.segment_id, "category": r.category,
              "description": r.description, "original_text": r.original_text,
-             "suggested_text": r.suggested_text, "status": r.status}
+             "suggested_text": r.suggested_text, "status": r.status,
+             "final_text": r.final_text}
             for r in rows
         ]
 

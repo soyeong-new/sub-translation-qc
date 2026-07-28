@@ -108,6 +108,15 @@ function FindingCard({ finding, reviewerName, pending, error, editing, editText,
         </div>
       </div>
 
+      {/* 검수자가 실제로 저장한 최종 텍스트 — AI 제안(suggested_text)과 다를 수 있으므로
+          "수정됨" 상태일 때는 별도로 보여준다 (export 시 실제 반영되는 텍스트). */}
+      {finding.status === "modified" && finding.final_text && (
+        <div className="mt-3 rounded-md border border-warning/40 bg-warning/10 p-3">
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-warning">저장된 최종 텍스트</p>
+          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.final_text}</p>
+        </div>
+      )}
+
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button disabled={!canAct} onClick={onApprove} className={approveBtnClass}>
           {pending === "approved" && <Spinner />}
@@ -191,7 +200,12 @@ export default function ReviewView({ targetVersionId, onBack }) {
     try {
       await submitReviewAction(findingId, action, reviewerName, finalText);
       setFindings(await getFindings(targetVersionId));
-      if (action === "modified") setEditingId(null);
+      // 저장이 끝난 finding이 여전히 편집 중인 finding일 때만 편집 패널을 닫는다.
+      // 저장 요청이 진행되는 동안 다른 finding의 수정 패널이 열렸다면(editingId가
+      // 바뀌었다면) 그 미저장 초안을 여기서 지우면 안 된다.
+      if (action === "modified") {
+        setEditingId((cur) => (cur === findingId ? null : cur));
+      }
     } catch (err) {
       setFindingErrors((prev) => ({
         ...prev,
@@ -208,7 +222,14 @@ export default function ReviewView({ targetVersionId, onBack }) {
 
   function startEdit(finding) {
     setEditingId(finding.id);
-    setEditText(finding.suggested_text);
+    // 이미 한 번 수정 저장된 finding을 다시 열 때는 검수자의 직전 편집(final_text)을
+    // 기준으로 이어서 편집한다. AI의 원래 제안(suggested_text)으로 되돌리면 첫 편집
+    // 내용을 조용히 잃게 되므로, final_text가 있을 때는 그쪽을 우선한다.
+    setEditText(
+      finding.status === "modified" && finding.final_text
+        ? finding.final_text
+        : finding.suggested_text
+    );
   }
 
   async function handleExport() {
