@@ -8,15 +8,22 @@ def _final_text_by_segment(findings: List[dict]) -> dict:
     """세그먼트별 최종 텍스트 맵.
 
     한 세그먼트에 여러 finding이 걸릴 수 있다 (예: 자동보정된 온점 위반과
-    검수자가 승인한 오역 수정이 같은 세그먼트를 가리키는 경우). 자동 적용된
-    기계적 규칙(source="rule")이 검수자/LLM 판단을 덮어쓰면 안 되므로 규칙
-    기반 finding을 먼저 적용하고 나머지를 나중에 적용해 뒤에 오는 쪽이 이기게
-    한다. 이 정렬이 없으면 결과가 DB의 행 반환 순서에 좌우된다."""
+    검수자가 직접 고친 줄 길이 위반이 같은 세그먼트를 가리키는 경우). 지켜야 할
+    불변식은 "검수자의 명시적 판단은 자동 적용된 기계적 보정을 항상 이긴다"이다.
+
+    그 신호로 reviewed_at을 쓴다: review-action 엔드포인트만 이 값을 채우고,
+    save_pipeline_result가 만드는 자동보정 finding은 NULL로 남는다. source는
+    finding을 '누가 만들었는지'일 뿐 '누가 해결했는지'가 아니라서 이 판단에
+    쓸 수 없다 — 검수자가 규칙 기반 finding을 modified로 고쳐도 source는
+    "rule"로 남기 때문이다.
+
+    검수되지 않은 것 먼저, 검수된 것 나중에 적용해 뒤에 오는 쪽이 이기게 한다.
+    이 정렬이 없으면 결과가 DB의 행 반환 순서에 좌우된다."""
     reflected = [
         f for f in findings
         if f["status"] in ("approved", "modified") and f["final_text"]
     ]
-    reflected.sort(key=lambda f: f.get("source") != "rule")
+    reflected.sort(key=lambda f: f.get("reviewed_at") is not None)
     return {f["segment_id"]: f["final_text"] for f in reflected}
 
 

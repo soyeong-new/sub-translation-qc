@@ -75,9 +75,6 @@ class RunAnalysisIn(BaseModel):
 @app.post("/target-versions/{target_version_id}/run-analysis")
 async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
     async with async_session() as session:
-        tv = await session.get(TargetVersion, target_version_id)
-        if tv is None:
-            raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
@@ -258,6 +255,9 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
 @app.get("/target-versions/{target_version_id}/export")
 async def export_target_version(target_version_id: str):
     async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
         # export는 저장 순서(index)가 아니라 타임코드 순으로 내보낸다 —
         # alignment.align()이 짝을 못 찾은 대상언어 세그먼트를 목록 뒤에 붙이므로
         # index 순서는 실제 재생 순서와 다를 수 있다.
@@ -270,10 +270,10 @@ async def export_target_version(target_version_id: str):
         )).scalars().all()
 
     segments = [{"id": s.id, "start": s.start, "end": s.end, "text": s.target_text} for s in seg_rows]
-    # source도 함께 넘긴다: 같은 세그먼트에 규칙 기반 자동보정과 검수자 판단이
-    # 동시에 걸린 경우 어느 쪽이 이겨야 하는지 결정하는 데 쓰인다.
+    # reviewed_at도 함께 넘긴다: 같은 세그먼트에 자동보정과 검수자 판단이 동시에
+    # 걸린 경우 어느 쪽이 최종 텍스트가 되는지 결정하는 데 쓰인다 (검수자 우선).
     findings = [{"segment_id": f.segment_id, "status": f.status,
-                 "final_text": f.final_text, "source": f.source}
+                 "final_text": f.final_text, "reviewed_at": f.reviewed_at}
                 for f in finding_rows]
     srt = assemble_final_srt(segments, findings)
     stats = compute_stats(findings)
