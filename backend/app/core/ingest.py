@@ -21,7 +21,11 @@ def parse_srt(content: str) -> List[SegmentText]:
         if time_idx is None:
             continue
         m = _TIME_RE.search(lines[time_idx])
-        text = " ".join(lines[time_idx + 1:]).strip()
+        # 줄바꿈은 자막의 의미 있는 구조다 — 공백으로 합치면 "세그먼트당 최대
+        # 2줄" 규칙이 아예 발동할 수 없고, 줄당 50자 규칙도 원래의 각 줄이 아니라
+        # 이어붙인 한 줄에 적용돼 대량의 오탐이 생긴다. 또 build_srt가 이 텍스트를
+        # 그대로 다시 쓰므로 export 결과의 줄바꿈이 원본과 달라진다.
+        text = "\n".join(lines[time_idx + 1:]).strip()
         if not text:
             continue
         segments.append(SegmentText(
