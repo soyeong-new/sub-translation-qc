@@ -8,6 +8,7 @@ from app.db import async_session
 from app.models import Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment, SttCorrection
 from app.core.pipeline import run_pipeline
 from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
+from app.core.export import assemble_final_srt, compute_stats, safety_net_check
 from app.providers.base import get_provider
 from app.repositories import save_pipeline_result, get_findings as repo_get_findings
 
@@ -178,3 +179,30 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
         seg.korean_text = payload.corrected_text
         await session.commit()
         return {"id": seg.id, "korean_text": seg.korean_text}
+
+
+@app.get("/target-versions/{target_version_id}/export")
+async def export_target_version(target_version_id: str):
+    async with async_session() as session:
+        seg_rows = (await session.execute(
+            select(Segment).where(Segment.target_version_id == target_version_id)
+            .order_by(Segment.index)
+        )).scalars().all()
+        finding_rows = (await session.execute(
+            select(FindingRow).where(FindingRow.target_version_id == target_version_id)
+        )).scalars().all()
+
+    segments = [{"id": s.id, "start": s.start, "end": s.end, "text": s.target_text} for s in seg_rows]
+    findings = [{"segment_id": f.segment_id, "status": f.status, "final_text": f.final_text}
+                for f in finding_rows]
+    srt = assemble_final_srt(segments, findings)
+    stats = compute_stats(findings)
+    # 안전망 (design §5-1의 3번 지점): assemble_final_srt와 동일한 최종 텍스트를
+    # 대상으로 줄 길이를 마지막으로 한 번 더 검사한다. 위반이 있어도 export
+    # 자체는 막지 않고 참고용 경고로만 응답에 포함한다 (non-blocking).
+    warnings = safety_net_check(segments, findings)
+    return {
+        "srt": srt,
+        "stats": stats.model_dump(),
+        "format_warnings": [w.model_dump() for w in warnings],
+    }
