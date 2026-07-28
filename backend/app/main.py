@@ -106,6 +106,67 @@ async def list_findings(target_version_id: str):
         ]
 
 
+@app.get("/target-versions/{target_version_id}/segments")
+async def list_segments(target_version_id: str):
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(Segment).where(Segment.target_version_id == target_version_id)
+            .order_by(Segment.index)
+        )).scalars().all()
+        return [
+            {"id": s.id, "start": s.start, "end": s.end,
+             "korean_text": s.korean_text, "target_text": s.target_text}
+            for s in rows
+        ]
+
+
+@app.get("/target-versions/{target_version_id}/characters")
+async def list_characters(target_version_id: str):
+    """인물은 target_version이 아니라 title 단위로 공유된다 (Task 18 confirm-gender와
+    동일한 전역 제약: 같은 작품의 에피소드/언어 전반에서 재사용). target_version_id →
+    episode_id → title_id 체인을 따라가 해당 title의 인물 목록을 반환한다."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        episode = await session.get(Episode, tv.episode_id)
+        rows = (await session.execute(
+            select(Character).where(Character.title_id == episode.title_id)
+        )).scalars().all()
+        return [
+            {"id": c.id, "label": c.label, "confirmed_gender": c.confirmed_gender}
+            for c in rows
+        ]
+
+
+@app.get("/target-versions/{target_version_id}/relationships")
+async def list_relationships(target_version_id: str):
+    """관계도 인물과 마찬가지로 title 단위로 공유된다. 화자/상대 인물의 라벨을 함께
+    내려줘야 검수자가 관계를 식별할 수 있으므로(관계 ID만으로는 누구와 누구의 관계인지
+    알 수 없음), 각 관계마다 Character를 조회해 라벨을 붙인다."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        episode = await session.get(Episode, tv.episode_id)
+        rows = (await session.execute(
+            select(Relationship).where(Relationship.title_id == episode.title_id)
+        )).scalars().all()
+        result = []
+        for r in rows:
+            speaker = await session.get(Character, r.speaker_character_id)
+            addressee = await session.get(Character, r.addressee_character_id)
+            result.append({
+                "id": r.id,
+                "speaker_character_id": r.speaker_character_id,
+                "addressee_character_id": r.addressee_character_id,
+                "speaker_label": speaker.label if speaker else None,
+                "addressee_label": addressee.label if addressee else None,
+                "confirmed_formality_level": r.confirmed_formality_level,
+            })
+        return result
+
+
 class ReviewActionIn(BaseModel):
     action: Literal["approved", "rejected", "modified"]
     reviewer_name: str
