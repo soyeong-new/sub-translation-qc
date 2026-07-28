@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion, FindingRow, Character, Relationship
+from app.models import Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment, SttCorrection
 from app.core.pipeline import run_pipeline
 from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.providers.base import get_provider
@@ -155,3 +155,26 @@ async def confirm_formality(relationship_id: str, payload: ConfirmFormalityIn):
         rel.confirmed_formality_level = payload.formality_level
         await session.commit()
         return {"id": rel.id, "confirmed_formality_level": rel.confirmed_formality_level}
+
+
+class CorrectSttIn(BaseModel):
+    corrected_text: str
+    reviewer_name: str
+
+
+@app.post("/segments/{segment_id}/correct-stt")
+async def correct_stt(segment_id: str, payload: CorrectSttIn):
+    """STT 오타를 수정하면 해당 구간만 재분석 대상으로 표시한다 (design §7).
+    재분석 자체(translation_review 재호출)는 별도 배치/트리거로 수행하며 이
+    엔드포인트는 텍스트 교정과 감사 기록만 담당한다."""
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        session.add(SttCorrection(
+            segment_id=segment_id, original_text=seg.korean_text,
+            corrected_text=payload.corrected_text, reviewer_name=payload.reviewer_name,
+        ))
+        seg.korean_text = payload.corrected_text
+        await session.commit()
+        return {"id": seg.id, "korean_text": seg.korean_text}
