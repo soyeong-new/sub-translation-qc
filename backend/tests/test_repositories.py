@@ -15,11 +15,6 @@ async def _setup_db():
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-    # pytest-asyncio는 기본적으로 테스트마다 새 이벤트 루프를 쓰는데, engine의 asyncpg
-    # 커넥션 풀은 모듈 임포트 시점에 한 번만 만들어져 특정 루프에 바인딩된다. dispose하지
-    # 않으면 다음 테스트(다른 루프)가 이 풀의 커넥션을 재사용하려다
-    # "attached to a different loop" RuntimeError로 죽는다.
-    await engine.dispose()
 
 
 @pytest.mark.asyncio
