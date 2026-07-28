@@ -79,7 +79,7 @@ class FindingRow(Base):
     status: Mapped[str] = mapped_column(String, default="pending")
     final_text: Mapped[str] = mapped_column(String, default="")
     reviewer_name: Mapped[str] = mapped_column(String, default="")
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SttCorrection(Base):
