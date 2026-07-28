@@ -128,3 +128,39 @@ async def test_list_relationships_404_for_missing_target_version():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.get("/target-versions/does-not-exist/relationships")
         assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monkeypatch):
+    """run_pipeline이 만든 인물이 실제로 영속화돼 GET /characters로 조회되는지
+    확인한다 (es_LATAM 프로필은 checks_enabled.gender_agreement가 true라
+    character_registry가 동작한다)."""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nHola aquí\n", encoding="utf-8")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(f"/target-versions/{tv_id}/run-analysis",
+                                  json={"target_srt_path": str(srt_path)})
+            assert r.status_code == 200
+            r = await client.get(f"/target-versions/{tv_id}/characters")
+            assert r.status_code == 200
+            chars = r.json()
+
+    assert chars, "run-analysis 이후 인물 목록이 비어 있으면 안 된다"
+    assert chars[0]["label"] == "인물1"
+    assert chars[0]["confirmed_gender"] is None  # 확인 대기 상태

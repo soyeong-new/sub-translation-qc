@@ -3,9 +3,11 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 from app.db import async_session, engine
-from app.models import Base, Title, Episode, TargetVersion, Segment
+from app.models import (
+    Base, Title, Episode, TargetVersion, Segment, Character, Relationship,
+)
 from app.repositories import save_pipeline_result, get_findings
-from app.schemas import Finding, AlignedPair, SegmentText
+from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
 
 
 @pytest.fixture(autouse=True)
@@ -121,3 +123,116 @@ async def test_two_target_versions_can_be_saved_without_pk_collision():
         assert len(rows_a) == 1 and len(rows_b) == 1
         assert rows_a[0].segment_id == f"{tv_a.id}:pair_1"
         assert rows_b[0].segment_id == f"{tv_b.id}:pair_1"
+
+
+async def _make_target_version(session, title: Title) -> TargetVersion:
+    episode = Episode(title_id=title.id, video_path="/x.mp4")
+    session.add(episode)
+    await session.flush()
+    tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+    session.add(tv)
+    await session.flush()
+    return tv
+
+
+def _result_with(**overrides) -> dict:
+    base = {
+        "findings": [], "format_violations": [], "characters": [],
+        "relationships": [], "gender_questions": [], "register_questions": [],
+        "pairs": [AlignedPair(
+            id="pair_1",
+            korean=SegmentText(start=0.0, end=1.5, text="한국어"),
+            target=SegmentText(start=0.0, end=1.5, text="texto....."),
+        )],
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_characters_deduped_per_title():
+    """인물은 title 단위로 공유되므로(design §6), 같은 작품의 다른 화를 분석해도
+    같은 label의 Character가 중복 생성되면 안 된다."""
+    async with async_session() as session:
+        title = Title(name="Series A", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv1 = await _make_target_version(session, title)  # 1화
+        tv2 = await _make_target_version(session, title)  # 2화
+
+        chars = [{"label": "민수", "gendered_segment_ids": ["pair_1"]},
+                 {"label": "지현", "gendered_segment_ids": []}]
+        await save_pipeline_result(session, tv1.id, _result_with(characters=chars))
+        await session.commit()
+        await save_pipeline_result(session, tv2.id, _result_with(characters=chars))
+        await session.commit()
+
+        rows = list((await session.execute(
+            select(Character).where(Character.title_id == title.id)
+        )).scalars().all())
+        assert len(rows) == 2
+        assert {c.label for c in rows} == {"민수", "지현"}
+        # 확인 대기 신호는 confirmed_gender IS NULL 그 자체다 (별도 저장 불필요).
+        assert all(c.confirmed_gender is None for c in rows)
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_relationships_deduped_per_title():
+    async with async_session() as session:
+        title = Title(name="Series B", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv1 = await _make_target_version(session, title)
+        tv2 = await _make_target_version(session, title)
+
+        payload = {
+            "characters": [{"label": "민수"}, {"label": "지현"}],
+            "relationships": [{"speaker_label": "민수", "addressee_label": "지현",
+                               "formality_segment_ids": ["pair_1"]}],
+        }
+        await save_pipeline_result(session, tv1.id, _result_with(**payload))
+        await session.commit()
+        await save_pipeline_result(session, tv2.id, _result_with(**payload))
+        await session.commit()
+
+        rels = list((await session.execute(
+            select(Relationship).where(Relationship.title_id == title.id)
+        )).scalars().all())
+        assert len(rels) == 1
+        speaker = await session.get(Character, rels[0].speaker_character_id)
+        addressee = await session.get(Character, rels[0].addressee_character_id)
+        assert speaker.label == "민수"
+        assert addressee.label == "지현"
+        assert rels[0].confirmed_formality_level is None
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_format_violations_as_findings():
+    async with async_session() as session:
+        title = Title(name="Movie C", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+
+        violations = [
+            FormatViolation(segment_id="pair_1", rule="ellipsis",
+                            detail="연속 온점 4개 이상 감지",
+                            auto_fixed=True, fixed_text="texto..."),
+            FormatViolation(segment_id="pair_1", rule="line_length",
+                            detail="1줄, 최대 줄 길이 60자"),
+        ]
+        await save_pipeline_result(session, tv.id, _result_with(format_violations=violations))
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert len(rows) == 2
+        assert all(r.category == "formatting" for r in rows)
+        assert all(r.source == "rule" for r in rows)
+        # 같은 세그먼트에 두 규칙이 동시에 걸려도 PK가 충돌하지 않는다.
+        assert len({r.id for r in rows}) == 2
+        # FK는 Fix 1의 네임스페이싱된 segment id를 가리켜야 한다.
+        assert all(r.segment_id == f"{tv.id}:pair_1" for r in rows)
+        by_rule = {r.description: r for r in rows}
+        assert by_rule["연속 온점 4개 이상 감지"].suggested_text == "texto..."
+        assert by_rule["1줄, 최대 줄 길이 60자"].suggested_text == ""
+        assert by_rule["1줄, 최대 줄 길이 60자"].original_text == "texto....."
