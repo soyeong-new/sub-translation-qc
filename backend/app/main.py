@@ -95,7 +95,10 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
         tv = await session.get(TargetVersion, target_version_id)
         tv.status = "review"
         await session.commit()
-    return {"status": "review", "finding_count": len(result["findings"])}
+    # 포맷 위반도 category="formatting" finding으로 저장되므로(repositories),
+    # 여기서 보고하는 개수도 GET /findings가 돌려주는 개수와 일치해야 한다.
+    finding_count = len(result["findings"]) + len(result["format_violations"])
+    return {"status": "review", "finding_count": finding_count}
 
 
 @app.get("/target-versions/{target_version_id}/findings")
