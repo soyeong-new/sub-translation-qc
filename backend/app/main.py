@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion, FindingRow
+from app.models import Title, Episode, TargetVersion, FindingRow, Character, Relationship
 from app.core.pipeline import run_pipeline
 from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.providers.base import get_provider
@@ -125,3 +125,33 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
             finding.final_text = finding.suggested_text
         await session.commit()
         return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
+
+
+class ConfirmGenderIn(BaseModel):
+    gender: Literal["male", "female"]
+
+
+class ConfirmFormalityIn(BaseModel):
+    formality_level: Literal["formal", "informal"]
+
+
+@app.post("/characters/{character_id}/confirm-gender")
+async def confirm_gender(character_id: str, payload: ConfirmGenderIn):
+    async with async_session() as session:
+        char = await session.get(Character, character_id)
+        if char is None:
+            raise HTTPException(404, "character not found")
+        char.confirmed_gender = payload.gender
+        await session.commit()
+        return {"id": char.id, "confirmed_gender": char.confirmed_gender}
+
+
+@app.post("/relationships/{relationship_id}/confirm-formality")
+async def confirm_formality(relationship_id: str, payload: ConfirmFormalityIn):
+    async with async_session() as session:
+        rel = await session.get(Relationship, relationship_id)
+        if rel is None:
+            raise HTTPException(404, "relationship not found")
+        rel.confirmed_formality_level = payload.formality_level
+        await session.commit()
+        return {"id": rel.id, "confirmed_formality_level": rel.confirmed_formality_level}
