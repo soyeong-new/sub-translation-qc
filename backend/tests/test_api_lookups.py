@@ -164,3 +164,42 @@ async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monk
     assert chars, "run-analysis 이후 인물 목록이 비어 있으면 안 된다"
     assert chars[0]["label"] == "인물1"
     assert chars[0]["confirmed_gender"] is None  # 확인 대기 상태
+
+
+async def _tv_with_episode(session) -> str:
+    title = Title(name="T", type="movie"); session.add(title); await session.flush()
+    episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+    tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+    session.add(tv)
+    await session.commit()
+    return tv.id
+
+
+@pytest.mark.parametrize("endpoint", ["characters", "relationships"])
+@pytest.mark.asyncio
+async def test_lookup_returns_404_when_episode_missing(endpoint):
+    """episode 조회 결과를 None 체크 없이 쓰면 episode.title_id 접근에서
+    AttributeError(500)가 난다. run-analysis와 동일하게 404로 나가야 한다.
+
+    target_versions.episode_id에는 FK가 걸려 있어 DB 상태만으로는 이 상황을
+    만들 수 없으므로, Episode 조회만 None을 돌려주도록 가로챈다."""
+    from unittest.mock import patch
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    async with async_session() as session:
+        tv_id = await _tv_with_episode(session)
+
+    real_get = AsyncSession.get
+
+    async def get_with_missing_episode(self, entity, ident, *args, **kwargs):
+        if entity is Episode:
+            return None
+        return await real_get(self, entity, ident, *args, **kwargs)
+
+    transport = ASGITransport(app=app)
+    with patch.object(AsyncSession, "get", get_with_missing_episode):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get(f"/target-versions/{tv_id}/{endpoint}")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "episode not found"
