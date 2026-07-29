@@ -1,3 +1,5 @@
+// 작품을 등록하고 영상/SRT 파일을 업로드해 분석을 시작하는 화면.
+
 import { useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,

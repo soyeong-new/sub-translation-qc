@@ -1,3 +1,5 @@
+"""파이프라인 실행 결과(세그먼트/findings/인물/관계)를 DB에 영속화하는 모듈."""
+
 from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

@@ -1,3 +1,5 @@
+"""SRT 파일을 파싱/조립하고 영상에서 오디오를 추출하는 모듈."""
+
 import re
 import subprocess
 from pathlib import Path

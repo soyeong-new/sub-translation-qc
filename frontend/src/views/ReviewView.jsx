@@ -1,3 +1,5 @@
+// findings 승인/거부/수정, 인물/관계 확인, STT 수정, export를 담당하는 검수 화면.
+
 import { useEffect, useState } from "react";
 import {
   getFindings,

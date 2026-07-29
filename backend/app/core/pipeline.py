@@ -1,3 +1,5 @@
+"""STT부터 검수용 findings 생성까지 전체 QC 파이프라인을 조율하는 오케스트레이터."""
+
 from typing import Optional
 from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio

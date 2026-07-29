@@ -1,3 +1,5 @@
+// 드래그앤드롭 또는 클릭으로 파일을 선택하는 재사용 가능한 업로드 UI 컴포넌트.
+
 import { useRef, useState } from "react";
 
 const baseClass =

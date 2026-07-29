@@ -1,3 +1,5 @@
+"""줄 길이/연속 온점 같은 언어 무관 자막 포맷팅 규칙을 검사·보정하는 모듈."""
+
 import re
 from typing import List, Tuple
 from app.schemas import AlignedPair, FormatViolation

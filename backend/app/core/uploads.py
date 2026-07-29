@@ -1,3 +1,5 @@
+"""업로드된 파일을 경로 조작 없이 로컬 디스크에 스트리밍 저장하는 모듈."""
+
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable, Set

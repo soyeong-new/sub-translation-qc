@@ -1,3 +1,5 @@
+"""한국어 STT 세그먼트와 대상언어(스페인어) 자막 세그먼트를 타임코드 기준으로 짝짓는 정렬 모듈."""
+
 from typing import List, Optional, Tuple
 from app.schemas import SegmentText, AlignedPair
 

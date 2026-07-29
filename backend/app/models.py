@@ -1,3 +1,5 @@
+"""Postgres에 매핑되는 SQLAlchemy ORM 테이블 정의 모듈."""
+
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, Float, Boolean, ForeignKey, DateTime, JSON

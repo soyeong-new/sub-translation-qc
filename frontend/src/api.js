@@ -1,3 +1,5 @@
+// 백엔드 REST API를 감싸는 클라이언트 함수 모음.
+
 const BASE = "/api";
 
 async function request(path, options = {}) {

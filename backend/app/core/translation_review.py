@@ -1,3 +1,5 @@
+"""한국어-대상언어 텍스트를 대조해 오역/번역투/로컬라이제이션 문제를 찾는 모듈."""
+
 from typing import List
 from pydantic import ValidationError
 from app.schemas import AlignedPair, Finding

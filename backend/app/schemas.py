@@ -1,3 +1,5 @@
+"""API/파이프라인 전반에서 쓰이는 핵심 Pydantic 데이터 모델 정의."""
+
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 

@@ -1,3 +1,5 @@
+"""검수 결과를 반영해 최종 SRT를 조립하고 반영율 통계를 계산하는 모듈."""
+
 from typing import List
 from app.core.ingest import build_srt
 from app.core.format_rules import check_line_length

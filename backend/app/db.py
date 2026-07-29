@@ -1,3 +1,5 @@
+"""SQLAlchemy 비동기 DB 엔진/세션을 설정하는 모듈."""
+
 import os
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 

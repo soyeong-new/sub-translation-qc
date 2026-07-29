@@ -1,3 +1,5 @@
+"""호칭/관용구 지식베이스와 민감어 사전을 YAML에서 불러오는 모듈."""
+
 from pathlib import Path
 from typing import List, Optional
 import yaml

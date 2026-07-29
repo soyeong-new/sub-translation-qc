@@ -1,3 +1,5 @@
+"""언어 프로파일에서 성별/격식 체크가 켜져 있을 때만 LLM으로 인물을 식별하는 모듈."""
+
 from typing import List
 from app.schemas import AlignedPair
 from app.providers.base import ModelProvider

@@ -1,3 +1,5 @@
+"""사전 필터로 민감어 후보를 걸러낸 뒤 LLM으로 문맥을 판단하는 모듈."""
+
 from typing import List
 from pydantic import ValidationError
 from app.schemas import AlignedPair, Finding

@@ -1,3 +1,5 @@
+"""언어별(성별 일치·격식 체계) 설정을 YAML에서 안전하게 불러오는 모듈."""
+
 from pathlib import Path
 import re
 import yaml
