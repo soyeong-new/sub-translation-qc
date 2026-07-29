@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
@@ -12,6 +12,9 @@ from app.models import (
 from app.core.pipeline import run_pipeline
 from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
+from app.core.uploads import (
+    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS,
+)
 from app.providers.base import get_provider
 from app.repositories import save_pipeline_result, get_findings as repo_get_findings
 
@@ -300,3 +303,21 @@ async def export_target_version(target_version_id: str):
         "stats": stats.model_dump(),
         "format_warnings": [w.model_dump() for w in warnings],
     }
+
+
+@app.post("/uploads/video")
+async def upload_video(file: UploadFile = File(...)):
+    try:
+        path = await save_upload("video", file.filename, file.read, VIDEO_EXTENSIONS)
+    except UnsupportedFileType as exc:
+        raise HTTPException(400, str(exc))
+    return {"path": path}
+
+
+@app.post("/uploads/srt")
+async def upload_srt(file: UploadFile = File(...)):
+    try:
+        path = await save_upload("srt", file.filename, file.read, SRT_EXTENSIONS)
+    except UnsupportedFileType as exc:
+        raise HTTPException(400, str(exc))
+    return {"path": path}
