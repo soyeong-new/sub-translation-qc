@@ -247,3 +247,37 @@ async def test_save_pipeline_result_persists_format_violations_as_findings():
         assert line_length_row.original_text == "texto....."
         assert line_length_row.status == "pending"
         assert line_length_row.final_text == ""
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_finding_model():
+    async with async_session() as session:
+        title = Title(name="Test Movie", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+
+        result = {
+            "findings": [Finding(
+                id="f1", target_version_id=tv.id, segment_id="p1",
+                category="translation", description="근거", original_text="a",
+                suggested_text="b", confidence=0.9, source="llm", model="claude",
+            )],
+            "format_violations": [], "characters": [], "relationships": [],
+            "gender_questions": [], "register_questions": [],
+            "pairs": [AlignedPair(
+                id="p1",
+                korean=SegmentText(start=0.0, end=1.5, text="한국어"),
+                target=SegmentText(start=0.0, end=1.5, text="target text"),
+            )],
+        }
+        await save_pipeline_result(session, tv.id, result)
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert rows[0].model == "claude"

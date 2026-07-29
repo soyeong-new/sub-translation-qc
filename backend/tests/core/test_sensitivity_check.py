@@ -84,3 +84,15 @@ async def test_targetless_pairs_do_not_crash():
     assert findings[0].original_text == ""  # None-guarded
     assert findings[1].segment_id == "p2"
     assert findings[1].original_text == "qué mierda pasa"
+
+
+@pytest.mark.asyncio
+async def test_sensitivity_finding_with_model_gets_suffixed_id():
+    class TaggedProvider(MockProvider):
+        async def check_sensitivity(self, pair_dicts, hits):
+            return [{"segment_id": "p1", "description": "민감어 확인", "model": "gpt"}]
+
+    pairs = [AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="qué mierda pasa"))]
+    findings = await run_sensitivity_check(pairs, ["mierda"], TaggedProvider(), "tv1")
+    assert findings[0].id == "finding_p1_sensitivity_gpt"
+    assert findings[0].model == "gpt"

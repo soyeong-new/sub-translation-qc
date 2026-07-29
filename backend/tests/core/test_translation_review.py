@@ -151,3 +151,55 @@ async def test_run_translation_review_skips_invalid_category():
     # Should only have the valid finding (category="translation"), not the one with invalid category
     assert len(findings) == 1
     assert findings[0].category == "translation"
+
+
+class TwoModelProvider(ModelProvider):
+    """같은 세그먼트에 대해 서로 다른 model 태그를 단 finding 두 개를 돌려준다."""
+
+    async def transcribe(self, audio_path: str) -> List[dict]:
+        return []
+
+    async def analyze_characters(self, pairs, profile) -> dict:
+        return {"characters": [], "relationships": []}
+
+    async def review_translation(self, pairs, knowledge, profile, format_constraint) -> List[dict]:
+        return [
+            {"segment_id": "p1", "category": "translation", "description": "클로드 지적",
+             "suggested_text": "texto A", "confidence": 0.9, "model": "claude"},
+            {"segment_id": "p1", "category": "translation", "description": "GPT 지적",
+             "suggested_text": "texto B", "confidence": 0.9, "model": "gpt"},
+        ]
+
+    async def check_sensitivity(self, pairs, term_hits) -> List[dict]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_findings_from_different_models_get_distinct_ids():
+    """같은 segment_id+category라도 model이 다르면 id가 달라야 DB에 저장할 때
+    서로 덮어쓰지 않는다 (ensemble 병합의 전제조건)."""
+    pairs = [AlignedPair(
+        id="p1",
+        korean=SegmentText(start=0, end=1, text="원문"),
+        target=SegmentText(start=0, end=1, text="texto original"),
+    )]
+    findings = await run_translation_review(pairs, {}, "", TwoModelProvider(), "tv1")
+    assert len(findings) == 2
+    ids = {f.id for f in findings}
+    assert len(ids) == 2
+    models = {f.model for f in findings}
+    assert models == {"claude", "gpt"}
+
+
+@pytest.mark.asyncio
+async def test_finding_without_model_keeps_original_id_format():
+    """model 키가 없는(단일 모델) 응답은 기존 id 형식을 그대로 유지해야
+    한다 — 기존 동작에 대한 회귀 방지."""
+    pairs = [AlignedPair(
+        id="p1",
+        korean=SegmentText(start=0, end=1, text="원문"),
+        target=SegmentText(start=0, end=1, text="BAD_TRANSLATION"),
+    )]
+    findings = await run_translation_review(pairs, {}, "", MockProvider(), "tv1")
+    assert findings[0].id == "finding_p1_translation"
+    assert findings[0].model is None

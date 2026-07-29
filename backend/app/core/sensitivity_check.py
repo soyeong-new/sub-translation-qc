@@ -37,13 +37,16 @@ async def run_sensitivity_check(pairs: List[AlignedPair], terms: List[str],
     for r in raw:
         try:
             pair = pair_by_id[r["segment_id"]]
+            model = r.get("model")
+            id_suffix = f"_{model}" if model else ""
             findings.append(Finding(
-                id=f"finding_{r['segment_id']}_sensitivity",
+                id=f"finding_{r['segment_id']}_sensitivity{id_suffix}",
                 target_version_id=target_version_id,
                 segment_id=r["segment_id"], category="sensitivity",
                 description=r["description"],
                 original_text=pair.target.text if pair.target else "",
                 suggested_text="", confidence=1.0, source="llm",
+                model=model,
             ))
         except (KeyError, ValidationError):
             # Skip malformed items (unknown segment_id, missing required fields,

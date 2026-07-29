@@ -50,7 +50,7 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
             segment_id=_ns(target_version_id, f.segment_id),
             category=f.category, description=f.description,
             original_text=f.original_text, suggested_text=f.suggested_text,
-            confidence=f.confidence, source=f.source, status=f.status,
+            confidence=f.confidence, source=f.source, model=f.model, status=f.status,
         ))
 
     # 포맷 위반은 FormatViolation(스키마)이라 Finding과 필드가 1:1로 대응하지

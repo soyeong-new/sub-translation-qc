@@ -47,6 +47,7 @@ class Finding(BaseModel):
     suggested_text: str
     confidence: float
     source: Literal["rule", "llm"] = "llm"
+    model: Optional[str] = None
     status: FindingStatus = "pending"
     final_text: str = ""
     reviewer_name: str = ""

@@ -28,8 +28,10 @@ async def run_translation_review(pairs: List[AlignedPair], profile: dict,
     for rf in raw_findings:
         try:
             pair = pair_by_id[rf["segment_id"]]
+            model = rf.get("model")
+            id_suffix = f"_{model}" if model else ""
             findings.append(Finding(
-                id=f"finding_{rf['segment_id']}_{rf['category']}",
+                id=f"finding_{rf['segment_id']}_{rf['category']}{id_suffix}",
                 target_version_id=target_version_id,
                 segment_id=rf["segment_id"],
                 category=rf["category"],
@@ -38,6 +40,7 @@ async def run_translation_review(pairs: List[AlignedPair], profile: dict,
                 suggested_text=rf["suggested_text"],
                 confidence=rf["confidence"],
                 source="llm",
+                model=model,
             ))
         except (KeyError, ValidationError):
             # Skip malformed items (unknown segment_id, missing required fields,

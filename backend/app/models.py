@@ -78,6 +78,7 @@ class FindingRow(Base):
     suggested_text: Mapped[str] = mapped_column(String)
     confidence: Mapped[float] = mapped_column(Float)
     source: Mapped[str] = mapped_column(String, default="llm")
+    model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     status: Mapped[str] = mapped_column(String, default="pending")
     final_text: Mapped[str] = mapped_column(String, default="")
     reviewer_name: Mapped[str] = mapped_column(String, default="")
