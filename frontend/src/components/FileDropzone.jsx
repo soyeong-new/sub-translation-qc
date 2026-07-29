@@ -44,7 +44,7 @@ export default function FileDropzone({ id, label, accept, file, onFileSelected, 
           e.preventDefault();
           if (!disabled) setIsDragging(true);
         }}
-        onDragLeave={() => setIsDragging(false)}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false); }}
         onDrop={handleDrop}
         className={`${baseClass} ${isDragging ? draggingClass : ""}`}
       >
@@ -54,6 +54,7 @@ export default function FileDropzone({ id, label, accept, file, onFileSelected, 
           type="file"
           accept={accept}
           disabled={disabled}
+          tabIndex={-1}
           className="sr-only"
           onChange={(e) => {
             const picked = e.target.files?.[0];
