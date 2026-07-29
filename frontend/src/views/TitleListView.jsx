@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { createTitle, createEpisode, createTargetVersion, runAnalysis } from "../api.js";
+import {
+  createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
+} from "../api.js";
+import FileDropzone from "../components/FileDropzone.jsx";
 
-// 진행 상태 표시: shadcn 스타일 뱃지 톤을 재사용해 idle/loading/success/error 4단계를 표현.
-// (ui-ux-pro-max 가이드: "Submit Feedback" — loading -> success/error 상태를 명시적으로 보여줄 것)
 const STATUS_STYLES = {
   loading: "text-muted-foreground",
   success: "text-success",
@@ -31,24 +32,37 @@ function Field({ id, label, children }) {
 export default function TitleListView({ onSelect }) {
   const [name, setName] = useState("");
   const [type, setType] = useState("movie");
-  const [videoPath, setVideoPath] = useState("");
-  const [srtPath, setSrtPath] = useState("");
+  const [videoFile, setVideoFile] = useState(null);
+  const [srtFile, setSrtFile] = useState(null);
+  const [videoProgress, setVideoProgress] = useState(null);
+  const [srtProgress, setSrtProgress] = useState(null);
   const [status, setStatus] = useState(null); // { kind: "loading" | "success" | "error", message: string }
   const isSubmitting = status?.kind === "loading";
+  const canSubmit = Boolean(name && videoFile && srtFile) && !isSubmitting;
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setStatus({ kind: "loading", message: "등록 중..." });
+    setVideoProgress(0);
+    setSrtProgress(0);
+    setStatus({ kind: "loading", message: "업로드 중..." });
     try {
+      const [videoUpload, srtUpload] = await Promise.all([
+        uploadVideo(videoFile, setVideoProgress),
+        uploadSrt(srtFile, setSrtProgress),
+      ]);
+      setStatus({ kind: "loading", message: "등록 중..." });
       const title = await createTitle(name, type);
-      const episode = await createEpisode(title.id, null, videoPath);
+      const episode = await createEpisode(title.id, null, videoUpload.path);
       const tv = await createTargetVersion(episode.id, "es", "LATAM");
       setStatus({ kind: "loading", message: "분석 중..." });
-      await runAnalysis(tv.id, srtPath);
+      await runAnalysis(tv.id, srtUpload.path);
       setStatus({ kind: "success", message: "완료" });
       onSelect(tv.id);
     } catch (err) {
       setStatus({ kind: "error", message: err.message ?? "요청 중 오류가 발생했습니다." });
+    } finally {
+      setVideoProgress(null);
+      setSrtProgress(null);
     }
   }
 
@@ -88,33 +102,29 @@ export default function TitleListView({ onSelect }) {
             </select>
           </Field>
 
-          <Field id="video-path" label="한국어 원본 영상 경로">
-            <input
-              id="video-path"
-              value={videoPath}
-              onChange={(e) => setVideoPath(e.target.value)}
-              placeholder="/media/source/episode01.ko.mp4"
-              required
-              disabled={isSubmitting}
-              className={`${inputClass} font-mono`}
-            />
-          </Field>
+          <FileDropzone
+            id="video-file"
+            label="한국어 원본 영상"
+            accept="video/*"
+            file={videoFile}
+            onFileSelected={setVideoFile}
+            progress={videoProgress}
+            disabled={isSubmitting}
+          />
 
-          <Field id="srt-path" label="스페인어 SRT 경로">
-            <input
-              id="srt-path"
-              value={srtPath}
-              onChange={(e) => setSrtPath(e.target.value)}
-              placeholder="/media/subs/episode01.es-419.srt"
-              required
-              disabled={isSubmitting}
-              className={`${inputClass} font-mono`}
-            />
-          </Field>
+          <FileDropzone
+            id="srt-file"
+            label="스페인어 SRT 자막"
+            accept=".srt"
+            file={srtFile}
+            onFileSelected={setSrtFile}
+            progress={srtProgress}
+            disabled={isSubmitting}
+          />
 
           <button
             type="submit"
-            disabled={isSubmitting}
+            disabled={!canSubmit}
             className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary
               px-4 py-2 text-sm font-medium text-primary-foreground transition-colors
               hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2

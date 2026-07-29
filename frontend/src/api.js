@@ -65,3 +65,32 @@ export const correctStt = (segmentId, correctedText, reviewerName) =>
 
 export const exportTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export`);
+
+function uploadWithProgress(path, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE}${path}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        reject(new Error(`업로드 오류 ${xhr.status}: ${xhr.responseText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("업로드 중 네트워크 오류가 발생했습니다."));
+    const formData = new FormData();
+    formData.append("file", file);
+    xhr.send(formData);
+  });
+}
+
+export const uploadVideo = (file, onProgress) =>
+  uploadWithProgress("/uploads/video", file, onProgress);
+
+export const uploadSrt = (file, onProgress) =>
+  uploadWithProgress("/uploads/srt", file, onProgress);
