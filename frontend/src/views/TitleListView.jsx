@@ -10,6 +10,15 @@ const STATUS_STYLES = {
   error: "text-destructive",
 };
 
+// 백엔드 허용 확장자(backend/app/core/uploads.py)와 동기화되어야 함.
+const VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"];
+const SRT_EXTENSIONS = [".srt"];
+
+function getExtension(filename) {
+  const idx = filename.lastIndexOf(".");
+  return idx === -1 ? "" : filename.slice(idx).toLowerCase();
+}
+
 const inputClass =
   "block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground " +
   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 " +
@@ -39,6 +48,30 @@ export default function TitleListView({ onSelect }) {
   const [status, setStatus] = useState(null); // { kind: "loading" | "success" | "error", message: string }
   const isSubmitting = status?.kind === "loading";
   const canSubmit = Boolean(name && videoFile && srtFile) && !isSubmitting;
+
+  function handleVideoSelected(selected) {
+    if (!VIDEO_EXTENSIONS.includes(getExtension(selected.name))) {
+      setStatus({
+        kind: "error",
+        message: `지원하지 않는 영상 파일 형식입니다. (허용: ${VIDEO_EXTENSIONS.join(", ")})`,
+      });
+      return;
+    }
+    setStatus(null);
+    setVideoFile(selected);
+  }
+
+  function handleSrtSelected(selected) {
+    if (!SRT_EXTENSIONS.includes(getExtension(selected.name))) {
+      setStatus({
+        kind: "error",
+        message: `지원하지 않는 자막 파일 형식입니다. (허용: ${SRT_EXTENSIONS.join(", ")})`,
+      });
+      return;
+    }
+    setStatus(null);
+    setSrtFile(selected);
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -105,9 +138,9 @@ export default function TitleListView({ onSelect }) {
           <FileDropzone
             id="video-file"
             label="한국어 원본 영상"
-            accept="video/*"
+            accept={VIDEO_EXTENSIONS.join(",")}
             file={videoFile}
-            onFileSelected={setVideoFile}
+            onFileSelected={handleVideoSelected}
             progress={videoProgress}
             disabled={isSubmitting}
           />
@@ -115,9 +148,9 @@ export default function TitleListView({ onSelect }) {
           <FileDropzone
             id="srt-file"
             label="스페인어 SRT 자막"
-            accept=".srt"
+            accept={SRT_EXTENSIONS.join(",")}
             file={srtFile}
-            onFileSelected={setSrtFile}
+            onFileSelected={handleSrtSelected}
             progress={srtProgress}
             disabled={isSubmitting}
           />

@@ -79,7 +79,14 @@ function uploadWithProgress(path, file, onProgress) {
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText));
       } else {
-        reject(new Error(`업로드 오류 ${xhr.status}: ${xhr.responseText}`));
+        let message = `업로드 오류 ${xhr.status}: ${xhr.responseText}`;
+        try {
+          const parsed = JSON.parse(xhr.responseText);
+          if (parsed?.detail) message = parsed.detail;
+        } catch {
+          // response body wasn't JSON; keep the raw-text fallback above
+        }
+        reject(new Error(message));
       }
     };
     xhr.onerror = () => reject(new Error("업로드 중 네트워크 오류가 발생했습니다."));

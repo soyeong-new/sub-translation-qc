@@ -26,11 +26,12 @@ export default function FileDropzone({ id, label, accept, file, onFileSelected, 
 
   return (
     <div>
-      <label htmlFor={id} className="mb-1.5 block text-sm font-medium text-foreground">
+      <label id={`${id}-label`} htmlFor={id} className="mb-1.5 block text-sm font-medium text-foreground">
         {label}
       </label>
       <div
         role="button"
+        aria-labelledby={`${id}-label`}
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled}
         onClick={openPicker}
