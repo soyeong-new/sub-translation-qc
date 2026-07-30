@@ -34,7 +34,10 @@ class GptClient:
             parsed = json.loads(text)
             return parsed["findings"]
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise ValueError(f"GPT 응답이 기대한 JSON 형태가 아님: {text[:200]}") from exc
+            # text가 None이면 (GPT가 거부 응답 등으로 콘텐츠를 생성하지 않은 경우)
+            # text[:200]도 TypeError를 내므로, 여기서도 안전하게 처리한다.
+            preview = text[:200] if text else "<empty>"
+            raise ValueError(f"GPT 응답이 기대한 JSON 형태가 아님: {preview}") from exc
 
     async def review_translation(self, pairs: List[dict], knowledge: str,
                                   profile: dict, format_constraint: str) -> List[dict]:

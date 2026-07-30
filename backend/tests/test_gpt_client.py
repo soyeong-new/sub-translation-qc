@@ -44,6 +44,14 @@ async def test_review_translation_raises_on_empty_choices():
 
 
 @pytest.mark.asyncio
+async def test_review_translation_raises_on_none_content():
+    client = _make_client_with_fake_sdk("무시됨")
+    client._sdk_client.chat.completions.create.return_value.choices[0].message.content = None
+    with pytest.raises(ValueError):
+        await client.review_translation([], "", {}, "")
+
+
+@pytest.mark.asyncio
 async def test_check_sensitivity_parses_json_array():
     payload = [{"segment_id": "p1", "description": "민감어 문맥 확인 필요", "severity": "medium"}]
     client = _make_client_with_fake_sdk(json.dumps({"findings": payload}))
@@ -57,5 +65,13 @@ async def test_check_sensitivity_parses_json_array():
 async def test_check_sensitivity_raises_on_empty_choices():
     client = _make_client_with_fake_sdk("무시됨")
     client._sdk_client.chat.completions.create.return_value.choices = []
+    with pytest.raises(ValueError):
+        await client.check_sensitivity([], [])
+
+
+@pytest.mark.asyncio
+async def test_check_sensitivity_raises_on_none_content():
+    client = _make_client_with_fake_sdk("무시됨")
+    client._sdk_client.chat.completions.create.return_value.choices[0].message.content = None
     with pytest.raises(ValueError):
         await client.check_sensitivity([], [])
