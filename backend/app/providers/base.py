@@ -56,7 +56,23 @@ def get_provider() -> ModelProvider:
             raise ProviderNotConfiguredError("mock 프로바이더는 자동화 테스트 전용입니다.")
         from app.providers.mock import MockProvider
         return MockProvider()
+    if name == "live":
+        from app.providers.live import LiveModelProvider
+        required = {
+            "GEMINI_API_KEY": None, "GEMINI_MODEL": None,
+            "ANTHROPIC_API_KEY": None, "CLAUDE_MODEL": None,
+            "OPENAI_API_KEY": None, "GPT_MODEL": None,
+        }
+        for key in required:
+            value = os.getenv(key)
+            if not value:
+                raise ProviderNotConfiguredError(f"{key} 환경변수가 설정되지 않았습니다.")
+            required[key] = value
+        return LiveModelProvider(
+            gemini_api_key=required["GEMINI_API_KEY"], gemini_model=required["GEMINI_MODEL"],
+            claude_api_key=required["ANTHROPIC_API_KEY"], claude_model=required["CLAUDE_MODEL"],
+            gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
+        )
     raise ProviderNotConfiguredError(
-        f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}. "
-        "실제 STT/LLM 프로바이더는 이 계획의 범위 밖에서 구현합니다."
+        f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}."
     )
