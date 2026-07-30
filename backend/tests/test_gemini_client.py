@@ -29,6 +29,13 @@ async def test_transcribe_raises_on_malformed_json():
 
 
 @pytest.mark.asyncio
+async def test_transcribe_raises_on_none_response_text():
+    client = _make_client_with_fake_sdk(None)
+    with pytest.raises(ValueError):
+        await client.transcribe("/fake/audio.wav")
+
+
+@pytest.mark.asyncio
 async def test_analyze_characters_parses_structured_json_response():
     payload = {
         "characters": [{"label": "민수", "gendered_segment_ids": ["p1"]}],
@@ -40,3 +47,13 @@ async def test_analyze_characters_parses_structured_json_response():
         {"checks_enabled": {"gender_agreement": True}},
     )
     assert result == payload
+
+
+@pytest.mark.asyncio
+async def test_analyze_characters_raises_on_none_response_text():
+    client = _make_client_with_fake_sdk(None)
+    with pytest.raises(ValueError):
+        await client.analyze_characters(
+            [{"id": "p1", "target_text": "hola"}],
+            {"checks_enabled": {"gender_agreement": True}},
+        )

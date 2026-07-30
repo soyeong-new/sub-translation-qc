@@ -34,6 +34,8 @@ class GeminiClient:
                 },
             },
         )
+        if not response.text:
+            raise ValueError("Gemini STT 응답이 비어 있음 (차단되었거나 응답 없음)")
         try:
             return json.loads(response.text)
         except json.JSONDecodeError as exc:
@@ -87,6 +89,8 @@ class GeminiClient:
                 },
             },
         )
+        if not response.text:
+            raise ValueError("Gemini 인물식별 응답이 비어 있음 (차단되었거나 응답 없음)")
         try:
             return json.loads(response.text)
         except json.JSONDecodeError as exc:
