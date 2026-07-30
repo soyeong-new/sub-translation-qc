@@ -74,5 +74,6 @@ def get_provider() -> ModelProvider:
             gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
         )
     raise ProviderNotConfiguredError(
-        f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}."
+        f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}. "
+        "실제 STT/LLM 프로바이더는 이 계획의 범위 밖에서 구현합니다."
     )
