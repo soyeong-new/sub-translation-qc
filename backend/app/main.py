@@ -73,6 +73,15 @@ async def create_target_version(episode_id: str, payload: TargetVersionIn):
         return {"id": tv.id, "status": tv.status}
 
 
+@app.get("/target-versions/{target_version_id}")
+async def get_target_version(target_version_id: str):
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        return {"id": tv.id, "status": tv.status, "error_message": tv.error_message}
+
+
 class RunAnalysisIn(BaseModel):
     target_srt_path: str
 

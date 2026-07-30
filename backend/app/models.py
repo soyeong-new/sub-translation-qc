@@ -54,6 +54,7 @@ class TargetVersion(Base):
     target_language: Mapped[str] = mapped_column(String)
     variant: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="analyzing")
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class Segment(Base):

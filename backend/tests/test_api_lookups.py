@@ -203,3 +203,35 @@ async def test_lookup_returns_404_when_episode_missing(endpoint):
 
     assert r.status_code == 404
     assert r.json()["detail"] == "episode not found"
+
+
+@pytest.mark.asyncio
+async def test_get_target_version_returns_status_and_error_message():
+    async with async_session() as session:
+        title = Title(name="T", type="movie")
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="failed", error_message="Gemini API 오류: timeout")
+        session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failed"
+    assert body["error_message"] == "Gemini API 오류: timeout"
+
+
+@pytest.mark.asyncio
+async def test_get_target_version_404_when_missing():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/target-versions/nonexistent")
+    assert r.status_code == 404
