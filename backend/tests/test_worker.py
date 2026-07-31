@@ -1,9 +1,10 @@
+import asyncio
 from datetime import datetime
 from unittest.mock import patch
 import pytest
 from app.db import engine, async_session
 from app.models import Base, Title, Episode, TargetVersion
-from app.worker import run_analysis_job
+from app.worker import run_analysis_job, WorkerSettings
 
 TARGET_SRT = """1
 00:00:00,000 --> 00:00:02,000
@@ -112,3 +113,38 @@ async def test_job_does_not_raise_when_target_version_deleted_mid_flight(monkeyp
     with patch("app.worker.run_pipeline", side_effect=RuntimeError("STT 실패")), \
          patch.object(AsyncSession, "get", get_none_from_second_call):
         await run_analysis_job({}, tv_id, "/nonexistent.srt")
+
+
+@pytest.mark.asyncio
+async def test_job_writes_failed_status_and_reraises_on_cancellation(monkeypatch):
+    """arq는 job_timeout을 넘긴 작업을 asyncio.CancelledError로 취소한다.
+    CancelledError는 BaseException을 상속하므로 일반 `except Exception`으로는
+    잡히지 않는다 — run_analysis_job이 이를 처리하지 않으면 실패 상태 기록이
+    전혀 실행되지 않고 target_version.status가 "analyzing"에 영원히 멈춘 채,
+    arq 재시도가 전체 파이프라인을 조용히 재실행해 비용만 반복 청구한다. 이
+    테스트는 CancelledError가 발생해도 실패 상태가 기록된 뒤, 취소 자체는
+    (asyncio/arq의 정상적인 태스크 정리를 위해) 다시 raise되는지 확인한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+
+    with patch("app.worker.run_pipeline", side_effect=asyncio.CancelledError()):
+        with pytest.raises(asyncio.CancelledError):
+            await run_analysis_job({}, tv_id, "/nonexistent.srt")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "failed"
+        assert tv.error_message == "분석 시간 초과 또는 취소됨"
+
+
+def test_worker_settings_function_name_matches_enqueue_string():
+    """enqueue_analysis는 문자열 "run_analysis_job"으로 arq에 작업을 등록한다
+    (app.worker.enqueue_analysis 참고). 이 문자열은 arq가 WorkerSettings.functions에
+    등록된 함수를 찾을 때 쓰는 이름(__qualname__)과 반드시 일치해야 한다.
+    테스트 스위트의 autouse fixture가 enqueue_analysis 자체를 갈아치우기 때문에,
+    이 문자열이 실제로 맞는지는 지금까지 아무 테스트도 검증하지 않았다 — 함수
+    이름이 나중에 바뀌면 프로덕션에서 조용히 깨지고 스위트는 계속 초록불일
+    위험을 막는 값싼 가드."""
+    qualnames = {f.__qualname__ for f in WorkerSettings.functions}
+    assert "run_analysis_job" in qualnames
