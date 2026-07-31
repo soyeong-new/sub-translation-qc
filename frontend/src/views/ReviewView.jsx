@@ -118,6 +118,11 @@ function FindingCard({ finding, reviewerName, pending, error, editing, editText,
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${statusClass}`}>
           {STATUS_LABELS[finding.status] || finding.status}
         </span>
+        {finding.model && (
+          <span className="inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+            {finding.model === "claude" ? "Claude" : finding.model === "gpt" ? "GPT" : finding.model}
+          </span>
+        )}
       </div>
 
       <p className="mb-3 text-sm text-foreground">{finding.description}</p>
