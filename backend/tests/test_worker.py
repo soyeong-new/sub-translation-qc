@@ -65,3 +65,50 @@ async def test_job_sets_status_failed_on_exception(monkeypatch):
         tv = await session.get(TargetVersion, tv_id)
         assert tv.status == "failed"
         assert tv.error_message == "STT 실패"
+
+
+@pytest.mark.asyncio
+async def test_job_does_not_raise_when_target_version_missing(monkeypatch):
+    """target_version_id가 존재하지 않으면(예: 그 사이 삭제됨) 첫 조회에서 tv가
+    None이 되고, 뒤이은 tv.episode_id 접근에서 AttributeError가 발생해 바깥
+    except로 넘어간다. 이때 실패 상태를 기록하려고 except 블록 안에서 다시
+    session.get(TargetVersion, ...)을 호출해도 여전히 None이므로, 가드 없이
+    tv.status = "failed"를 실행하면 두 번째 AttributeError가 run_analysis_job
+    밖으로 새어나가 "예외를 재발생시키지 않는다"는 계약을 깬다. 이 테스트는
+    그 이중 실패 상황에서도 run_analysis_job이 조용히(예외 없이) 끝나는지
+    확인한다 — await 자체가 예외를 던지면 테스트가 실패한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+
+    await run_analysis_job({}, "does-not-exist", "/nonexistent.srt")
+
+
+@pytest.mark.asyncio
+async def test_job_does_not_raise_when_target_version_deleted_mid_flight(monkeypatch):
+    """첫 조회 시점에는 target_version이 존재해 파이프라인 실행까지 진행되지만,
+    (예: 다른 요청이 동시에 지운 경우) 실패 상태를 기록하는 except 블록의
+    두 번째 session.get 호출 시점에는 이미 사라져 None이 돌아오는 경우를
+    모사한다. 첫 번째 TargetVersion 조회는 실제 값을 돌려주게 하고, 두 번째
+    (except 블록의) 조회부터만 None을 돌려주도록 해 "존재하다가 중간에 삭제된"
+    상황을 정확히 재현한다. 이 경우에도 예외가 새어나가지 않아야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.models import TargetVersion as TV
+
+    real_get = AsyncSession.get
+    call_count = {"target_version_gets": 0}
+
+    async def get_none_from_second_call(self, entity, ident, *args, **kwargs):
+        if entity is TV:
+            call_count["target_version_gets"] += 1
+            if call_count["target_version_gets"] == 1:
+                return await real_get(self, entity, ident, *args, **kwargs)
+            return None
+        return await real_get(self, entity, ident, *args, **kwargs)
+
+    with patch("app.worker.run_pipeline", side_effect=RuntimeError("STT 실패")), \
+         patch.object(AsyncSession, "get", get_none_from_second_call):
+        await run_analysis_job({}, tv_id, "/nonexistent.srt")
