@@ -87,6 +87,28 @@ async def test_targetless_pairs_do_not_crash():
 
 
 @pytest.mark.asyncio
+async def test_duplicate_sensitivity_findings_same_segment_get_distinct_ids():
+    """단일 모델이 같은 segment_id에 대해 sensitivity finding을 두 개 이상
+    돌려줄 수 있다. id가 finding_{segment_id}_sensitivity{model}로만
+    결정되면 두 번째 항목이 첫 번째와 동일한 PK가 되어 저장 시 IntegrityError로
+    job 전체가 실패한다 (회귀 방지: Finding 3)."""
+    class DuplicateProvider(MockProvider):
+        async def check_sensitivity(self, pair_dicts, hits):
+            return [
+                {"segment_id": "p1", "description": "첫 번째 지적"},
+                {"segment_id": "p1", "description": "두 번째 지적"},
+            ]
+
+    pairs = [AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="qué mierda pasa"))]
+    findings = await run_sensitivity_check(pairs, ["mierda"], DuplicateProvider(), "tv1")
+    assert len(findings) == 2
+    ids = {f.id for f in findings}
+    assert len(ids) == 2
+    assert findings[0].id == "finding_p1_sensitivity"
+    assert findings[1].id == "finding_p1_sensitivity_2"
+
+
+@pytest.mark.asyncio
 async def test_sensitivity_finding_with_model_gets_suffixed_id():
     class TaggedProvider(MockProvider):
         async def check_sensitivity(self, pair_dicts, hits):

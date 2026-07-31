@@ -191,6 +191,47 @@ async def test_findings_from_different_models_get_distinct_ids():
     assert models == {"claude", "gpt"}
 
 
+class SameModelDuplicateCategoryProvider(ModelProvider):
+    """한 모델이 같은 segment_id+category에 대해 finding을 두 개 돌려준다
+    (예: 한 줄에서 오역과 로컬라이제이션 뉘앙스를 각각 지적)."""
+
+    async def transcribe(self, audio_path: str) -> List[dict]:
+        return []
+
+    async def analyze_characters(self, pairs, profile) -> dict:
+        return {"characters": [], "relationships": []}
+
+    async def review_translation(self, pairs, knowledge, profile, format_constraint) -> List[dict]:
+        return [
+            {"segment_id": "p1", "category": "translation", "description": "첫 번째 지적",
+             "suggested_text": "texto A", "confidence": 0.9},
+            {"segment_id": "p1", "category": "translation", "description": "두 번째 지적",
+             "suggested_text": "texto B", "confidence": 0.8},
+        ]
+
+    async def check_sensitivity(self, pairs, term_hits) -> List[dict]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_findings_same_segment_and_category_get_distinct_ids():
+    """단일 모델이라도 같은 segment_id+category에 대해 finding을 두 개 이상
+    돌려줄 수 있다. id가 finding_{segment_id}_{category}{model}로만 결정되면
+    두 번째 항목이 첫 번째와 동일한 PK가 되어 저장 시 IntegrityError로 job
+    전체가 실패한다 (회귀 방지: Finding 3)."""
+    pairs = [AlignedPair(
+        id="p1",
+        korean=SegmentText(start=0, end=1, text="원문"),
+        target=SegmentText(start=0, end=1, text="texto original"),
+    )]
+    findings = await run_translation_review(pairs, {}, "", SameModelDuplicateCategoryProvider(), "tv1")
+    assert len(findings) == 2
+    ids = {f.id for f in findings}
+    assert len(ids) == 2
+    assert findings[0].id == "finding_p1_translation"
+    assert findings[1].id == "finding_p1_translation_2"
+
+
 @pytest.mark.asyncio
 async def test_finding_without_model_keeps_original_id_format():
     """model 키가 없는(단일 모델) 응답은 기존 id 형식을 그대로 유지해야
