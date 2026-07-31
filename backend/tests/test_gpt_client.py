@@ -75,3 +75,14 @@ async def test_check_sensitivity_raises_on_none_content():
     client._sdk_client.chat.completions.create.return_value.choices[0].message.content = None
     with pytest.raises(ValueError):
         await client.check_sensitivity([], [])
+
+
+@pytest.mark.asyncio
+async def test_review_translation_raises_when_findings_is_not_a_list():
+    """모델이 {"findings": {...}}처럼 findings를 리스트가 아닌 값으로 돌려주면,
+    검증 없이 그대로 반환할 경우 ensemble.py의 `for item in result:`에서
+    TypeError가 새어나가 job 전체가 API 비용을 다 쓴 뒤 크래시한다. 다른
+    malformed-response 케이스와 동일하게 깔끔한 ValueError로 막아야 한다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": {"segment_id": "p1"}}))
+    with pytest.raises(ValueError):
+        await client.review_translation([], "", {}, "")

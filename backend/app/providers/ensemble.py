@@ -17,7 +17,12 @@ async def call_both(label_a: str, coro_a: Coroutine, label_b: str, coro_b: Corou
 
     merged: List[dict] = []
     for label, result in ((label_a, result_a), (label_b, result_b)):
-        if isinstance(result, Exception):
+        # asyncio.gather(..., return_exceptions=True)는 BaseException 서브클래스도
+        # 값으로 돌려준다 (예: worker.py의 job_timeout 취소로 인한
+        # asyncio.CancelledError). Exception만 검사하면 이런 경우가 아래
+        # `for item in result:`로 새어들어가 "'CancelledError' object is not
+        # iterable" TypeError로 크래시한다.
+        if isinstance(result, BaseException):
             logger.warning("%s 앙상블 호출 실패: %s", label, result)
             continue
         for item in result:

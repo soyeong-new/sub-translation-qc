@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from app.providers.ensemble import call_both
 
@@ -8,6 +9,10 @@ async def _ok(items):
 
 async def _fail():
     raise RuntimeError("API 오류")
+
+
+async def _cancelled():
+    raise asyncio.CancelledError()
 
 
 @pytest.mark.asyncio
@@ -47,3 +52,20 @@ async def test_existing_model_key_is_not_overwritten():
         "gpt", _ok([]),
     )
     assert result[0]["model"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_base_exception_from_one_side_is_dropped_not_crashed():
+    """asyncio.gather(..., return_exceptions=True)는 asyncio.CancelledError처럼
+    Exception이 아니라 BaseException만 상속하는 예외도 값으로 돌려준다 (예:
+    worker.py의 job_timeout 취소가 review_translation 호출 도중 발생하는
+    경우). isinstance(result, Exception)만 검사하면 이런 결과가 `for item in
+    result:`로 새어들어가 "'CancelledError' object is not iterable"
+    TypeError로 크래시한다 — Exception이 아닌 BaseException으로 검사해야
+    한쪽만 실패했을 때와 동일하게 다른 쪽 결과를 살릴 수 있다."""
+    result = await call_both(
+        "claude", _cancelled(),
+        "gpt", _ok([{"segment_id": "p1", "description": "GPT 지적"}]),
+    )
+    assert len(result) == 1
+    assert result[0]["model"] == "gpt"
