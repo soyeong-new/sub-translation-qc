@@ -70,12 +70,14 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             tv_id = r.json()["id"]
             assert r.json()["status"] == "analyzing"
 
-            # 4) 분석 실행
+            # 4) 분석 실행 (큐에 등록되고, 테스트에서는 conftest.py가 인프로세스로 즉시 실행한다)
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",
                                   json={"target_srt_path": str(srt_path)})
             assert r.status_code == 200
+            assert r.json()["status"] == "queued"
+
+            r = await client.get(f"/target-versions/{tv_id}")
             assert r.json()["status"] == "review"
-            reported_count = r.json()["finding_count"]
 
             # 5) 분석 산출물 조회
             r = await client.get(f"/target-versions/{tv_id}/segments")
@@ -92,7 +94,6 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             r = await client.get(f"/target-versions/{tv_id}/findings")
             assert r.status_code == 200
             findings = r.json()
-            assert reported_count == len(findings)
             by_category = {f["category"]: f for f in findings}
             # Fix 4: 포맷 위반이 formatting finding으로 영속화된다.
             assert "translation" in by_category

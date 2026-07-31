@@ -3,7 +3,9 @@
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from contextlib import asynccontextmanager
+from arq import create_pool
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
@@ -11,16 +13,22 @@ from app.models import (
     Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment,
     SttCorrection, ExportRow,
 )
-from app.core.pipeline import run_pipeline
-from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
 from app.core.uploads import (
     save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS,
 )
-from app.providers.base import get_provider
-from app.repositories import save_pipeline_result, get_findings as repo_get_findings
+from app.repositories import get_findings as repo_get_findings
+from app.worker import enqueue_analysis, WorkerSettings
 
-app = FastAPI(title="Sub Translation QC ES")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.arq_redis = await create_pool(WorkerSettings.redis_settings)
+    yield
+    await app.state.arq_redis.close()
+
+
+app = FastAPI(title="Sub Translation QC ES", lifespan=lifespan)
 
 
 class TitleIn(BaseModel):
@@ -87,7 +95,7 @@ class RunAnalysisIn(BaseModel):
 
 
 @app.post("/target-versions/{target_version_id}/run-analysis")
-async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
+async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: Request):
     async with async_session() as session:
         tv = await session.get(TargetVersion, target_version_id)
         if tv is None:
@@ -95,24 +103,12 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
         episode = await session.get(Episode, tv.episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
-
-    provider = get_provider()
-    result = await run_pipeline(
-        korean_audio_path=episode.video_path,
-        target_srt_path=payload.target_srt_path,
-        language=tv.target_language, variant=tv.variant,
-        target_version_id=target_version_id, provider=provider,
-    )
-
-    async with async_session() as session:
-        await save_pipeline_result(session, target_version_id, result)
-        tv = await session.get(TargetVersion, target_version_id)
-        tv.status = "review"
+        tv.status = "analyzing"
+        tv.error_message = None
         await session.commit()
-    # 포맷 위반도 category="formatting" finding으로 저장되므로(repositories),
-    # 여기서 보고하는 개수도 GET /findings가 돌려주는 개수와 일치해야 한다.
-    finding_count = len(result["findings"]) + len(result["format_violations"])
-    return {"status": "review", "finding_count": finding_count}
+
+    await enqueue_analysis(request.app.state.arq_redis, target_version_id, payload.target_srt_path)
+    return {"status": "queued"}
 
 
 @app.get("/target-versions/{target_version_id}/findings")
