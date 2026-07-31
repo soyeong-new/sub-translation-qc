@@ -44,9 +44,18 @@ class ClaudeClient:
             raise ValueError("Claude 응답이 비어 있음")
         text = response.content[0].text
         try:
-            return json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Claude 응답이 JSON이 아님: {text[:200]}") from exc
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                # 프롬프트에 정확한 필드명을 명시했더니, Claude가 GPT처럼
+                # {"findings": [...]}로 감싸서 응답할 가능성이 생겼다 (GPT와
+                # 달리 Claude는 최상위가 배열이어야 함). 여기서 걸러내지
+                # 않으면 ensemble.py의 `for item in result:`가 dict의 키
+                # (문자열)를 순회하며 `{**item, ...}`에서 TypeError로 새어나가
+                # API 비용을 다 쓴 뒤 job이 크래시한다.
+                raise TypeError("응답이 JSON 배열이 아님")
+            return parsed
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"Claude 응답이 JSON 배열이 아님: {text[:200]}") from exc
 
     async def review_translation(self, pairs: List[dict], knowledge: str,
                                   profile: dict, format_constraint: str) -> List[dict]:
