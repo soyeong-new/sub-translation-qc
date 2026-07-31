@@ -12,3 +12,4 @@ __pycache__/
 .pytest_cache/
 backend/venv/
 /backend/media
+/backend/.env
