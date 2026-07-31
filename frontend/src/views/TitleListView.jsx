@@ -71,7 +71,7 @@ export default function TitleListView({ onSelect }) {
           if (tv.status === "review") {
             resolve();
           } else if (tv.status === "failed") {
-            reject(new Error(tv.error_message ?? "분석 중 오류가 발생했습니다."));
+            reject(new Error(tv.error_message || "분석 중 오류가 발생했습니다."));
           } else {
             setTimeout(poll, 2000);
           }
