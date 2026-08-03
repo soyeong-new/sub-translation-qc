@@ -13,16 +13,15 @@ def _make_provider() -> LiveModelProvider:
     provider._gemini.analyze_characters = AsyncMock(
         return_value={"characters": [], "relationships": []}
     )
-    provider._claude.review_translation = AsyncMock(
-        return_value=[{"segment_id": "p1", "category": "translation",
-                        "description": "클로드", "suggested_text": "a", "confidence": 0.8}]
+    provider._claude.correct_primary = AsyncMock(
+        return_value=[{"segment_id": "p1", "category": "gender",
+                        "corrected_text": "está feliz", "description": "클로드 교정"}]
     )
-    provider._gpt.review_translation = AsyncMock(
+    provider._gpt.verify_and_refine = AsyncMock(
         return_value=[{"segment_id": "p1", "category": "translation",
-                        "description": "GPT", "suggested_text": "b", "confidence": 0.7}]
+                        "corrected_text": "está muy feliz", "description": "GPT 검증"}]
     )
-    provider._claude.check_sensitivity = AsyncMock(return_value=[])
-    provider._gpt.check_sensitivity = AsyncMock(return_value=[])
+    provider._claude.shrink_line = AsyncMock(return_value="짧아진 문장")
     return provider
 
 
@@ -41,16 +40,24 @@ async def test_analyze_characters_delegates_to_gemini():
 
 
 @pytest.mark.asyncio
-async def test_review_translation_ensembles_claude_and_gpt():
+async def test_correct_primary_delegates_to_claude():
     provider = _make_provider()
-    result = await provider.review_translation([], "", {}, "")
-    assert len(result) == 2
-    models = {r["model"] for r in result}
-    assert models == {"claude", "gpt"}
+    result = await provider.correct_primary([], {}, [], [], [], "", "")
+    assert result[0]["corrected_text"] == "está feliz"
+    provider._claude.correct_primary.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_check_sensitivity_ensembles_claude_and_gpt():
+async def test_verify_and_refine_delegates_to_gpt():
     provider = _make_provider()
-    result = await provider.check_sensitivity([], [])
-    assert result == []
+    result = await provider.verify_and_refine([], {}, {}, "", "")
+    assert result[0]["corrected_text"] == "está muy feliz"
+    provider._gpt.verify_and_refine.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shrink_line_delegates_to_claude():
+    provider = _make_provider()
+    result = await provider.shrink_line("긴 문장", max_chars=50, max_lines=2)
+    assert result == "짧아진 문장"
+    provider._claude.shrink_line.assert_awaited_once()

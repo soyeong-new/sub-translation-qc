@@ -5,7 +5,6 @@ from app.providers.base import ModelProvider
 from app.providers.gemini_client import GeminiClient
 from app.providers.claude_client import ClaudeClient
 from app.providers.gpt_client import GptClient
-from app.providers.ensemble import call_both
 
 
 class LiveModelProvider(ModelProvider):
@@ -22,15 +21,24 @@ class LiveModelProvider(ModelProvider):
     async def analyze_characters(self, pairs: List[dict], profile: dict) -> dict:
         return await self._gemini.analyze_characters(pairs, profile)
 
-    async def review_translation(self, pairs: List[dict], knowledge: str,
-                                  profile: dict, format_constraint: str) -> List[dict]:
-        return await call_both(
-            "claude", self._claude.review_translation(pairs, knowledge, profile, format_constraint),
-            "gpt", self._gpt.review_translation(pairs, knowledge, profile, format_constraint),
+    async def correct_primary(self, pairs: List[dict], profile: dict,
+                               characters: List[dict], relationships: List[dict],
+                               pending_sensitive_hits: List[dict],
+                               knowledge: str, format_constraint: str,
+                               extra_instruction: str = "") -> List[dict]:
+        return await self._claude.correct_primary(
+            pairs, profile, characters, relationships, pending_sensitive_hits,
+            knowledge, format_constraint, extra_instruction,
         )
 
-    async def check_sensitivity(self, pairs: List[dict], term_hits: List[dict]) -> List[dict]:
-        return await call_both(
-            "claude", self._claude.check_sensitivity(pairs, term_hits),
-            "gpt", self._gpt.check_sensitivity(pairs, term_hits),
+    async def verify_and_refine(self, pairs: List[dict], original_target_by_id: dict,
+                                 profile: dict, knowledge: str, format_constraint: str,
+                                 extra_instruction: str = "") -> List[dict]:
+        return await self._gpt.verify_and_refine(
+            pairs, original_target_by_id, profile, knowledge, format_constraint,
+            extra_instruction,
         )
+
+    async def shrink_line(self, text: str, max_chars: int, max_lines: int,
+                           extra_instruction: str = "") -> str:
+        return await self._claude.shrink_line(text, max_chars, max_lines, extra_instruction)
