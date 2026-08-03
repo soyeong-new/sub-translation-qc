@@ -29,7 +29,11 @@ from app.background import analyze_and_save
 app = FastAPI(title="Sub Translation QC ES")
 
 (MEDIA_ROOT / "video_proxy").mkdir(parents=True, exist_ok=True)
-app.mount("/media", StaticFiles(directory=str(MEDIA_ROOT)), name="media")
+# 프록시 디렉터리만 마운트한다 — media/ 전체를 마운트하면 원본 업로드 영상
+# (media/video/)과 원본 SRT(media/srt/)까지 인증 없이 그대로 서빙돼버린다.
+# 검수 화면이 실제로 필요로 하는 건 저화질 프록시뿐이다.
+app.mount("/media/video_proxy", StaticFiles(directory=str(MEDIA_ROOT / "video_proxy")),
+          name="media_video_proxy")
 
 
 @app.on_event("startup")
@@ -97,7 +101,7 @@ async def get_target_version(target_version_id: str):
         if tv is None:
             raise HTTPException(404, "target version not found")
         video_proxy_url = (
-            f"/media/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT)}"
+            f"/media/video_proxy/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT / 'video_proxy')}"
             if tv.video_proxy_path else None
         )
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,

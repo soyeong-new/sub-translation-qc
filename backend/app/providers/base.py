@@ -63,7 +63,7 @@ class ModelProvider(ABC):
 
 
 def get_provider() -> ModelProvider:
-    name = os.getenv("QC_PROVIDER", "gemini")
+    name = os.getenv("QC_PROVIDER", "live")
     if name == "mock":
         if "PYTEST_CURRENT_TEST" not in os.environ:
             raise ProviderNotConfiguredError("mock 프로바이더는 자동화 테스트 전용입니다.")

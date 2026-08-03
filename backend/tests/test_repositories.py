@@ -339,3 +339,43 @@ async def test_save_pipeline_result_persists_finding_model():
 
         rows = await get_findings(session, tv.id)
         assert rows[0].model == "claude"
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_final_text_and_status_for_pretreatment_findings():
+    """회귀(important): FindingRow(...) 생성에서 final_text/reviewer_name을
+    빠뜨리면, pretreatment.py/safety_net.py가 status="approved",
+    final_text=suggested_text로 직접 구성해 넘긴 Finding이 DB에는
+    final_text=""(기본값)로 저장된다 — 검수자 판단 없이 이미 확정된 자동교정
+    결과가 검수 화면에서 빈 텍스트로 보이는 버그였다. 이 회귀는 pretreatment/
+    safety_net을 파이프라인 테스트에서 직접 거치지 않으면(글로서리/CTA/비속어
+    사전이 비어 있으면 둘 다 findings=[]를 반환) 드러나지 않으므로, 여기서
+    run_pretreatment를 실제 글로서리 항목으로 실행해 진짜 Finding을 만들고
+    save_pipeline_result에 그대로 흘려보내 영속화된 행을 검증한다."""
+    from app.core.pretreatment import run_pretreatment
+    from app.schemas import AlignedPair, SegmentText
+
+    async with async_session() as session:
+        title = Title(name="Movie E", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+
+        pairs = [AlignedPair(id="pair_1",
+                              target=SegmentText(start=0.0, end=1.5, text="Cholsu가 왔다"))]
+        glossary = [{"canonical": "Chulsoo", "aliases": ["Cholsu"]}]
+        pretreatment = run_pretreatment(pairs, glossary, [], [], [], tv.id)
+        assert pretreatment.findings, "글로서리 항목이 실제로 Finding을 만들어야 이 테스트가 유효하다"
+
+        result = _result_with(findings=pretreatment.findings, pairs=pretreatment.pairs)
+        await save_pipeline_result(session, tv.id, result)
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.category == "glossary"
+        assert row.status == "approved"
+        assert row.suggested_text == "Chulsoo가 왔다"
+        # 이 assertion이 회귀의 핵심이다: final_text가 누락되면 ""로 저장된다.
+        assert row.final_text == "Chulsoo가 왔다"
