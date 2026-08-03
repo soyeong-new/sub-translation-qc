@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
@@ -157,6 +158,13 @@ async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monk
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",
                                   json={"target_srt_path": str(srt_path)})
             assert r.status_code == 200
+
+            # background task들이 완료될 때까지 대기한다.
+            # 패치가 활성 상태인 동안 waiting하므로, background task가
+            # extract_audio를 호출할 때 여전히 mock이 활성이다.
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
             r = await client.get(f"/target-versions/{tv_id}/characters")
             assert r.status_code == 200
             chars = r.json()

@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from app.db import engine
 
@@ -10,22 +11,17 @@ async def _dispose_engine_after_test():
 
 @pytest.fixture(autouse=True)
 async def _run_analysis_inline(monkeypatch):
-    """실제 Redis 없이도 /run-analysis가 즉시 실행되도록, 큐 등록을
-    run_analysis_job 직접 호출로 대체한다. arq_redis 인자는 무시되므로
-    앱 lifespan(실제 Redis 연결)이 테스트에서 실행되지 않아도 된다.
+    """asyncio.create_task를 기존 동작 대로 실행하되, background_tasks set을 초기화한다.
 
     테스트는 httpx.ASGITransport로 앱을 호출하는데, 이는 FastAPI의 lifespan을
-    실행하지 않는다. 그래서 request.app.state.arq_redis가 애초에 설정되지
-    않아 속성 접근 자체가 AttributeError를 낸다 — 아래 enqueue_analysis
-    몽키패치와 무관하게 먼저 터진다. 값 자체는 곧바로 무시되는 인자이므로
-    더미 값으로 미리 채워 둔다."""
+    실행하지 않는다. 그래서 request.app.state.background_tasks가 애초에 설정되지
+    않아 속성 접근 자체가 AttributeError를 낸다 — 미리 initialized set으로
+    채워 둔다.
+
+    주의: 이 fixture는 이제 단순히 background_tasks를 초기화할 뿐, task 실행을
+    변경하지 않는다. 각 테스트는 background task 완료를 직접 관리해야 한다."""
     from app.main import app
-    from app.worker import run_analysis_job
 
-    monkeypatch.setattr(app.state, "arq_redis", None, raising=False)
-
-    async def _inline_enqueue(redis_pool, target_version_id, target_srt_path):
-        await run_analysis_job({}, target_version_id, target_srt_path)
-
-    monkeypatch.setattr("app.main.enqueue_analysis", _inline_enqueue)
+    # 테스트 중 background_tasks set 초기화
+    monkeypatch.setattr(app.state, "background_tasks", set(), raising=False)
     yield

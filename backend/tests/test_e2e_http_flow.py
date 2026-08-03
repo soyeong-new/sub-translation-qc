@@ -7,6 +7,7 @@ finding 조회 → 검수 액션 → export 까지를 전부 실제 엔드포인
 있는가"는 어디에서도 검증되지 않았다. 목킹은 이 코드베이스의 기존 경계인
 프로바이더(및 ffmpeg 호출인 extract_audio)까지만 한다.
 """
+import asyncio
 import pytest
 from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
@@ -70,11 +71,18 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             tv_id = r.json()["id"]
             assert r.json()["status"] == "analyzing"
 
-            # 4) 분석 실행 (큐에 등록되고, 테스트에서는 conftest.py가 인프로세스로 즉시 실행한다)
+            # 4) 분석 실행 (asyncio.create_task로 백그라운드에서 실행되며,
+            # 테스트에서는 background_tasks를 대기해 완료를 보장한다)
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",
                                   json={"target_srt_path": str(srt_path)})
             assert r.status_code == 200
-            assert r.json()["status"] == "queued"
+            assert r.json()["status"] == "analyzing"
+
+            # background task들이 완료될 때까지 대기한다.
+            # 패치가 활성 상태인 동안 waiting하므로, background task가
+            # extract_audio를 호출할 때 여전히 mock이 활성이다.
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
 
             r = await client.get(f"/target-versions/{tv_id}")
             assert r.json()["status"] == "review"

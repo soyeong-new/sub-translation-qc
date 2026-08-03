@@ -1,11 +1,10 @@
 """작품 등록부터 분석 실행, 검수, export까지 담당하는 FastAPI 엔드포인트 모음."""
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
-from contextlib import asynccontextmanager
-from arq import create_pool
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
@@ -18,17 +17,18 @@ from app.core.uploads import (
     save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS,
 )
 from app.repositories import get_findings as repo_get_findings
-from app.worker import enqueue_analysis, WorkerSettings
+from app.background import analyze_and_save
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.arq_redis = await create_pool(WorkerSettings.redis_settings)
-    yield
-    await app.state.arq_redis.close()
+app = FastAPI(title="Sub Translation QC ES")
 
 
-app = FastAPI(title="Sub Translation QC ES", lifespan=lifespan)
+@app.on_event("startup")
+async def _init_background_task_registry():
+    # asyncio는 참조가 없는 태스크를 도중에 가비지컬렉션할 수 있다(공식 문서
+    # 권고사항) — run-analysis가 만든 태스크를 여기 보관해 완료 전에 사라지지
+    # 않게 한다.
+    app.state.background_tasks = set()
 
 
 class TitleIn(BaseModel):
@@ -107,8 +107,10 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: 
         tv.error_message = None
         await session.commit()
 
-    await enqueue_analysis(request.app.state.arq_redis, target_version_id, payload.target_srt_path)
-    return {"status": "queued"}
+    task = asyncio.create_task(analyze_and_save(target_version_id, payload.target_srt_path))
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
+    return {"status": "analyzing"}
 
 
 @app.get("/target-versions/{target_version_id}/findings")
