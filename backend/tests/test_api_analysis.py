@@ -40,7 +40,7 @@ async def test_run_analysis_then_list_findings(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.background.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(
                 f"/target-versions/{tv_id}/run-analysis",

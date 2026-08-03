@@ -47,13 +47,35 @@ async def test_analyze_and_save_sets_status_review_on_success(tmp_path, monkeypa
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.background.delete_original_video") as mock_delete:
         await background.analyze_and_save(tv_id, str(srt_path))
 
     async with async_session() as session:
         tv = await session.get(TargetVersion, tv_id)
         assert tv.status == "review"
         assert tv.error_message is None
+    # C2 회귀: 원본 삭제는 결과가 실제로 커밋된 뒤에만 일어나야 한다.
+    mock_delete.assert_called_once_with("/x.mp4")
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_does_not_delete_original_video_when_pipeline_fails(
+        tmp_path, monkeypatch):
+    """C2 회귀: run_pipeline이 실패하면(예: 타임아웃, 예외) 원본 영상이 지워지면
+    안 된다 — 지워버리면 프록시 경로도 저장되지 않았는데 원본까지 없어서
+    /run-analysis 재시도가 영영 실패하게 된다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+
+    with patch("app.background.run_pipeline", side_effect=RuntimeError("STT 실패")), \
+         patch("app.background.delete_original_video") as mock_delete:
+        await background.analyze_and_save(tv_id, "/nonexistent.srt")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "failed"
+    mock_delete.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -91,7 +113,7 @@ async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.background.delete_original_video", return_value=None):
         await background.analyze_and_save(tv_id, str(srt_path))
 
     async with async_session() as session:

@@ -17,8 +17,7 @@ async def test_pipeline_runs_end_to_end_on_real_sample_file(monkeypatch):
     assert SAMPLE_SRT.exists(), "샘플 SRT 파일이 존재해야 함"
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(SAMPLE_SRT),

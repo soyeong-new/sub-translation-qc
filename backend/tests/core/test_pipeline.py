@@ -15,8 +15,7 @@ async def test_pipeline_produces_findings_and_format_violations(tmp_path):
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(srt_path),
@@ -49,8 +48,7 @@ async def test_pipeline_applies_claude_correction_before_gpt_sees_it(tmp_path, m
     monkeypatch.setattr(provider, "correct_primary", _claude_removes_marker)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(srt_path),
@@ -77,8 +75,7 @@ async def test_pipeline_continues_when_claude_pass_raises(tmp_path, monkeypatch)
     monkeypatch.setattr(provider, "correct_primary", _claude_raises)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(srt_path),
@@ -104,8 +101,7 @@ async def test_pipeline_continues_when_gpt_pass_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, "verify_and_refine", _gpt_raises)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(srt_path),
@@ -133,8 +129,7 @@ async def test_pipeline_rechecks_ellipsis_after_gpt_pass(tmp_path, monkeypatch):
     monkeypatch.setattr(provider, "verify_and_refine", _gpt_introduces_ellipsis)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(srt_path),
@@ -156,3 +151,131 @@ async def test_pipeline_rechecks_ellipsis_after_gpt_pass(tmp_path, monkeypatch):
     assert first_checkpoint.original_text == "BAD_TRANSLATION aquí...."
     assert second_checkpoint.original_text == "espera......"
     assert first_checkpoint.original_text != second_checkpoint.original_text
+
+
+@pytest.mark.asyncio
+async def test_pipeline_continues_when_build_registry_raises(tmp_path, monkeypatch):
+    """C2 회귀: build_registry(analyze_characters, 실제 LLM 네트워크 호출)가
+    실패해도 전체 분석이 실패 처리되면 안 된다 — Claude/GPT 패스와 동일한 부분
+    실패 허용 원칙이 인물/관계 식별에도 적용돼야 한다. 실패 시 빈 레지스트리로
+    진행하고, 이미 든 STT 비용을 낭비하지 않도록 나머지 파이프라인(Claude/GPT/
+    안전망)은 계속 실행돼야 한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _analyze_characters_raises(*args, **kwargs):
+        raise RuntimeError("인물 식별 API 오류")
+
+    monkeypatch.setattr(provider, "analyze_characters", _analyze_characters_raises)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    assert result["characters"] == []
+    assert result["relationships"] == []
+    # GPT 2차는 계속 실행되어 BAD_TRANSLATION 마커를 정상 탐지한다 — 인물 식별
+    # 실패가 나머지 파이프라인을 막지 않았다는 증거.
+    assert any(f.model == "gpt" for f in result["findings"])
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_delete_original_video(tmp_path, monkeypatch):
+    """C2 회귀: run_pipeline 자신은 더 이상 원본 영상을 지우지 않는다 — 결과가
+    호출자(background.py)에 의해 실제로 커밋된 뒤에만 지워야 하기 때문이다.
+    대신 video_path를 결과에 그대로 담아 반환해, 호출자가 커밋 이후 언제
+    지울지 스스로 결정할 수 있게 한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake video")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path=str(video),
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+        )
+
+    assert video.exists()
+    assert result["video_path"] == str(video)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cleans_up_orphaned_proxy_when_transcribe_fails(tmp_path, monkeypatch):
+    """I6 회귀: asyncio.gather로 STT와 영상 프록시 생성을 동시에 돌릴 때,
+    to_thread로 감싼 generate_video_proxy는 취소할 수 없다 — transcribe가
+    먼저 실패해도 프록시 생성 스레드는 계속 돌아 파일을 만들어낼 수 있다.
+    run_pipeline이 실패로 끝나면 아무도 참조하지 않을 그 프록시 파일이
+    고아로 남으면 안 된다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    proxy_path = tmp_path / "orphan_proxy.mp4"
+
+    def _fake_generate_proxy(video_path, out_dir=None):
+        proxy_path.write_bytes(b"fake proxy")
+        return str(proxy_path)
+
+    async def _transcribe_raises(*args, **kwargs):
+        raise RuntimeError("STT API 오류")
+
+    provider = MockProvider()
+    monkeypatch.setattr(provider, "transcribe", _transcribe_raises)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", side_effect=_fake_generate_proxy):
+        with pytest.raises(RuntimeError, match="STT API 오류"):
+            await run_pipeline(
+                video_path="/fake/video.mp4",
+                target_srt_path=str(srt_path),
+                language="es", variant="LATAM",
+                target_version_id="tv1", provider=provider,
+            )
+
+    assert not proxy_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_gpt_original_reference_reflects_post_pretreatment_text(
+        tmp_path, monkeypatch):
+    """I7 회귀: GPT 2차가 "1차 교정자가 뭔가 잘못 고쳤는지" 대조하는 데 쓰는
+    original_target_by_id는 사전필터(#3/#4/#6, 정책적 편집)까지 적용된 뒤의
+    텍스트여야 한다. 사전필터 이전의 진짜 원본을 기준으로 삼으면, GPT가
+    정책적으로 이미 치환/삭제된 내용을 "복원"하도록 유도될 수 있다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION mierda....\n", encoding="utf-8")
+    provider = MockProvider()
+
+    captured = {}
+
+    async def _capture_verify_and_refine(pairs, original_target_by_id, *args, **kwargs):
+        captured["original_target_by_id"] = dict(original_target_by_id)
+        return []
+
+    monkeypatch.setattr(provider, "verify_and_refine", _capture_verify_and_refine)
+    monkeypatch.setattr(
+        "app.core.pipeline.load_profanity_dictionary",
+        lambda: [{"term": "mierda", "replacement": "[삐-]"}],
+    )
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    original_text = next(iter(captured["original_target_by_id"].values()))
+    assert "mierda" not in original_text
+    assert "[삐-]" in original_text

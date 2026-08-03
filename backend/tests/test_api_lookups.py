@@ -155,7 +155,7 @@ async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monk
     transport = ASGITransport(app=app)
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.background.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",
                                   json={"target_srt_path": str(srt_path)})

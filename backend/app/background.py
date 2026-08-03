@@ -12,6 +12,7 @@ import logging
 from app.db import async_session
 from app.models import TargetVersion, Episode
 from app.core.pipeline import run_pipeline
+from app.core.ingest import delete_original_video
 from app.repositories import save_pipeline_result
 from app.providers.base import get_provider
 
@@ -43,6 +44,14 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             tv.status = "review"
             tv.video_proxy_path = result.get("video_proxy_path")
             await session.commit()
+
+        # 원본 영상은 결과가 전부 커밋된 뒤에만 지운다. run_pipeline은 원본을
+        # 지우지 않고 그대로 둔다 — video_proxy_path가 DB에 영속화되기 전에
+        # 원본부터 지워버리면, 그 사이 어딘가(analyze_characters 실패, 타임아웃,
+        # 프로세스 크래시 등)에서 죽었을 때 원본도 없고 프록시 경로도 저장되지
+        # 않아 생성된 프록시 파일이 고아로 남고, /run-analysis 재시도도 영영
+        # 실패하게 된다(필요한 원본 영상이 이미 없으므로).
+        delete_original_video(episode.video_path)
     except asyncio.TimeoutError:
         logger.warning("analyze_and_save 타임아웃 (target_version_id=%s)", target_version_id)
         await _mark_failed(target_version_id, "분석 시간 초과 (1시간)")

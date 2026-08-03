@@ -55,7 +55,7 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
     transport = ASGITransport(app=app)
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
-         patch("app.core.pipeline.delete_original_video", return_value=None):
+         patch("app.background.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1) 작품
             r = await client.post("/titles", json={"name": "The Peach Tree", "type": "movie"})
