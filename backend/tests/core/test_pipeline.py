@@ -144,4 +144,15 @@ async def test_pipeline_rechecks_ellipsis_after_gpt_pass(tmp_path, monkeypatch):
 
     final_pair = next(p for p in result["pairs"] if p.target is not None)
     assert final_pair.target.text == "espera..."
-    assert sum(1 for v in result["format_violations"] if v.rule == "ellipsis") == 2
+    ellipsis_violations = [v for v in result["format_violations"] if v.rule == "ellipsis"]
+    assert len(ellipsis_violations) == 2
+    # 회귀(Important): 두 체크포인트의 original_text는 각자 그 시점의 텍스트를
+    # 반영해야 한다 — 파이프라인 최종 상태 하나로 되짚어 재구성하면 둘 다 같은
+    # (그리고 대부분 틀린) 값이 된다. 첫 체크포인트는 Claude/GPT 이전의 원문,
+    # 두 번째(S4 최종 재체크)는 GPT가 새로 늘어뜨린 뒤 최종 온점 자동보정 직전의
+    # 텍스트여야 하며, 서로 달라야 한다.
+    first_checkpoint = next(v for v in ellipsis_violations if v.original_text.startswith("BAD_TRANSLATION"))
+    second_checkpoint = next(v for v in ellipsis_violations if v.original_text.startswith("espera"))
+    assert first_checkpoint.original_text == "BAD_TRANSLATION aquí...."
+    assert second_checkpoint.original_text == "espera......"
+    assert first_checkpoint.original_text != second_checkpoint.original_text

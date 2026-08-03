@@ -60,6 +60,14 @@ class FormatViolation(BaseModel):
     detail: str
     auto_fixed: bool = False
     fixed_text: str = ""
+    # 위반이 감지된 그 시점의 텍스트(체크포인트 스냅샷)다. 온점 위반은 파이프라인
+    # 안에서 여러 시점(최초 체크, GPT 이후 최종 재체크)에 검사되므로, 이 값이
+    # 없으면 나중에(예: repositories.py) 파이프라인이 이미 끝난 뒤의 최종 텍스트로
+    # original_text를 잘못 재구성하게 된다 — 같은 세그먼트가 두 체크포인트 모두에서
+    # 걸렸을 때 두 finding의 "고친 전" 텍스트가 실제로는 서로 다른데도 똑같이
+    # (그리고 틀리게) 표시되는 버그로 이어진다. 비워두면(레거시 호출자) 호출자가
+    # 직접 채워야 한다.
+    original_text: str = ""
 
 
 class ExportStats(BaseModel):

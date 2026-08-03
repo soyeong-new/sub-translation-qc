@@ -260,7 +260,11 @@ async def test_save_pipeline_result_persists_same_segment_ellipsis_violation_twi
     IntegrityError를 background.analyze_and_save가 잡아 전체 target_version을
     failed로 처리했다 — STT + Claude/GPT 두 패스 비용이 전부 날아가는 버그였다.
     이 테스트는 save_pipeline_result가 예외 없이 두 finding을 모두(서로 다른
-    PK로) 저장하는지 직접 검증한다."""
+    PK로) 저장하는지, 그리고 각 finding의 original_text가 파이프라인 최종
+    상태 하나로 뭉개지지 않고 그 체크포인트 고유의 "고치기 전" 텍스트를
+    유지하는지 검증한다(후속 리뷰에서 발견된 important 버그: original_text를
+    result["pairs"]의 최종 상태로 되짚어 재구성하면 두 finding이 서로 다른
+    시점에 감지됐는데도 동일한 — 그리고 대부분 틀린 — 값을 갖게 된다)."""
     async with async_session() as session:
         title = Title(name="Movie D", type="movie", created_at=datetime.now())
         session.add(title)
@@ -270,13 +274,18 @@ async def test_save_pipeline_result_persists_same_segment_ellipsis_violation_twi
         violations = [
             FormatViolation(segment_id="pair_1", rule="ellipsis",
                             detail="연속 온점 4개 이상 감지 (최초)",
-                            auto_fixed=True, fixed_text="texto..."),
+                            auto_fixed=True, fixed_text="texto...",
+                            original_text="BAD_TRANSLATION texto...."),
             FormatViolation(segment_id="pair_1", rule="ellipsis",
                             detail="연속 온점 4개 이상 감지 (GPT 이후 재검사)",
-                            auto_fixed=True, fixed_text="espera..."),
+                            auto_fixed=True, fixed_text="espera...",
+                            original_text="espera......"),
         ]
         # IntegrityError 없이 커밋까지 끝나야 한다 — 예외가 나면 이 테스트가
-        # 실패한다.
+        # 실패한다. _result_with의 기본 pairs target text("texto.....")는 두
+        # violation의 original_text와도 다르게 둬서, repositories.py가 파이프라인
+        # 최종 상태로 되짚어 재구성하는 게 아니라 각 FormatViolation.original_text를
+        # 그대로 쓴다는 걸 구분해서 검증할 수 있게 한다.
         await save_pipeline_result(session, tv.id, _result_with(format_violations=violations))
         await session.commit()
 
@@ -285,8 +294,17 @@ async def test_save_pipeline_result_persists_same_segment_ellipsis_violation_twi
         assert len({r.id for r in rows}) == 2  # PK 충돌 없이 둘 다 저장됨
         assert all(r.category == "formatting" and r.status == "approved" for r in rows)
         by_description = {r.description: r for r in rows}
-        assert by_description["연속 온점 4개 이상 감지 (최초)"].suggested_text == "texto..."
-        assert by_description["연속 온점 4개 이상 감지 (GPT 이후 재검사)"].suggested_text == "espera..."
+        first = by_description["연속 온점 4개 이상 감지 (최초)"]
+        second = by_description["연속 온점 4개 이상 감지 (GPT 이후 재검사)"]
+        assert first.suggested_text == "texto..."
+        assert second.suggested_text == "espera..."
+        # 회귀(important): 각 체크포인트 고유의 original_text가 유지된다 — 둘
+        # 다 파이프라인 최종 pairs 상태("texto.....")로 뭉개지지 않는다.
+        assert first.original_text == "BAD_TRANSLATION texto...."
+        assert second.original_text == "espera......"
+        assert first.original_text != second.original_text
+        assert first.original_text != "texto....."
+        assert second.original_text != "texto....."
 
 
 @pytest.mark.asyncio

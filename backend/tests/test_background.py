@@ -2,8 +2,9 @@ import asyncio
 from datetime import datetime
 from unittest.mock import patch
 import pytest
+from sqlalchemy import select
 from app.db import engine, async_session
-from app.models import Base, Title, Episode, TargetVersion
+from app.models import Base, Title, Episode, TargetVersion, FindingRow
 from app import background
 
 TARGET_SRT = """1
@@ -97,6 +98,21 @@ async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_
         tv = await session.get(TargetVersion, tv_id)
         assert tv.status == "review"
         assert tv.error_message is None
+
+        # 회귀(important, 후속 리뷰): 두 finding의 original_text가 파이프라인
+        # 최종 상태 하나로 뭉개지지 않고 각 체크포인트 고유의 "고치기 전" 텍스트를
+        # 유지해야 한다. 최초 체크포인트는 Claude/GPT 이전 원문("BAD_TRANSLATION
+        # aquí...."가 온점 자동보정된 "BAD_TRANSLATION aquí..."), 두 번째(S4
+        # 최종 재체크)는 GPT가 늘어뜨린 뒤("espera......") 값이어야 하며 서로
+        # 달라야 한다. 최종 pair 텍스트("espera...") 하나로 재구성됐다면 이
+        # 검증이 실패한다.
+        rows = (await session.execute(
+            select(FindingRow).where(FindingRow.target_version_id == tv_id,
+                                      FindingRow.category == "formatting")
+        )).scalars().all()
+        assert len(rows) == 2
+        original_texts = {r.original_text for r in rows}
+        assert original_texts == {"BAD_TRANSLATION aquí....", "espera......"}
 
 
 @pytest.mark.asyncio

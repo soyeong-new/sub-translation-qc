@@ -22,6 +22,7 @@ def check_line_length(pairs: List[AlignedPair]) -> List[FormatViolation]:
             violations.append(FormatViolation(
                 segment_id=pair.id, rule="line_length",
                 detail=f"{len(lines)}줄, 최대 줄 길이 {max(len(ln) for ln in lines)}자",
+                original_text=pair.target.text,
             ))
     return violations
 
@@ -44,5 +45,11 @@ def check_ellipsis(pairs: List[AlignedPair]) -> List[FormatViolation]:
                 segment_id=pair.id, rule="ellipsis",
                 detail="연속 온점 4개 이상 감지",
                 auto_fixed=True, fixed_text=fixed,
+                # 이 체크가 호출된 시점의 텍스트를 스냅샷으로 남긴다. 파이프라인은
+                # 이 함수를 여러 체크포인트(최초, GPT 이후 최종 재체크)에서
+                # 호출하므로, 나중에 다른 시점의 최종 텍스트로부터 되짚어
+                # 재구성하면 이 체크포인트에서 실제로 무엇이 "고치기 전"이었는지가
+                # 사라진다.
+                original_text=pair.target.text,
             ))
     return violations
