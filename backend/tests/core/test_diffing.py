@@ -53,3 +53,19 @@ def test_apply_corrections_leaves_unmatched_pairs_untouched():
     pairs = [_pair("p1", "original")]
     apply_corrections(pairs, [{"segment_id": "other", "corrected_text": "updated"}])
     assert pairs[0].target.text == "original"
+
+
+def test_apply_corrections_uses_first_correction_for_duplicate_segment_id():
+    """findings_from_corrections는 중복 segment_id에서 첫 번째 correction을
+    채택한다(test_findings_from_corrections_skips_duplicate_segment_id 참고).
+    apply_corrections가 다른 규칙(예: 마지막 값 우선)을 쓰면 검수자가 보는
+    finding.suggested_text와 실제로 반영되는 pair.target.text가 서로 다른
+    correction에서 나와 어긋난다 — 두 함수는 반드시 같은 correction을 골라야
+    한다."""
+    pairs = [_pair("p1", "hola")]
+    corrections = [
+        {"segment_id": "p1", "category": "translation", "corrected_text": "a", "description": "1"},
+        {"segment_id": "p1", "category": "translation", "corrected_text": "b", "description": "2"},
+    ]
+    apply_corrections(pairs, corrections)
+    assert pairs[0].target.text == "a"

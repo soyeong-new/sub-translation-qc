@@ -56,6 +56,50 @@ async def test_analyze_and_save_sets_status_review_on_success(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_segment(
+        tmp_path, monkeypatch):
+    """회귀 테스트(critical): GPT 2차가 문장을 늘리며 이미 온점 자동보정을 거친
+    세그먼트에 새 온점(4개 이상)을 만들면, 최초 체크와 GPT 이후 최종 재체크가
+    같은 segment_id에 대해 "ellipsis" FormatViolation을 하나씩 만든다.
+    repositories.py가 이 (segment_id, rule) 조합을 구분하지 못했을 때는
+    두 번째 저장에서 findings_pkey UNIQUE 제약을 위반해 save_pipeline_result가
+    IntegrityError를 던졌고, analyze_and_save의 except Exception이 그걸 잡아
+    전체 target_version을 failed로 처리했다 — STT + Claude/GPT 두 LLM 패스
+    비용이 이미 다 든 뒤에 결과 전체를 날리는 버그였다. run_pipeline의 in-memory
+    반환값만 보는 test_pipeline.py의 assertion은 이 버그를 잡지 못한다 —
+    실제로 save_pipeline_result를 거쳐야 재현된다. 이 테스트는 background.
+    analyze_and_save를 실제로 실행해 DB까지 거친 뒤 status가 "review"로
+    끝나는지 (즉, IntegrityError 없이 두 finding이 모두 저장됐는지) 확인한다."""
+    from app.providers.mock import MockProvider
+
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION aquí....\n", encoding="utf-8")
+
+    async def _gpt_introduces_ellipsis(self, pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "translation",
+                  "corrected_text": "espera......", "description": "GPT가 늘어뜨림"}]
+
+    # get_provider()가 매번 새 MockProvider 인스턴스를 만들므로, 인스턴스가
+    # 아니라 클래스에 패치해야 analyze_and_save 내부에서 실제로 쓰이는 provider
+    # 에도 적용된다.
+    monkeypatch.setattr(MockProvider, "verify_and_refine", _gpt_introduces_ellipsis)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.delete_original_video", return_value=None):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "review"
+        assert tv.error_message is None
+
+
+@pytest.mark.asyncio
 async def test_analyze_and_save_sets_status_failed_on_exception(monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")

@@ -250,6 +250,46 @@ async def test_save_pipeline_result_persists_format_violations_as_findings():
 
 
 @pytest.mark.asyncio
+async def test_save_pipeline_result_persists_same_segment_ellipsis_violation_twice():
+    """회귀 테스트(critical): 같은 세그먼트가 온점 위반으로 두 번 걸리면(최초
+    체크에서 한 번, GPT 2차 이후 최종 재체크에서 또 한 번 — pipeline.py가 GPT의
+    재작성이 새 온점을 만들 수 있어 재검사한다) FormatViolation 두 개가 같은
+    (segment_id, rule) 조합을 갖는다. 예전 구현은 id를
+    f"finding_{segment_id}_formatting_{rule}"로만 만들어 두 번째 저장 시
+    findings_pkey UNIQUE 제약을 위반했고, save_pipeline_result가 던진
+    IntegrityError를 background.analyze_and_save가 잡아 전체 target_version을
+    failed로 처리했다 — STT + Claude/GPT 두 패스 비용이 전부 날아가는 버그였다.
+    이 테스트는 save_pipeline_result가 예외 없이 두 finding을 모두(서로 다른
+    PK로) 저장하는지 직접 검증한다."""
+    async with async_session() as session:
+        title = Title(name="Movie D", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+
+        violations = [
+            FormatViolation(segment_id="pair_1", rule="ellipsis",
+                            detail="연속 온점 4개 이상 감지 (최초)",
+                            auto_fixed=True, fixed_text="texto..."),
+            FormatViolation(segment_id="pair_1", rule="ellipsis",
+                            detail="연속 온점 4개 이상 감지 (GPT 이후 재검사)",
+                            auto_fixed=True, fixed_text="espera..."),
+        ]
+        # IntegrityError 없이 커밋까지 끝나야 한다 — 예외가 나면 이 테스트가
+        # 실패한다.
+        await save_pipeline_result(session, tv.id, _result_with(format_violations=violations))
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert len(rows) == 2
+        assert len({r.id for r in rows}) == 2  # PK 충돌 없이 둘 다 저장됨
+        assert all(r.category == "formatting" and r.status == "approved" for r in rows)
+        by_description = {r.description: r for r in rows}
+        assert by_description["연속 온점 4개 이상 감지 (최초)"].suggested_text == "texto..."
+        assert by_description["연속 온점 4개 이상 감지 (GPT 이후 재검사)"].suggested_text == "espera..."
+
+
+@pytest.mark.asyncio
 async def test_save_pipeline_result_persists_finding_model():
     async with async_session() as session:
         title = Title(name="Test Movie", type="movie", created_at=datetime.now())

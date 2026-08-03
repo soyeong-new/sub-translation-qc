@@ -139,7 +139,14 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     line_length_violations = check_line_length(pairs)
     safety_net_findings = await shrink_violating_lines(
         pairs, line_length_violations, provider, target_version_id)
-    format_violations = ellipsis_violations + final_ellipsis_violations + line_length_violations
+    # line_length_violations는 여기 담아 반환하지 않는다 — shrink_violating_lines가
+    # 이미 텍스트를 줄이고 그 결과를 category="formatting" Finding으로 반환했다.
+    # 그런데도 여기 다시 담으면 repositories.py가 "이미 줄어든 뒤" 텍스트를
+    # original_text로 삼아 별도의 pending formatting finding을 하나 더 만든다 —
+    # 검수자에게 사실과 다른(더 이상 위반이 아닌) 원문을 보여주는 중복 레코드다.
+    # 온점 위반은 safety_net 같은 별도 Finding 생성 경로가 없는(규칙 기반
+    # 자동보정이 전부인) 경우라 여기서 그대로 반환해야 한다.
+    format_violations = ellipsis_violations + final_ellipsis_violations
 
     return {
         "pairs": pairs,

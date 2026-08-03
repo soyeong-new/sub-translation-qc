@@ -57,11 +57,21 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
     # 않는다. category="formatting" FindingRow로 변환해 검수 UI가 다른 카테고리와
     # 동일하게 다룰 수 있게 한다. 한 세그먼트에서 ellipsis/line_length가 동시에
     # 발생할 수 있으므로(온점 보정 후 줄 길이를 다시 재기 때문) id에 rule을 포함해
-    # PK 충돌을 막는다.
+    # PK 충돌을 막는다. 그런데 같은 (segment_id, rule) 조합조차 두 번 이상 나올 수
+    # 있다 — 온점은 최초 체크와 GPT 2차 이후 최종 재체크, 이렇게 두 지점에서 각각
+    # 검사되므로 같은 세그먼트가 두 시점 모두에서 걸리면 rule까지 같아서 이전
+    # 방식으로는 PK가 충돌했다(translation_review.py가 같은 문제를 겪었던 것과
+    # 동일한 패턴). (segment_id, rule) 조합별 등장 횟수를 세어 두 번째부터는
+    # _2, _3... 접미사를 붙인다 — 흔한 경우(조합당 1개)는 기존 id 형식이 유지된다.
     target_text_by_pair = {
         p.id: (p.target.text if p.target else "") for p in result["pairs"]
     }
+    format_violation_occurrences: dict = {}
     for v in result.get("format_violations", []):
+        dedup_key = (v.segment_id, v.rule)
+        format_violation_occurrences[dedup_key] = format_violation_occurrences.get(dedup_key, 0) + 1
+        ordinal = format_violation_occurrences[dedup_key]
+        ordinal_suffix = f"_{ordinal}" if ordinal > 1 else ""
         # 자동보정된 위반(온점 4개 이상)은 판단 여지가 없는 기계적 규칙이라
         # 파이프라인이 이미 텍스트에 적용해 놓은 상태다. 검수자가 결정할 것이
         # 남아 있지 않으므로 대기열에 쌓아 두지 않고 바로 approved로 확정한다.
@@ -70,7 +80,7 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
         # pending으로 남겨 검수자에게 넘긴다.
         suggested_text = v.fixed_text if v.auto_fixed else ""
         session.add(FindingRow(
-            id=_ns(target_version_id, f"finding_{v.segment_id}_formatting_{v.rule}"),
+            id=_ns(target_version_id, f"finding_{v.segment_id}_formatting_{v.rule}{ordinal_suffix}"),
             target_version_id=target_version_id,
             segment_id=_ns(target_version_id, v.segment_id),
             category="formatting", description=v.detail,
