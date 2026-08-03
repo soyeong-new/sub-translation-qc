@@ -26,8 +26,6 @@ def test_unknown_provider_raises(monkeypatch):
 
 def test_live_provider_selected_when_configured(monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "live")
-    monkeypatch.setenv("GEMINI_API_KEY", "g")
-    monkeypatch.setenv("GEMINI_MODEL", "gm")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "c")
     monkeypatch.setenv("CLAUDE_MODEL", "cm")
     monkeypatch.setenv("OPENAI_API_KEY", "o")
@@ -38,6 +36,8 @@ def test_live_provider_selected_when_configured(monkeypatch):
 
 def test_live_provider_raises_when_api_key_missing(monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "live")
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "o")
+    monkeypatch.setenv("GPT_MODEL", "om")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ProviderNotConfiguredError):
         get_provider()

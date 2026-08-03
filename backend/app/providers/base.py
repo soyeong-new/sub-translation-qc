@@ -72,7 +72,6 @@ def get_provider() -> ModelProvider:
     if name == "live":
         from app.providers.live import LiveModelProvider
         required = {
-            "GEMINI_API_KEY": None, "GEMINI_MODEL": None,
             "ANTHROPIC_API_KEY": None, "CLAUDE_MODEL": None,
             "OPENAI_API_KEY": None, "GPT_MODEL": None,
         }
@@ -82,9 +81,9 @@ def get_provider() -> ModelProvider:
                 raise ProviderNotConfiguredError(f"{key} 환경변수가 설정되지 않았습니다.")
             required[key] = value
         return LiveModelProvider(
-            gemini_api_key=required["GEMINI_API_KEY"], gemini_model=required["GEMINI_MODEL"],
             claude_api_key=required["ANTHROPIC_API_KEY"], claude_model=required["CLAUDE_MODEL"],
             gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
+            gpt_transcribe_model=os.getenv("GPT_TRANSCRIBE_MODEL", "whisper-1"),
         )
     raise ProviderNotConfiguredError(
         f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}. "

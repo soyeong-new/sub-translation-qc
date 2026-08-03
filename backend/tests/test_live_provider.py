@@ -5,12 +5,11 @@ from app.providers.live import LiveModelProvider
 
 def _make_provider() -> LiveModelProvider:
     provider = LiveModelProvider(
-        gemini_api_key="g", gemini_model="gm",
         claude_api_key="c", claude_model="cm",
         gpt_api_key="o", gpt_model="om",
     )
-    provider._gemini.transcribe = AsyncMock(return_value=[{"start": 0.0, "end": 1.0, "text": "안녕"}])
-    provider._gemini.analyze_characters = AsyncMock(
+    provider._gpt.transcribe = AsyncMock(return_value=[{"start": 0.0, "end": 1.0, "text": "안녕"}])
+    provider._gpt.analyze_characters = AsyncMock(
         return_value={"characters": [], "relationships": []}
     )
     provider._claude.correct_primary = AsyncMock(
@@ -26,14 +25,14 @@ def _make_provider() -> LiveModelProvider:
 
 
 @pytest.mark.asyncio
-async def test_transcribe_delegates_to_gemini():
+async def test_transcribe_delegates_to_gpt():
     provider = _make_provider()
     result = await provider.transcribe("/fake/audio.wav")
     assert result == [{"start": 0.0, "end": 1.0, "text": "안녕"}]
 
 
 @pytest.mark.asyncio
-async def test_analyze_characters_delegates_to_gemini():
+async def test_analyze_characters_delegates_to_gpt():
     provider = _make_provider()
     result = await provider.analyze_characters([], {})
     assert result == {"characters": [], "relationships": []}
