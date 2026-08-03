@@ -15,9 +15,13 @@ from app.models import (
     SttCorrection, ExportRow,
 )
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
+from app.core.requery import requery_finding, RequeryNotSupportedError
 from app.core.uploads import (
     save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, MEDIA_ROOT,
 )
+from app.language_profiles.loader import load_profile
+from app.knowledge.loader import load_knowledge
+from app.providers.base import get_provider
 from app.repositories import get_findings as repo_get_findings
 from app.background import analyze_and_save
 
@@ -222,6 +226,38 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
             finding.final_text = finding.suggested_text
         await session.commit()
         return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
+
+
+class RequeryIn(BaseModel):
+    instruction: str
+    reviewer_name: str
+
+
+@app.post("/findings/{finding_id}/requery")
+async def requery(finding_id: str, payload: RequeryIn):
+    async with async_session() as session:
+        finding = await session.get(FindingRow, finding_id)
+        if finding is None:
+            raise HTTPException(404, "finding not found")
+        segment = await session.get(Segment, finding.segment_id)
+        if segment is None:
+            raise HTTPException(404, "segment not found")
+        tv = await session.get(TargetVersion, finding.target_version_id)
+        profile = load_profile(tv.target_language, tv.variant) if tv else {}
+
+        provider = get_provider()
+        knowledge = load_knowledge()
+        try:
+            new_suggested_text = await requery_finding(
+                finding, segment, payload.instruction, provider, knowledge, profile)
+        except RequeryNotSupportedError as exc:
+            raise HTTPException(400, str(exc))
+
+        finding.suggested_text = new_suggested_text
+        finding.status = "pending"
+        finding.description = f"[다시 질문: {payload.instruction}] {finding.description}"
+        await session.commit()
+        return {"id": finding.id, "status": finding.status, "suggested_text": finding.suggested_text}
 
 
 class ConfirmGenderIn(BaseModel):
