@@ -2,9 +2,11 @@
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
@@ -14,13 +16,16 @@ from app.models import (
 )
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
 from app.core.uploads import (
-    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS,
+    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, MEDIA_ROOT,
 )
 from app.repositories import get_findings as repo_get_findings
 from app.background import analyze_and_save
 
 
 app = FastAPI(title="Sub Translation QC ES")
+
+(MEDIA_ROOT / "video_proxy").mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=str(MEDIA_ROOT)), name="media")
 
 
 @app.on_event("startup")
@@ -87,7 +92,12 @@ async def get_target_version(target_version_id: str):
         tv = await session.get(TargetVersion, target_version_id)
         if tv is None:
             raise HTTPException(404, "target version not found")
-        return {"id": tv.id, "status": tv.status, "error_message": tv.error_message}
+        video_proxy_url = (
+            f"/media/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT)}"
+            if tv.video_proxy_path else None
+        )
+        return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
+                "video_proxy_url": video_proxy_url}
 
 
 class RunAnalysisIn(BaseModel):
@@ -305,6 +315,10 @@ async def export_target_version(target_version_id: str):
             finding_count=stats.finding_count,
             reflection_rate=stats.reflection_rate,
         ))
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is not None and tv.video_proxy_path:
+            Path(tv.video_proxy_path).unlink(missing_ok=True)
+            tv.video_proxy_path = None
         await session.commit()
 
     return {

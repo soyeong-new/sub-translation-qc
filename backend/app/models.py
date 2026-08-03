@@ -55,6 +55,7 @@ class TargetVersion(Base):
     variant: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="analyzing")
     error_message: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    video_proxy_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class Segment(Base):
