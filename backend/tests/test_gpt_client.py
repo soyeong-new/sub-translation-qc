@@ -4,7 +4,7 @@ import pytest
 from app.providers.gpt_client import GptClient
 
 
-def _make_client_with_fake_sdk(response_text: str) -> GptClient:
+def _make_client_with_fake_sdk(response_text) -> GptClient:
     client = GptClient(api_key="fake", model="gpt-test")
     fake_message = MagicMock()
     fake_message.content = response_text
@@ -17,72 +17,54 @@ def _make_client_with_fake_sdk(response_text: str) -> GptClient:
 
 
 @pytest.mark.asyncio
-async def test_review_translation_parses_json_array():
-    payload = [{"segment_id": "p1", "category": "translation",
-                "description": "오역", "suggested_text": "texto", "confidence": 0.8}]
-    client = _make_client_with_fake_sdk(json.dumps({"findings": payload}))
-    result = await client.review_translation(
-        [{"id": "p1", "korean_text": "안녕", "target_text": "hola"}],
-        "지식베이스", {}, "줄당 50자 이내",
+async def test_verify_and_refine_sends_current_text_and_original_reference():
+    payload = {"findings": [{"segment_id": "p1", "category": "translation",
+                              "corrected_text": "texto final", "description": "정확성 보완"}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.verify_and_refine(
+        pairs=[{"id": "p1", "korean_text": "안녕", "current_text": "hola corregido"}],
+        original_target_by_id={"p1": "hola original"},
+        profile={}, knowledge="", format_constraint="줄당 50자 이내",
     )
-    assert result == payload
+    assert result == payload["findings"]
+    sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "hola corregido" in sent_user
+    assert "hola original" in sent_user
 
 
 @pytest.mark.asyncio
-async def test_review_translation_raises_on_malformed_json():
+async def test_verify_and_refine_falls_back_to_current_text_when_no_original_recorded():
+    payload = {"findings": []}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    await client.verify_and_refine(
+        pairs=[{"id": "p1", "korean_text": "안녕", "current_text": "hola sin cambios"}],
+        original_target_by_id={}, profile={}, knowledge="", format_constraint="",
+    )
+    sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert sent_user.count("hola sin cambios") == 2
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_includes_extra_instruction_in_prompt_when_given():
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], original_target_by_id={}, profile={}, knowledge="", format_constraint="",
+        extra_instruction="직역투를 더 강하게 잡아줘",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "직역투를 더 강하게 잡아줘" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
-        await client.review_translation([], "", {}, "")
+        await client.verify_and_refine([], {}, {}, "", "")
 
 
 @pytest.mark.asyncio
-async def test_review_translation_raises_on_empty_choices():
+async def test_verify_and_refine_raises_on_empty_choices():
     client = _make_client_with_fake_sdk("무시됨")
     client._sdk_client.chat.completions.create.return_value.choices = []
     with pytest.raises(ValueError):
-        await client.review_translation([], "", {}, "")
-
-
-@pytest.mark.asyncio
-async def test_review_translation_raises_on_none_content():
-    client = _make_client_with_fake_sdk("무시됨")
-    client._sdk_client.chat.completions.create.return_value.choices[0].message.content = None
-    with pytest.raises(ValueError):
-        await client.review_translation([], "", {}, "")
-
-
-@pytest.mark.asyncio
-async def test_check_sensitivity_parses_json_array():
-    payload = [{"segment_id": "p1", "description": "민감어 문맥 확인 필요", "severity": "medium"}]
-    client = _make_client_with_fake_sdk(json.dumps({"findings": payload}))
-    result = await client.check_sensitivity(
-        [{"id": "p1", "target_text": "qué mierda"}], [{"segment_id": "p1", "term": "mierda"}],
-    )
-    assert result == payload
-
-
-@pytest.mark.asyncio
-async def test_check_sensitivity_raises_on_empty_choices():
-    client = _make_client_with_fake_sdk("무시됨")
-    client._sdk_client.chat.completions.create.return_value.choices = []
-    with pytest.raises(ValueError):
-        await client.check_sensitivity([], [])
-
-
-@pytest.mark.asyncio
-async def test_check_sensitivity_raises_on_none_content():
-    client = _make_client_with_fake_sdk("무시됨")
-    client._sdk_client.chat.completions.create.return_value.choices[0].message.content = None
-    with pytest.raises(ValueError):
-        await client.check_sensitivity([], [])
-
-
-@pytest.mark.asyncio
-async def test_review_translation_raises_when_findings_is_not_a_list():
-    """모델이 {"findings": {...}}처럼 findings를 리스트가 아닌 값으로 돌려주면,
-    검증 없이 그대로 반환할 경우 ensemble.py의 `for item in result:`에서
-    TypeError가 새어나가 job 전체가 API 비용을 다 쓴 뒤 크래시한다. 다른
-    malformed-response 케이스와 동일하게 깔끔한 ValueError로 막아야 한다."""
-    client = _make_client_with_fake_sdk(json.dumps({"findings": {"segment_id": "p1"}}))
-    with pytest.raises(ValueError):
-        await client.review_translation([], "", {}, "")
+        await client.verify_and_refine([], {}, {}, "", "")
