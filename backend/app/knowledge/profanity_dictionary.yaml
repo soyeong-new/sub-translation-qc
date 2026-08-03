@@ -1,0 +1,3 @@
+# 뻔한 비속어 자동 교정 사전 — LLM 없이 바로 치환한다. 여기 없는 애매한 후보는
+# sensitive_terms.yaml의 매칭 결과가 Claude 1차로 넘어간다.
+entries: []

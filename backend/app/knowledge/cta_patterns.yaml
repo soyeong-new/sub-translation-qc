@@ -1,0 +1,5 @@
+# 구독/좋아요/알림설정 등 CTA(Call To Action) 패턴 — 정규식
+patterns:
+  - '구독.{0,5}좋아요'
+  - '알림.{0,3}설정'
+  - '\bsubscribe\b'
