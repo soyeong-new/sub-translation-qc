@@ -44,7 +44,9 @@ async def test_analyze_and_save_sets_status_review_on_success(tmp_path, monkeypa
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
 
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"):
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.delete_original_video", return_value=None):
         await background.analyze_and_save(tv_id, str(srt_path))
 
     async with async_session() as session:

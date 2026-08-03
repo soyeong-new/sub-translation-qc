@@ -29,7 +29,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
         provider = get_provider()
         result = await asyncio.wait_for(
             run_pipeline(
-                korean_audio_path=episode.video_path,
+                video_path=episode.video_path,
                 target_srt_path=target_srt_path,
                 language=tv.target_language, variant=tv.variant,
                 target_version_id=target_version_id, provider=provider,
@@ -41,6 +41,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             await save_pipeline_result(session, target_version_id, result)
             tv = await session.get(TargetVersion, target_version_id)
             tv.status = "review"
+            tv.video_proxy_path = result.get("video_proxy_path")
             await session.commit()
     except asyncio.TimeoutError:
         logger.warning("analyze_and_save 타임아웃 (target_version_id=%s)", target_version_id)

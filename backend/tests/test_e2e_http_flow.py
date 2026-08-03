@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.main import app
 from app.db import engine, async_session
 from app.models import Base, Segment, ExportRow
+from app.core.uploads import MEDIA_ROOT
 
 # MockProvider.transcribe는 한국어 세그먼트를 [0.0, 2.0] 하나만 돌려준다.
 # 아래 SRT의 대상언어 큐는 어느 것도 그 구간과 겹치지 않으므로:
@@ -50,8 +51,11 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
 
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy.mp4")
     transport = ASGITransport(app=app)
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"):
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.core.pipeline.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1) 작품
             r = await client.post("/titles", json={"name": "The Peach Tree", "type": "movie"})
