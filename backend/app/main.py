@@ -29,11 +29,14 @@ from app.background import analyze_and_save, extract_chart_and_save
 app = FastAPI(title="Sub Translation QC ES")
 
 (MEDIA_ROOT / "video_proxy").mkdir(parents=True, exist_ok=True)
-# 프록시 디렉터리만 마운트한다 — media/ 전체를 마운트하면 원본 업로드 영상
+(MEDIA_ROOT / "chart_image").mkdir(parents=True, exist_ok=True)
+# 프록시/이미지 디렉터리만 마운트한다 — media/ 전체를 마운트하면 원본 업로드 영상
 # (media/video/)과 원본 SRT(media/srt/)까지 인증 없이 그대로 서빙돼버린다.
-# 검수 화면이 실제로 필요로 하는 건 저화질 프록시뿐이다.
+# 검수 화면이 실제로 필요로 하는 건 저화질 프록시와 인물관계도 이미지뿐이다.
 app.mount("/media/video_proxy", StaticFiles(directory=str(MEDIA_ROOT / "video_proxy")),
           name="media_video_proxy")
+app.mount("/media/chart_image", StaticFiles(directory=str(MEDIA_ROOT / "chart_image")),
+          name="media_chart_image")
 
 
 @app.on_event("startup")
@@ -105,6 +108,78 @@ async def attach_chart_image(title_id: str, payload: ChartImageIn, request: Requ
     request.app.state.background_tasks.add(task)
     task.add_done_callback(request.app.state.background_tasks.discard)
     return {"status": "processing"}
+
+
+@app.get("/titles")
+async def list_titles():
+    async with async_session() as session:
+        rows = (await session.execute(select(Title))).scalars().all()
+        return [
+            {"id": t.id, "name": t.name, "type": t.type,
+             "chart_extraction_status": t.chart_extraction_status}
+            for t in rows
+        ]
+
+
+@app.get("/titles/{title_id}")
+async def get_title(title_id: str):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        chart_image_url = None
+        if title.chart_image_path:
+            chart_path = Path(title.chart_image_path)
+            chart_dir = MEDIA_ROOT / "chart_image"
+            if chart_path.is_relative_to(chart_dir):
+                chart_image_url = f"/media/chart_image/{chart_path.relative_to(chart_dir)}"
+        return {
+            "id": title.id, "name": title.name, "type": title.type,
+            "chart_extraction_status": title.chart_extraction_status,
+            "chart_extraction_error": title.chart_extraction_error,
+            "chart_image_url": chart_image_url,
+        }
+
+
+@app.get("/titles/{title_id}/characters")
+async def list_title_characters(title_id: str):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        rows = (await session.execute(
+            select(Character).where(Character.title_id == title_id)
+        )).scalars().all()
+        return [
+            {"id": c.id, "label": c.label, "confirmed_gender": c.confirmed_gender,
+             "suggested_gender": c.suggested_gender, "source": c.source}
+            for c in rows
+        ]
+
+
+@app.get("/titles/{title_id}/relationships")
+async def list_title_relationships(title_id: str):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        rows = (await session.execute(
+            select(Relationship).where(Relationship.title_id == title_id)
+        )).scalars().all()
+        result = []
+        for r in rows:
+            speaker = await session.get(Character, r.speaker_character_id)
+            addressee = await session.get(Character, r.addressee_character_id)
+            result.append({
+                "id": r.id,
+                "speaker_character_id": r.speaker_character_id,
+                "addressee_character_id": r.addressee_character_id,
+                "speaker_label": speaker.label if speaker else None,
+                "addressee_label": addressee.label if addressee else None,
+                "relationship_type": r.relationship_type,
+                "confirmed_formality_level": r.confirmed_formality_level,
+            })
+        return result
 
 
 @app.post("/episodes/{episode_id}/target-versions")
