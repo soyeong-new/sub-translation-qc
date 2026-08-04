@@ -279,3 +279,43 @@ async def test_pipeline_gpt_original_reference_reflects_post_pretreatment_text(
     original_text = next(iter(captured["original_target_by_id"].values()))
     assert "mierda" not in original_text
     assert "[삐-]" in original_text
+
+
+@pytest.mark.asyncio
+async def test_pipeline_returns_raw_korean_segments_for_caching(tmp_path):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+        )
+
+    assert result["korean_segments_raw"] == [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generation(tmp_path):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy") as mock_proxy:
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+            cached_korean_segments=[{"start": 0.0, "end": 2.0, "text": "캐시된 대사"}],
+            cached_video_proxy_path="/fake/cached_proxy.mp4",
+        )
+
+    mock_extract.assert_not_called()
+    mock_proxy.assert_not_called()
+    assert result["video_proxy_path"] == "/fake/cached_proxy.mp4"
+    korean_pair = next(p for p in result["pairs"] if p.korean is not None)
+    assert korean_pair.korean.text == "캐시된 대사"

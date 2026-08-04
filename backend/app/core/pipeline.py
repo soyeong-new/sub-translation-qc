@@ -27,7 +27,9 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         language: str, variant: str, target_version_id: str,
                         provider: ModelProvider,
                         prior_characters: Optional[list] = None,
-                        prior_relationships: Optional[list] = None) -> dict:
+                        prior_relationships: Optional[list] = None,
+                        cached_korean_segments: Optional[list] = None,
+                        cached_video_proxy_path: Optional[str] = None) -> dict:
     """design §전체 파이프라인의 오케스트레이터. S1(사전/규칙) → S2(Claude 1차)
     → S3(GPT 2차) → S4(최종 안전망) 순서로 순차 실행하며, 각 단계의 diff가
     findings가 된다. 오디오/영상 프록시는 STT 직후 한 번만 생성한다.
@@ -39,39 +41,47 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     `video_path`를 결과에 그대로 담아 돌려준다."""
     target_segments = load_srt(target_srt_path)
 
-    # extract_audio는 subprocess.run(check=True)로 ffmpeg을 동기 호출하는,
-    # 잠재적으로 몇 분씩 걸리는 CPU 바운드 작업이다. asyncio.to_thread로 감싸지
-    # 않으면 이 코루틴이 FastAPI 프로세스의 이벤트 루프 자체를 막아버려 헬스체크나
-    # 다른 요청까지 전부 멈춘다 — 아래 generate_video_proxy와 동일한 이유.
-    wav_path = await asyncio.to_thread(extract_audio, video_path)
-    try:
-        # STT(네트워크 호출)와 영상 저화질 프록시 생성(로컬 ffmpeg, CPU 바운드)은
-        # 서로 결과를 주고받지 않는 독립적인 작업이라 동시에 실행한다 — STT를
-        # 기다리는 동안 영상 트랜스코딩도 같이 진행되어 전체 대기 시간이 줄어든다.
-        # generate_video_proxy는 동기 함수라 asyncio.to_thread로 감싸 이벤트
-        # 루프를 막지 않게 한다.
-        #
-        # return_exceptions=True로 두 작업의 완료를 항상 기다린다 — to_thread로
-        # 감싼 동기 함수는 취소할 수 없으므로, transcribe가 먼저 실패해도
-        # generate_video_proxy는 백그라운드 스레드에서 계속 돌아 프록시 파일을
-        # 만들어낼 수 있다. 예외를 즉시 전파(gather 기본 동작)하면 그 파일이
-        # 아무도 참조하지 않는 고아로 남는다 — 아래에서 결과를 직접 검사해
-        # 그런 파일이 생겼으면 지우고 나서 실패를 전파한다.
-        korean_raw, video_proxy_path = await asyncio.gather(
-            provider.transcribe(wav_path),
-            asyncio.to_thread(generate_video_proxy, video_path),
-            return_exceptions=True,
-        )
-    finally:
-        # STT가 WAV를 다 읽은 뒤(성공/실패 무관)에는 더 이상 필요 없다. 2시간
-        # 분량 영화의 16kHz mono WAV는 ~230MB에 달해, 지우지 않으면 영상
-        # 프록시 기능의 스토리지 절감 취지가 무색해진다.
-        Path(wav_path).unlink(missing_ok=True)
+    if cached_korean_segments is not None and cached_video_proxy_path is not None:
+        # Episode 단위 캐시 재사용 — 같은 화를 다른 대상언어로 다시 분석하거나
+        # 재시도할 때, 이미 든 STT 비용을 또 쓰지 않는다. 최초 성공 후에는
+        # 원본 영상이 삭제되므로(background.py), 캐시가 없으면 재시도 자체가
+        # 불가능해질 수 있다는 점에서도 중요하다.
+        korean_raw = cached_korean_segments
+        video_proxy_path = cached_video_proxy_path
+    else:
+        # extract_audio는 subprocess.run(check=True)로 ffmpeg을 동기 호출하는,
+        # 잠재적으로 몇 분씩 걸리는 CPU 바운드 작업이다. asyncio.to_thread로 감싸지
+        # 않으면 이 코루틴이 FastAPI 프로세스의 이벤트 루프 자체를 막아버려 헬스체크나
+        # 다른 요청까지 전부 멈춘다 — 아래 generate_video_proxy와 동일한 이유.
+        wav_path = await asyncio.to_thread(extract_audio, video_path)
+        try:
+            # STT(네트워크 호출)와 영상 저화질 프록시 생성(로컬 ffmpeg, CPU 바운드)은
+            # 서로 결과를 주고받지 않는 독립적인 작업이라 동시에 실행한다 — STT를
+            # 기다리는 동안 영상 트랜스코딩도 같이 진행되어 전체 대기 시간이 줄어든다.
+            # generate_video_proxy는 동기 함수라 asyncio.to_thread로 감싸 이벤트
+            # 루프를 막지 않게 한다.
+            #
+            # return_exceptions=True로 두 작업의 완료를 항상 기다린다 — to_thread로
+            # 감싼 동기 함수는 취소할 수 없으므로, transcribe가 먼저 실패해도
+            # generate_video_proxy는 백그라운드 스레드에서 계속 돌아 프록시 파일을
+            # 만들어낼 수 있다. 예외를 즉시 전파(gather 기본 동작)하면 그 파일이
+            # 아무도 참조하지 않는 고아로 남는다 — 아래에서 결과를 직접 검사해
+            # 그런 파일이 생겼으면 지우고 나서 실패를 전파한다.
+            korean_raw, video_proxy_path = await asyncio.gather(
+                provider.transcribe(wav_path),
+                asyncio.to_thread(generate_video_proxy, video_path),
+                return_exceptions=True,
+            )
+        finally:
+            # STT가 WAV를 다 읽은 뒤(성공/실패 무관)에는 더 이상 필요 없다. 2시간
+            # 분량 영화의 16kHz mono WAV는 ~230MB에 달해, 지우지 않으면 영상
+            # 프록시 기능의 스토리지 절감 취지가 무색해진다.
+            Path(wav_path).unlink(missing_ok=True)
 
-    if isinstance(korean_raw, Exception) or isinstance(video_proxy_path, Exception):
-        if not isinstance(video_proxy_path, Exception) and video_proxy_path:
-            Path(video_proxy_path).unlink(missing_ok=True)
-        raise korean_raw if isinstance(korean_raw, Exception) else video_proxy_path
+        if isinstance(korean_raw, Exception) or isinstance(video_proxy_path, Exception):
+            if not isinstance(video_proxy_path, Exception) and video_proxy_path:
+                Path(video_proxy_path).unlink(missing_ok=True)
+            raise korean_raw if isinstance(korean_raw, Exception) else video_proxy_path
 
     korean_segments = [SegmentText(**s) for s in korean_raw]
 
@@ -198,6 +208,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         "register_questions": register_questions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
+        "korean_segments_raw": korean_raw,
         "findings": (
             pretreatment.findings + claude_findings + gpt_findings + safety_net_findings
         ),

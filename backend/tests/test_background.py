@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 from app.db import engine, async_session
-from app.models import Base, Title, Episode, TargetVersion, FindingRow
+from app.models import Base, Title, Episode, TargetVersion, FindingRow, Segment
 from app import background
 
 TARGET_SRT = """1
@@ -201,3 +201,52 @@ async def test_analyze_and_save_does_not_raise_when_target_version_missing(monke
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     await background.analyze_and_save("does-not-exist", "/nonexistent.srt")
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_persists_stt_cache_on_first_success(tmp_path, monkeypatch):
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        assert episode.stt_cache == {"segments": [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]}
+        assert episode.video_proxy_path == "/fake/proxy.mp4"
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, monkeypatch):
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        episode.stt_cache = {"segments": [{"start": 0.0, "end": 1.0, "text": "캐시된 문장"}]}
+        episode.video_proxy_path = "/fake/cached_proxy.mp4"
+        await session.commit()
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy") as mock_proxy, \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    mock_extract.assert_not_called()
+    mock_proxy.assert_not_called()
+    async with async_session() as session:
+        segs = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id)
+        )).scalars().all()
+        assert any(s.korean_text == "캐시된 문장" for s in segs)
