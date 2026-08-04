@@ -20,6 +20,11 @@ class Title(Base):
     name: Mapped[str] = mapped_column(String)
     type: Mapped[str] = mapped_column(String)  # movie | series
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    chart_image_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # none: 업로드 안 함 | processing: vision 추출 중 | review_needed: 추출 완료, 확인 대기
+    # confirmed: 사람이 검토 완료 | failed: 추출 실패
+    chart_extraction_status: Mapped[str] = mapped_column(String, default="none")
+    chart_extraction_error: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class Episode(Base):
@@ -40,6 +45,11 @@ class Character(Base):
     title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
     label: Mapped[str] = mapped_column(String)
     confirmed_gender: Mapped[str | None] = mapped_column(String, nullable=True)
+    # vision 추출이 제안한 성별(참고용, 확정 아님) — confirmed_gender가 이미 있으면
+    # 덮어쓰지 않는다(save_chart_extraction_result 참고).
+    suggested_gender: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # 이 인물 레코드가 어디서 만들어졌는지: "chart_image" | "manual" | None(기존 파이프라인 생성분)
+    source: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class Relationship(Base):
@@ -49,6 +59,9 @@ class Relationship(Base):
     speaker_character_id: Mapped[str] = mapped_column(ForeignKey("characters.id"))
     addressee_character_id: Mapped[str] = mapped_column(ForeignKey("characters.id"))
     confirmed_formality_level: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 관계 유형(예: "연인", "남매", "직장 상사") — 인물관계도 이미지에서 추출되거나
+    # 사람이 직접 입력. confirmed_formality_level(존댓말/반말)과는 별개 개념이다.
+    relationship_type: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class TargetVersion(Base):

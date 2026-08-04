@@ -53,3 +53,33 @@ async def test_target_versions_table_has_warnings_column():
             lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("target_versions")]
         )
     assert "warnings" in columns
+
+
+@pytest.mark.asyncio
+async def test_titles_table_has_chart_columns():
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("titles")]
+        )
+    assert "chart_image_path" in columns
+    assert "chart_extraction_status" in columns
+    assert "chart_extraction_error" in columns
+
+
+@pytest.mark.asyncio
+async def test_characters_table_has_chart_columns():
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("characters")]
+        )
+    assert "suggested_gender" in columns
+    assert "source" in columns
+
+
+@pytest.mark.asyncio
+async def test_relationships_table_has_relationship_type_column():
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("relationships")]
+        )
+    assert "relationship_type" in columns
