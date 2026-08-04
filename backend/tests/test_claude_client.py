@@ -81,3 +81,43 @@ async def test_shrink_line_raises_on_empty_content():
     client._sdk_client.messages.create.return_value.content = []
     with pytest.raises(ValueError):
         await client.shrink_line("문장", max_chars=50, max_lines=2)
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_uses_profile_language_and_variant_in_prompt():
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.correct_primary(
+        pairs=[], profile={"language": "es", "variant": "LATAM"},
+        characters=[], relationships=[], pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert "es(LATAM)" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_includes_grammar_agreement_instruction_from_profile():
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    profile = {
+        "language": "es", "variant": "LATAM",
+        "grammar_agreement": {"llm_instruction": "형용사 성별 일치를 확인하라"},
+    }
+    await client.correct_primary(
+        pairs=[], profile=profile, characters=[], relationships=[],
+        pending_sensitive_hits=[], knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert "형용사 성별 일치를 확인하라" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_falls_back_when_profile_empty():
+    """profile={}(테스트 더미)로 호출해도 예외 없이 동작해야 한다 — 기존
+    테스트들이 이 계약에 의존한다."""
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.correct_primary(
+        pairs=[], profile={}, characters=[], relationships=[],
+        pending_sensitive_hits=[], knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert "대상언어" in sent_system

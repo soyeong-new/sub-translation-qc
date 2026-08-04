@@ -53,12 +53,18 @@ class GptClient:
         """pairs의 current_text는 1차(사전필터+Claude) 결과가 이미 반영된 상태다.
         original_target_by_id는 그 이전(가장 처음의 QC언어 SRT) 텍스트로,
         "1차 교정자가 뭔가 잘못 고쳤는지" 대조하는 안전장치용 참고 자료다."""
+        language = profile.get("language") or "대상언어"
+        variant = profile.get("variant")
+        language_label = f"{language}({variant})" if variant else language
+        register_instruction = profile.get("register_system", {}).get("llm_instruction", "")
+        naturalness_instruction = profile.get("naturalness_check", {}).get("llm_instruction", "")
+
         enriched = [
             {**p, "original_qc_srt_text": original_target_by_id.get(p["id"], p["current_text"])}
             for p in pairs
         ]
         system = (
-            "너는 한국어-스페인어(LATAM) 자막의 2차(최종) 검수자다. current_text는 "
+            f"너는 한국어-{language_label} 자막의 2차(최종) 검수자다. current_text는 "
             "1차 교정자가 이미 처리한 결과다. korean_text(원문)와 나란히 놓고 다음 "
             "6개 기준으로 검증·교정하라: 번역정확성, 문화맥락, 뉘앙스어조, 화법(존댓말/"
             "반말 일관성), 자연스러운흐름(직역 지양), 함축의미. 특히 자연스러운 흐름은 "
@@ -69,8 +75,12 @@ class GptClient:
             "잘못 바꿨다면 이를 참고해 바로잡아라. 1차 교정이 이미 적절하면 해당 "
             "세그먼트는 결과에서 제외하라. "
             f"{format_constraint} 참고 지식베이스: {knowledge}\n"
-            + _JSON_INSTRUCTION + "\n" + _VERIFY_SCHEMA_INSTRUCTION
         )
+        if register_instruction:
+            system += f"격식 지침: {register_instruction}\n"
+        if naturalness_instruction:
+            system += f"자연스러움 지침: {naturalness_instruction}\n"
+        system += _JSON_INSTRUCTION + "\n" + _VERIFY_SCHEMA_INSTRUCTION
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(enriched, ensure_ascii=False)

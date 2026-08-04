@@ -133,3 +133,41 @@ async def test_analyze_characters_raises_on_empty_choices():
     client._sdk_client.chat.completions.create.return_value.choices = []
     with pytest.raises(ValueError):
         await client.analyze_characters([], {})
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_uses_profile_language_and_variant_in_prompt():
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], original_target_by_id={},
+        profile={"language": "es", "variant": "LATAM"},
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "es(LATAM)" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_includes_naturalness_instruction_from_profile():
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    profile = {
+        "language": "es", "variant": "LATAM",
+        "naturalness_check": {"llm_instruction": "직역투를 한국어 어순과 대조해 찾아라"},
+    }
+    await client.verify_and_refine(
+        pairs=[], original_target_by_id={}, profile=profile,
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "직역투를 한국어 어순과 대조해 찾아라" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_falls_back_when_profile_empty():
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], original_target_by_id={}, profile={},
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "대상언어" in sent_system
