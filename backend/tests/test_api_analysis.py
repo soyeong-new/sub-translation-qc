@@ -186,3 +186,22 @@ async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatc
             r = await client.get(f"/target-versions/{tv_id}")
     assert r.status_code == 200
     assert r.json()["warnings"] == [{"stage": "인물 식별", "message": "인물 식별 API 오류"}]
+
+
+@pytest.mark.asyncio
+async def test_get_target_version_includes_title_id(monkeypatch):
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="review"); session.add(tv)
+        await session.commit()
+        title_id, tv_id = title.id, tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}")
+    assert r.status_code == 200
+    assert r.json()["title_id"] == title_id

@@ -341,12 +341,14 @@ async def get_target_version(target_version_id: str):
         tv = await session.get(TargetVersion, target_version_id)
         if tv is None:
             raise HTTPException(404, "target version not found")
+        episode = await session.get(Episode, tv.episode_id)
         video_proxy_url = (
             f"/media/video_proxy/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT / 'video_proxy')}"
             if tv.video_proxy_path else None
         )
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
-                "video_proxy_url": video_proxy_url, "warnings": tv.warnings or []}
+                "video_proxy_url": video_proxy_url, "warnings": tv.warnings or [],
+                "title_id": episode.title_id if episode else None}
 
 
 class RunAnalysisIn(BaseModel):
