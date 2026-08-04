@@ -65,13 +65,18 @@ export default function TitleListView({ onSelect }) {
   }, []);
 
   useEffect(() => {
-    listLanguageProfiles().then((profiles) => {
-      if (!isMountedRef.current) return;
-      setLanguageProfiles(profiles);
-      if (profiles.length > 0) {
-        setSelectedProfileKey(`${profiles[0].language}_${profiles[0].variant}`);
-      }
-    });
+    listLanguageProfiles()
+      .then((profiles) => {
+        if (!isMountedRef.current) return;
+        setLanguageProfiles(profiles);
+        if (profiles.length > 0) {
+          setSelectedProfileKey(`${profiles[0].language}_${profiles[0].variant}`);
+        }
+      })
+      .catch((err) => {
+        if (!isMountedRef.current) return;
+        setStatus({ kind: "error", message: err.message ?? "언어 목록을 불러오지 못했습니다." });
+      });
   }, []);
 
   function pollUntilDone(targetVersionId) {
