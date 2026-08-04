@@ -131,8 +131,20 @@ async def get_title(title_id: str):
         if title.chart_image_path:
             chart_path = Path(title.chart_image_path)
             chart_dir = MEDIA_ROOT / "chart_image"
-            if chart_path.is_relative_to(chart_dir):
-                chart_image_url = f"/media/chart_image/{chart_path.relative_to(chart_dir)}"
+            # is_relative_to/relative_to는 경로를 lexical하게만 비교하므로 ".."이
+            # 섞인 chart_image_path(검증 없이 저장되는 클라이언트 입력)가 실제로는
+            # chart_dir 밖을 가리켜도 접두사만 보고 통과시킬 수 있다 — resolve() 후
+            # 비교해야 실제 위치 기준으로 안전하게 판단할 수 있다 (language_profiles/
+            # loader.py의 load_profile과 동일한 패턴).
+            try:
+                resolved_path = chart_path.resolve()
+                resolved_dir = chart_dir.resolve()
+                if resolved_path.is_relative_to(resolved_dir):
+                    chart_image_url = f"/media/chart_image/{resolved_path.relative_to(resolved_dir)}"
+            except ValueError:
+                # is_relative_to는 실제로 발생하지 않지만(둘 다 이미 resolve됨),
+                # 방어적으로 다른 드라이브(Windows) 등 예외 상황도 None으로 처리한다.
+                pass
         return {
             "id": title.id, "name": title.name, "type": title.type,
             "chart_extraction_status": title.chart_extraction_status,

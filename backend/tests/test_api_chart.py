@@ -102,6 +102,32 @@ async def test_get_title_returns_chart_status_and_image_url(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_get_title_blocks_path_traversal_in_chart_image_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    chart_dir = tmp_path / "chart_image"
+    chart_dir.mkdir(parents=True)
+    # 문자열상으로는 chart_image/ 접두사로 시작하지만 ".."을 통해 실제로는
+    # chart_dir 밖(tmp_path/etc/passwd)을 가리키는 경로 — is_relative_to를
+    # lexical하게만 검사하면 이 문자열이 그대로 통과해버린다.
+    traversal_path = chart_dir / ".." / ".." / "etc" / "passwd"
+
+    async with async_session() as session:
+        title = Title(name="T", type="series", chart_image_path=str(traversal_path),
+                      chart_extraction_status="review_needed")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/titles/{title_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["chart_image_url"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_title_returns_404_for_missing_title(monkeypatch):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     transport = ASGITransport(app=app)
