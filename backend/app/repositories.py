@@ -4,7 +4,7 @@ from typing import List, Optional
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
-    Character, Episode, FindingRow, Relationship, Segment, TargetVersion,
+    Character, Episode, FindingRow, Relationship, Segment, SttCorrection, TargetVersion,
 )
 from app.schemas import Finding
 
@@ -177,13 +177,25 @@ async def _save_characters_and_relationships(session: AsyncSession,
 
 
 async def delete_target_version_results(session: AsyncSession, target_version_id: str) -> None:
-    """재분석(재시도) 전에 기존 Segment/FindingRow를 지운다. 이게 없으면
-    save_pipeline_result가 이전 실행과 동일한 네임스페이싱된 ID로 다시
+    """재분석(재시도) 전에 기존 Segment/FindingRow/SttCorrection을 지운다. 이게
+    없으면 save_pipeline_result가 이전 실행과 동일한 네임스페이싱된 ID로 다시
     INSERT를 시도해 PK 충돌(IntegrityError)로 실패한다. Character/Relationship은
     title 단위로 공유되므로 여기서 지우지 않는다 — 다른 화/버전이 참조할 수
-    있다. findings.segment_id가 segments.id를 참조하므로 findings를 먼저 지운다."""
+    있다. findings.segment_id와 stt_corrections.segment_id가 모두 segments.id를
+    참조하는 하드 FK(ondelete 없음)이므로, 둘 다 Segment보다 먼저 지워야 한다
+    (POST /segments/{id}/correct-stt는 분석 상태와 무관하게 SttCorrection을
+    만들 수 있어, 이걸 빼먹으면 findings와 동일한 FK 위반이 재현된다).
+    FindingRow와 SttCorrection 사이에는 순서 제약이 없다 — 서로를 참조하지
+    않는다."""
     await session.execute(
         delete(FindingRow).where(FindingRow.target_version_id == target_version_id)
+    )
+    await session.execute(
+        delete(SttCorrection).where(
+            SttCorrection.segment_id.in_(
+                select(Segment.id).where(Segment.target_version_id == target_version_id)
+            )
+        )
     )
     await session.execute(
         delete(Segment).where(Segment.target_version_id == target_version_id)

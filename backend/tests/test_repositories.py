@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.db import async_session, engine
 from app.models import (
     Base, Title, Episode, TargetVersion, Segment, Character, Relationship, FindingRow,
+    SttCorrection,
 )
 from app.repositories import save_pipeline_result, get_findings, delete_target_version_results
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
@@ -423,3 +424,50 @@ async def test_delete_target_version_results_removes_segments_and_findings_but_k
     assert remaining_segments == []
     assert remaining_findings == []
     assert surviving_character is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_target_version_results_removes_stt_corrections_too():
+    """회귀 테스트: stt_corrections.segment_id도 segments.id를 참조하는 하드
+    FK(ondelete 없음)다. POST /segments/{id}/correct-stt는 분석 상태와 무관하게
+    SttCorrection을 만들 수 있으므로, 검수자가 STT 텍스트를 교정한 뒤 같은
+    target_version에 run-analysis를 재시도하면 delete_target_version_results가
+    SttCorrection을 먼저 지우지 않는 한 Segment 삭제가 IntegrityError로
+    실패한다 — findings와 동일한 종류의 버그가 다른 테이블을 통해 재현되는
+    경우다."""
+    async with async_session() as session:
+        title = Title(name="T2", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                      korean_text="안녕", target_text="hola")
+        session.add(seg)
+        await session.flush()
+        correction = SttCorrection(
+            segment_id=seg.id, original_text="안뇽", corrected_text="안녕",
+            reviewer_name="reviewer",
+        )
+        session.add(correction)
+        await session.commit()
+        tv_id, correction_id = tv.id, correction.id
+
+    async with async_session() as session:
+        # IntegrityError 없이 커밋까지 끝나야 한다 — 예외가 나면 이 테스트가
+        # 실패한다.
+        await delete_target_version_results(session, tv_id)
+        await session.commit()
+
+    async with async_session() as session:
+        remaining_segments = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id)
+        )).scalars().all()
+        surviving_correction = await session.get(SttCorrection, correction_id)
+
+    assert remaining_segments == []
+    assert surviving_correction is None
