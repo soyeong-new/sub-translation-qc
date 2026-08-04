@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 from app.db import engine, async_session
-from app.models import Base, Title, Episode, TargetVersion, FindingRow, Segment
+from app.models import Base, Title, Episode, TargetVersion, FindingRow, Segment, Character
 from app import background
 
 TARGET_SRT = """1
@@ -250,3 +250,75 @@ async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, 
             select(Segment).where(Segment.target_version_id == tv_id)
         )).scalars().all()
         assert any(s.korean_text == "캐시된 문장" for s in segs)
+
+
+async def _make_title() -> str:
+    async with async_session() as session:
+        title = Title(name="T", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.commit()
+        return title.id
+
+
+@pytest.mark.asyncio
+async def test_extract_chart_and_save_sets_status_review_needed_on_success(monkeypatch):
+    from app import background
+
+    class _FakeVisionClient:
+        async def extract_chart(self, image_path):
+            return {"characters": [{"label": "민지", "suggested_gender": "female"}],
+                     "relationships": []}
+
+    monkeypatch.setattr(background, "get_chart_vision_client", lambda: _FakeVisionClient())
+    title_id = await _make_title()
+
+    await background.extract_chart_and_save(title_id, "/fake/chart.png")
+
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        assert title.chart_extraction_status == "review_needed"
+        assert title.chart_extraction_error is None
+        chars = (await session.execute(
+            select(Character).where(Character.title_id == title_id)
+        )).scalars().all()
+        assert len(chars) == 1
+
+
+@pytest.mark.asyncio
+async def test_extract_chart_and_save_sets_status_failed_on_exception(monkeypatch):
+    from app import background
+
+    class _FakeVisionClient:
+        async def extract_chart(self, image_path):
+            raise RuntimeError("vision API 오류")
+
+    monkeypatch.setattr(background, "get_chart_vision_client", lambda: _FakeVisionClient())
+    title_id = await _make_title()
+
+    await background.extract_chart_and_save(title_id, "/fake/chart.png")
+
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        assert title.chart_extraction_status == "failed"
+        assert title.chart_extraction_error == "vision API 오류"
+
+
+@pytest.mark.asyncio
+async def test_extract_chart_and_save_sets_status_failed_on_timeout(monkeypatch):
+    from app import background
+    monkeypatch.setattr(background, "CHART_EXTRACTION_TIMEOUT_SECONDS", 0.01)
+
+    class _SlowVisionClient:
+        async def extract_chart(self, image_path):
+            await asyncio.sleep(0.05)
+            return {"characters": [], "relationships": []}
+
+    monkeypatch.setattr(background, "get_chart_vision_client", lambda: _SlowVisionClient())
+    title_id = await _make_title()
+
+    await background.extract_chart_and_save(title_id, "/fake/chart.png")
+
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        assert title.chart_extraction_status == "failed"
+        assert "시간 초과" in title.chart_extraction_error

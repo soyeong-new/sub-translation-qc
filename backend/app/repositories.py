@@ -203,6 +203,63 @@ async def delete_target_version_results(session: AsyncSession, target_version_id
     await session.flush()
 
 
+async def save_chart_extraction_result(session: AsyncSession, title_id: str, result: dict) -> None:
+    """인물관계도 이미지 vision 추출 결과를 title 단위로 저장한다.
+
+    _save_characters_and_relationships와 마찬가지로 (title_id, label) 기준
+    get-or-create이지만, target_version_id 없이(에피소드/파이프라인 실행 전에도)
+    title_id를 직접 받아 동작한다. confirmed_gender가 이미 있는 인물은
+    suggested_gender를 덮어쓰지 않는다 — 사람이 이미 확정한 값을 vision의
+    참고용 추정치로 되돌리면 안 되기 때문이다."""
+    characters = result.get("characters") or []
+    relationships = result.get("relationships") or []
+
+    char_by_label: dict[str, Character] = {}
+
+    async def get_or_create_character(label: Optional[str]) -> Optional[Character]:
+        if not label:
+            return None
+        if label not in char_by_label:
+            existing = (await session.execute(
+                select(Character).where(Character.title_id == title_id,
+                                        Character.label == label)
+            )).scalars().first()
+            if existing is None:
+                existing = Character(title_id=title_id, label=label, source="chart_image")
+                session.add(existing)
+            char_by_label[label] = existing
+        return char_by_label[label]
+
+    for c in characters:
+        char = await get_or_create_character(c.get("label"))
+        if char is not None and char.confirmed_gender is None:
+            char.suggested_gender = c.get("suggested_gender")
+    await session.flush()
+
+    for r in relationships:
+        speaker = await get_or_create_character(r.get("speaker_label"))
+        addressee = await get_or_create_character(r.get("addressee_label"))
+        if speaker is None or addressee is None:
+            continue
+        await session.flush()
+        existing = (await session.execute(
+            select(Relationship).where(
+                Relationship.title_id == title_id,
+                Relationship.speaker_character_id == speaker.id,
+                Relationship.addressee_character_id == addressee.id,
+            )
+        )).scalars().first()
+        if existing is None:
+            session.add(Relationship(
+                title_id=title_id, speaker_character_id=speaker.id,
+                addressee_character_id=addressee.id,
+                relationship_type=r.get("relationship_type"),
+            ))
+        elif existing.relationship_type is None:
+            existing.relationship_type = r.get("relationship_type")
+    await session.flush()
+
+
 async def get_findings(session: AsyncSession, target_version_id: str) -> List[FindingRow]:
     rows = await session.execute(
         select(FindingRow).where(FindingRow.target_version_id == target_version_id)

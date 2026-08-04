@@ -10,15 +10,17 @@ asyncio.TimeoutError를 "던지고" 내부 태스크를 취소하지만, wait_fo
 import asyncio
 import logging
 from app.db import async_session
-from app.models import TargetVersion, Episode
+from app.models import TargetVersion, Episode, Title
 from app.core.pipeline import run_pipeline
 from app.core.ingest import delete_original_video
-from app.repositories import save_pipeline_result
+from app.repositories import save_pipeline_result, save_chart_extraction_result
 from app.providers.base import get_provider
+from app.providers.chart_vision_client import get_chart_vision_client
 
 logger = logging.getLogger(__name__)
 
 ANALYSIS_TIMEOUT_SECONDS = 3600
+CHART_EXTRACTION_TIMEOUT_SECONDS = 300
 
 
 async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None:
@@ -95,3 +97,37 @@ async def _mark_failed(target_version_id: str, message: str) -> None:
         logger.exception(
             "실패 상태 기록 중 추가 오류 (target_version_id=%s)", target_version_id,
         )
+
+
+async def extract_chart_and_save(title_id: str, image_path: str) -> None:
+    try:
+        vision_client = get_chart_vision_client()
+        result = await asyncio.wait_for(
+            vision_client.extract_chart(image_path),
+            timeout=CHART_EXTRACTION_TIMEOUT_SECONDS,
+        )
+        async with async_session() as session:
+            await save_chart_extraction_result(session, title_id, result)
+            title = await session.get(Title, title_id)
+            title.chart_extraction_status = "review_needed"
+            title.chart_extraction_error = None
+            await session.commit()
+    except asyncio.TimeoutError:
+        logger.warning("extract_chart_and_save 타임아웃 (title_id=%s)", title_id)
+        await _mark_chart_failed(title_id, "추출 시간 초과 (5분)")
+    except Exception as exc:
+        logger.exception("extract_chart_and_save 실패 (title_id=%s)", title_id)
+        await _mark_chart_failed(title_id, str(exc))
+
+
+async def _mark_chart_failed(title_id: str, message: str) -> None:
+    try:
+        async with async_session() as session:
+            title = await session.get(Title, title_id)
+            if title is not None:
+                title.chart_extraction_status = "failed"
+                title.chart_extraction_error = message
+                await session.commit()
+    except Exception:
+        logger.exception(
+            "인물관계도 추출 실패 상태 기록 중 추가 오류 (title_id=%s)", title_id)

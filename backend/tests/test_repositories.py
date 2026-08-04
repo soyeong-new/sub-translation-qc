@@ -471,3 +471,65 @@ async def test_delete_target_version_results_removes_stt_corrections_too():
 
     assert remaining_segments == []
     assert surviving_correction is None
+
+
+@pytest.mark.asyncio
+async def test_save_chart_extraction_result_creates_characters_and_relationships():
+    from app.repositories import save_chart_extraction_result
+
+    async with async_session() as session:
+        title = Title(name="T", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    result = {
+        "characters": [{"label": "민지", "suggested_gender": "female"}],
+        "relationships": [{"speaker_label": "민지", "addressee_label": "서준",
+                            "relationship_type": "연인"}],
+    }
+    async with async_session() as session:
+        await save_chart_extraction_result(session, title_id, result)
+        await session.commit()
+
+    async with async_session() as session:
+        chars = (await session.execute(
+            select(Character).where(Character.title_id == title_id)
+        )).scalars().all()
+        rels = (await session.execute(
+            select(Relationship).where(Relationship.title_id == title_id)
+        )).scalars().all()
+
+    labels = {c.label for c in chars}
+    assert labels == {"민지", "서준"}
+    minji = next(c for c in chars if c.label == "민지")
+    assert minji.suggested_gender == "female"
+    assert minji.source == "chart_image"
+    assert len(rels) == 1
+    assert rels[0].relationship_type == "연인"
+
+
+@pytest.mark.asyncio
+async def test_save_chart_extraction_result_does_not_overwrite_confirmed_gender():
+    from app.repositories import save_chart_extraction_result
+
+    async with async_session() as session:
+        title = Title(name="T", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        char = Character(title_id=title.id, label="민지", confirmed_gender="male")
+        session.add(char)
+        await session.commit()
+        title_id = title.id
+
+    result = {"characters": [{"label": "민지", "suggested_gender": "female"}], "relationships": []}
+    async with async_session() as session:
+        await save_chart_extraction_result(session, title_id, result)
+        await session.commit()
+
+    async with async_session() as session:
+        minji = (await session.execute(
+            select(Character).where(Character.title_id == title_id, Character.label == "민지")
+        )).scalars().first()
+    assert minji.confirmed_gender == "male"
+    assert minji.suggested_gender is None

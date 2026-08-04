@@ -23,7 +23,7 @@ from app.language_profiles.loader import load_profile, list_profiles
 from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
 from app.repositories import get_findings as repo_get_findings, delete_target_version_results
-from app.background import analyze_and_save
+from app.background import analyze_and_save, extract_chart_and_save
 
 
 app = FastAPI(title="Sub Translation QC ES")
@@ -84,6 +84,27 @@ async def create_episode(title_id: str, payload: EpisodeIn):
         session.add(episode)
         await session.commit()
         return {"id": episode.id, "title_id": title_id}
+
+
+class ChartImageIn(BaseModel):
+    image_path: str
+
+
+@app.post("/titles/{title_id}/chart-image")
+async def attach_chart_image(title_id: str, payload: ChartImageIn, request: Request):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        title.chart_image_path = payload.image_path
+        title.chart_extraction_status = "processing"
+        title.chart_extraction_error = None
+        await session.commit()
+
+    task = asyncio.create_task(extract_chart_and_save(title_id, payload.image_path))
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
+    return {"status": "processing"}
 
 
 @app.post("/episodes/{episode_id}/target-versions")
