@@ -79,6 +79,30 @@ async def test_analyze_and_save_does_not_delete_original_video_when_pipeline_fai
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_keeps_review_status_when_delete_original_video_raises(
+        tmp_path, monkeypatch):
+    """회귀 테스트: 분석 결과가 이미 커밋된 뒤 원본 삭제(delete_original_video)가
+    실패해도(예: 권한 문제로 unlink가 FileNotFoundError가 아닌 다른 OSError를
+    던지는 경우), 이미 성공한 분석 결과를 "실패"로 덮어써서는 안 된다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video",
+               side_effect=PermissionError("접근 거부")):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "review"
+        assert tv.error_message is None
+
+
+@pytest.mark.asyncio
 async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_segment(
         tmp_path, monkeypatch):
     """회귀 테스트(critical): GPT 2차가 문장을 늘리며 이미 온점 자동보정을 거친
