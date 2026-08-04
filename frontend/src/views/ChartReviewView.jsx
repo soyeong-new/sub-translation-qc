@@ -3,7 +3,7 @@
 // 자동으로 세로로 쌓인다. 각 편집 동작은 즉시 저장된다(기존 confirm-gender와
 // 동일한 UX 관례 — 별도의 "전체 저장" 버튼 없음).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getTitle, listTitleCharacters, listTitleRelationships,
   createTitleCharacter, updateCharacter, deleteCharacter,
@@ -45,21 +45,51 @@ export default function ChartReviewView({ titleId, onBack }) {
   const [editingRelationshipId, setEditingRelationshipId] = useState(null);
   const [editingRelationshipType, setEditingRelationshipType] = useState("");
 
+  // 컴포넌트가 언마운트된 뒤에는 폴링을 멈추고 setState도 호출하지 않도록
+  // 마운트 여부를 추적한다 (TitleListView.jsx의 pollUntilDone과 동일한 패턴).
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   async function reload() {
     try {
       const [t, chars, rels] = await Promise.all([
         getTitle(titleId), listTitleCharacters(titleId), listTitleRelationships(titleId),
       ]);
+      if (!isMountedRef.current) return null;
       setTitle(t);
       setCharacters(chars);
       setRelationships(rels);
+      return t;
     } catch (err) {
-      setLoadError(err.message ?? "불러오지 못했습니다.");
+      if (isMountedRef.current) setLoadError(err.message ?? "불러오지 못했습니다.");
+      return null;
     }
   }
 
   useEffect(() => {
-    reload();
+    // 추출이 아직 처리 중(processing)이면, 화면을 벗어나지 않는 한 완료될
+    // 때까지 몇 초 간격으로 다시 불러온다 — 백그라운드 추출이 끝난 뒤
+    // "review_needed"/"failed"로 바뀌는 걸 사용자가 화면을 나갔다 와야만
+    // 볼 수 있던 문제를 해결한다.
+    let cancelled = false;
+    async function pollWhileProcessing() {
+      const t = await reload();
+      if (cancelled || !isMountedRef.current) return;
+      if (t && t.chart_extraction_status === "processing") {
+        setTimeout(() => {
+          if (!cancelled && isMountedRef.current) pollWhileProcessing();
+        }, 2000);
+      }
+    }
+    pollWhileProcessing();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [titleId]);
 
@@ -88,10 +118,17 @@ export default function ChartReviewView({ titleId, onBack }) {
       await updateCharacter(characterId, { label });
       setActionError(null);
       await reload();
+      // 저장이 끝난 시점에 사용자가 이미 다른 행으로 옮겨가 있을 수 있다(예:
+      // 민지 → 서준으로 tab 이동 후 타이핑 중). 이 경우 무조건 null로 지우면
+      // 서준 행이 편집 중이라는 상태까지 지워져, 다음 렌더에서 서버 값으로
+      // 되돌아가며 타이핑 중이던 내용이 사라진다. 여전히 이 행이 추적 대상일
+      // 때만 지운다.
+      setEditingCharacterId((cur) => (cur === characterId ? null : cur));
     } catch (err) {
       setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
-    } finally {
-      setEditingCharacterId(null);
+      // 실패 시에는 편집 상태를 지우지 않는다 — 사용자가 입력한 초안을 화면에
+      // 그대로 남겨 재시도할 수 있게 한다 (다른 행으로 옮겨간 경우는 물론,
+      // 이 행에 그대로 머물러 있는 경우도 마찬가지).
     }
   }
 
@@ -132,10 +169,11 @@ export default function ChartReviewView({ titleId, onBack }) {
       await updateRelationship(relationshipId, relationshipType);
       setActionError(null);
       await reload();
+      // 인물 이름 편집과 동일한 이유로, 이 행이 여전히 편집 대상일 때만 지운다.
+      setEditingRelationshipId((cur) => (cur === relationshipId ? null : cur));
     } catch (err) {
       setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
-    } finally {
-      setEditingRelationshipId(null);
+      // 실패 시 편집 상태를 지우지 않아 입력한 값을 유지한 채 재시도할 수 있게 한다.
     }
   }
 

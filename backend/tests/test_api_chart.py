@@ -18,8 +18,13 @@ async def _setup_db():
 
 
 @pytest.mark.asyncio
-async def test_attach_chart_image_starts_background_extraction(monkeypatch):
+async def test_attach_chart_image_starts_background_extraction(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    chart_dir = tmp_path / "chart_image"
+    chart_dir.mkdir(parents=True)
+    chart_file = chart_dir / "chart.png"
+    chart_file.write_bytes(b"fake")
 
     async with async_session() as session:
         title = Title(name="T", type="series")
@@ -37,7 +42,7 @@ async def test_attach_chart_image_starts_background_extraction(monkeypatch):
     with patch("app.main.extract_chart_and_save", side_effect=_fake_extract_chart_and_save):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(f"/titles/{title_id}/chart-image",
-                                  json={"image_path": "/fake/chart.png"})
+                                  json={"image_path": str(chart_file)})
             assert r.status_code == 200
             assert r.json()["status"] == "processing"
 
@@ -46,18 +51,53 @@ async def test_attach_chart_image_starts_background_extraction(monkeypatch):
 
     async with async_session() as session:
         title = await session.get(Title, title_id)
-        assert title.chart_image_path == "/fake/chart.png"
+        assert title.chart_image_path == str(chart_file)
         assert title.chart_extraction_status == "review_needed"
 
 
 @pytest.mark.asyncio
-async def test_attach_chart_image_returns_404_for_missing_title(monkeypatch):
+async def test_attach_chart_image_returns_404_for_missing_title(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    chart_dir = tmp_path / "chart_image"
+    chart_dir.mkdir(parents=True)
+    chart_file = chart_dir / "chart.png"
+    chart_file.write_bytes(b"fake")
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.post("/titles/does-not-exist/chart-image",
-                              json={"image_path": "/fake/chart.png"})
+                              json={"image_path": str(chart_file)})
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_attach_chart_image_rejects_path_outside_chart_image_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    chart_dir = tmp_path / "chart_image"
+    chart_dir.mkdir(parents=True)
+    # 문자열상으로는 chart_image/ 아래처럼 보이지만 ".."을 통해 실제로는
+    # MEDIA_ROOT/chart_image 밖(tmp_path/etc/passwd)을 가리키는 경로.
+    traversal_path = chart_dir / ".." / ".." / "etc" / "passwd"
+
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/titles/{title_id}/chart-image",
+                              json={"image_path": str(traversal_path)})
+    assert r.status_code == 400
+
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        # 검증 실패 시 chart_image_path/status가 갱신되지 않아야 한다.
+        assert title.chart_image_path is None
+        assert title.chart_extraction_status == "none"
 
 
 @pytest.mark.asyncio
@@ -199,6 +239,48 @@ async def test_create_character_then_delete(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_character_rejects_blank_label(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/titles/{title_id}/characters", json={"label": ""})
+        assert r.status_code == 400
+
+        r = await client.post(f"/titles/{title_id}/characters", json={"label": "   "})
+        assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_character_is_idempotent_by_label(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r1 = await client.post(f"/titles/{title_id}/characters", json={"label": "지훈"})
+        assert r1.status_code == 200
+        r2 = await client.post(f"/titles/{title_id}/characters", json={"label": "지훈"})
+        assert r2.status_code == 200
+        assert r1.json()["id"] == r2.json()["id"]
+
+        r = await client.get(f"/titles/{title_id}/characters")
+        assert r.status_code == 200
+        chars = r.json()
+        assert len(chars) == 1
+        assert chars[0]["label"] == "지훈"
+
+
+@pytest.mark.asyncio
 async def test_update_character_label_and_gender(monkeypatch):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     async with async_session() as session:
@@ -217,6 +299,9 @@ async def test_update_character_label_and_gender(monkeypatch):
         assert r.status_code == 200
         assert r.json()["label"] == "김민지"
         assert r.json()["suggested_gender"] == "female"
+
+        r = await client.patch(f"/characters/{char_id}", json={"label": "   "})
+        assert r.status_code == 400
 
 
 @pytest.mark.asyncio

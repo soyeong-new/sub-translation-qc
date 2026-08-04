@@ -93,8 +93,27 @@ class ChartImageIn(BaseModel):
     image_path: str
 
 
+def _validate_chart_image_path(image_path: str) -> None:
+    """image_path가 실제로 MEDIA_ROOT/chart_image 아래를 가리키는지 확인한다
+    (get_title의 chart_image_url 검증과 동일한 resolve-then-check 패턴 —
+    is_relative_to는 lexical하게만 비교하므로 ".."이 섞인 경로를 resolve() 없이
+    검사하면 실제로는 밖을 가리키는 경로도 통과시킬 수 있다). 클라이언트가
+    임의의 경로(예: /etc/passwd)를 넘겨 백그라운드 추출이 그 파일을 열어
+    Anthropic API로 전송해버리는 것을 막는다."""
+    chart_dir = MEDIA_ROOT / "chart_image"
+    try:
+        resolved_path = Path(image_path).resolve()
+        resolved_dir = chart_dir.resolve()
+        if not resolved_path.is_relative_to(resolved_dir):
+            raise HTTPException(400, "유효하지 않은 이미지 경로입니다.")
+    except ValueError:
+        # 다른 드라이브(Windows) 등 방어적 예외 상황도 무효 처리한다.
+        raise HTTPException(400, "유효하지 않은 이미지 경로입니다.")
+
+
 @app.post("/titles/{title_id}/chart-image")
 async def attach_chart_image(title_id: str, payload: ChartImageIn, request: Request):
+    _validate_chart_image_path(payload.image_path)
     async with async_session() as session:
         title = await session.get(Title, title_id)
         if title is None:
@@ -201,11 +220,30 @@ class CreateCharacterIn(BaseModel):
 
 @app.post("/titles/{title_id}/characters")
 async def create_character(title_id: str, payload: CreateCharacterIn):
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(400, "인물 이름은 비어 있을 수 없습니다.")
     async with async_session() as session:
         title = await session.get(Title, title_id)
         if title is None:
             raise HTTPException(404, "title not found")
-        char = Character(title_id=title_id, label=payload.label,
+        # create_relationship의 get_or_create와 동일한 패턴: 같은 title 안에서
+        # label이 중복되는 Character가 생기면, label로 조회하는 다른 코드 경로
+        # (create_relationship, save_chart_extraction_result,
+        # _save_characters_and_relationships)가 어느 행에 묶일지 예측할 수 없게
+        # 된다. 이미 같은 이름이 있으면 새로 만들지 않고 그 행을 재사용한다 —
+        # 프런트엔드에 409 처리 코드가 없으므로 UI의 "인물 추가"가 그대로
+        # idempotent하게 동작하게 한다.
+        existing = (await session.execute(
+            select(Character).where(Character.title_id == title_id, Character.label == label)
+        )).scalars().first()
+        if existing is not None:
+            if payload.suggested_gender is not None:
+                existing.suggested_gender = payload.suggested_gender
+                await session.commit()
+            return {"id": existing.id, "label": existing.label,
+                    "suggested_gender": existing.suggested_gender}
+        char = Character(title_id=title_id, label=label,
                          suggested_gender=payload.suggested_gender, source="manual")
         session.add(char)
         await session.commit()
@@ -224,7 +262,10 @@ async def update_character(character_id: str, payload: UpdateCharacterIn):
         if char is None:
             raise HTTPException(404, "character not found")
         if payload.label is not None:
-            char.label = payload.label
+            label = payload.label.strip()
+            if not label:
+                raise HTTPException(400, "인물 이름은 비어 있을 수 없습니다.")
+            char.label = label
         if payload.suggested_gender is not None:
             char.suggested_gender = payload.suggested_gender
         await session.commit()
