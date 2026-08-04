@@ -29,10 +29,21 @@ export default function ChartReviewView({ titleId, onBack }) {
   const [characters, setCharacters] = useState([]);
   const [relationships, setRelationships] = useState([]);
   const [loadError, setLoadError] = useState(null);
+  // 인물/관계/전체 확인 등 편집 동작에서 발생한 오류를 보여주는 공용 배너.
+  // 이 화면은 ReviewView처럼 항목별 동시 편집이 많지 않아 단일 상태로 충분하다.
+  const [actionError, setActionError] = useState(null);
   const [newCharacterLabel, setNewCharacterLabel] = useState("");
   const [newRelSpeaker, setNewRelSpeaker] = useState("");
   const [newRelAddressee, setNewRelAddressee] = useState("");
   const [newRelType, setNewRelType] = useState("");
+  // 인물 이름/관계 유형 입력은 타이핑마다 저장하지 않고, blur 시점에만 저장한다.
+  // 편집 중인 항목의 id와 로컬 초안 텍스트를 따로 들고 있다가, 값이 실제로
+  // 바뀐 경우에만 API를 호출해 매 키 입력마다 네트워크 요청+reload가 겹치는
+  // 문제를 막는다.
+  const [editingCharacterId, setEditingCharacterId] = useState(null);
+  const [editingLabel, setEditingLabel] = useState("");
+  const [editingRelationshipId, setEditingRelationshipId] = useState(null);
+  const [editingRelationshipType, setEditingRelationshipType] = useState("");
 
   async function reload() {
     try {
@@ -55,45 +66,97 @@ export default function ChartReviewView({ titleId, onBack }) {
   async function handleAddCharacter(e) {
     e.preventDefault();
     if (!newCharacterLabel.trim()) return;
-    await createTitleCharacter(titleId, newCharacterLabel.trim());
-    setNewCharacterLabel("");
-    await reload();
+    try {
+      await createTitleCharacter(titleId, newCharacterLabel.trim());
+      setNewCharacterLabel("");
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    }
   }
 
-  async function handleRenameCharacter(characterId, label) {
-    await updateCharacter(characterId, { label });
-    await reload();
+  // 인물 이름 입력에서 focus를 잃을 때(blur)만 호출된다. 값이 원래 라벨과
+  // 같으면(그냥 클릭했다가 나간 경우) 저장을 건너뛴다.
+  async function handleRenameCharacterBlur(characterId, originalLabel) {
+    const label = editingLabel;
+    if (label === originalLabel) {
+      setEditingCharacterId(null);
+      return;
+    }
+    try {
+      await updateCharacter(characterId, { label });
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    } finally {
+      setEditingCharacterId(null);
+    }
   }
 
   async function handleDeleteCharacter(characterId) {
-    await deleteCharacter(characterId);
-    await reload();
+    try {
+      await deleteCharacter(characterId);
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    }
   }
 
   async function handleAddRelationship(e) {
     e.preventDefault();
     if (!newRelSpeaker.trim() || !newRelAddressee.trim()) return;
-    await createTitleRelationship(
-      titleId, newRelSpeaker.trim(), newRelAddressee.trim(), newRelType.trim() || null);
-    setNewRelSpeaker("");
-    setNewRelAddressee("");
-    setNewRelType("");
-    await reload();
+    try {
+      await createTitleRelationship(
+        titleId, newRelSpeaker.trim(), newRelAddressee.trim(), newRelType.trim() || null);
+      setNewRelSpeaker("");
+      setNewRelAddressee("");
+      setNewRelType("");
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    }
   }
 
-  async function handleUpdateRelationshipType(relationshipId, relationshipType) {
-    await updateRelationship(relationshipId, relationshipType);
-    await reload();
+  // 관계 유형 입력도 blur 시점에만 저장하며, 값이 바뀌지 않았으면 건너뛴다.
+  async function handleRelationshipTypeBlur(relationshipId, originalType) {
+    const relationshipType = editingRelationshipType;
+    if (relationshipType === originalType) {
+      setEditingRelationshipId(null);
+      return;
+    }
+    try {
+      await updateRelationship(relationshipId, relationshipType);
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    } finally {
+      setEditingRelationshipId(null);
+    }
   }
 
   async function handleDeleteRelationship(relationshipId) {
-    await deleteRelationship(relationshipId);
-    await reload();
+    try {
+      await deleteRelationship(relationshipId);
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    }
   }
 
   async function handleConfirm() {
-    await confirmChart(titleId);
-    await reload();
+    try {
+      await confirmChart(titleId);
+      setActionError(null);
+      await reload();
+    } catch (err) {
+      setActionError(err.message ?? "요청 중 오류가 발생했습니다.");
+    }
   }
 
   if (loadError) {
@@ -138,6 +201,7 @@ export default function ChartReviewView({ titleId, onBack }) {
 
         <div className="rounded-lg border border-border bg-card p-4">
           <h2 className="mb-2 text-sm font-semibold text-foreground">편집 테이블</h2>
+          {actionError && <p className="mb-2 text-sm text-destructive">{actionError}</p>}
 
           <h3 className="text-xs font-semibold uppercase text-muted-foreground">인물</h3>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -145,8 +209,13 @@ export default function ChartReviewView({ titleId, onBack }) {
               <div key={c.id}
                    className="flex items-center gap-1 rounded-full border border-border px-3 py-1">
                 <input
-                  value={c.label}
-                  onChange={(e) => handleRenameCharacter(c.id, e.target.value)}
+                  value={editingCharacterId === c.id ? editingLabel : c.label}
+                  onFocus={() => {
+                    setEditingCharacterId(c.id);
+                    setEditingLabel(c.label);
+                  }}
+                  onChange={(e) => setEditingLabel(e.target.value)}
+                  onBlur={() => handleRenameCharacterBlur(c.id, c.label)}
                   className="w-16 bg-transparent text-sm text-foreground focus-visible:outline-none"
                   aria-label={`${c.label} 이름 수정`}
                 />
@@ -175,8 +244,13 @@ export default function ChartReviewView({ titleId, onBack }) {
                 <strong className="text-foreground">{r.speaker_label}</strong>
                 <span className="text-muted-foreground">—</span>
                 <input
-                  value={r.relationship_type ?? ""}
-                  onChange={(e) => handleUpdateRelationshipType(r.id, e.target.value)}
+                  value={editingRelationshipId === r.id ? editingRelationshipType : (r.relationship_type ?? "")}
+                  onFocus={() => {
+                    setEditingRelationshipId(r.id);
+                    setEditingRelationshipType(r.relationship_type ?? "");
+                  }}
+                  onChange={(e) => setEditingRelationshipType(e.target.value)}
+                  onBlur={() => handleRelationshipTypeBlur(r.id, r.relationship_type ?? "")}
                   placeholder="관계"
                   className={inputClass}
                   aria-label="관계 유형 수정"
