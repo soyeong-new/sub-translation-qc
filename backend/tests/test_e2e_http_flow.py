@@ -7,6 +7,7 @@ finding 조회 → 검수 액션 → export 까지를 전부 실제 엔드포인
 있는가"는 어디에서도 검증되지 않았다. 목킹은 이 코드베이스의 기존 경계인
 프로바이더(및 ffmpeg 호출인 extract_audio)까지만 한다.
 """
+import asyncio
 import pytest
 from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from app.main import app
 from app.db import engine, async_session
 from app.models import Base, Segment, ExportRow
+from app.core.uploads import MEDIA_ROOT
 
 # MockProvider.transcribe는 한국어 세그먼트를 [0.0, 2.0] 하나만 돌려준다.
 # 아래 SRT의 대상언어 큐는 어느 것도 그 구간과 겹치지 않으므로:
@@ -49,8 +51,11 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
 
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy.mp4")
     transport = ASGITransport(app=app)
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"):
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.background.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1) 작품
             r = await client.post("/titles", json={"name": "The Peach Tree", "type": "movie"})
@@ -70,12 +75,21 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             tv_id = r.json()["id"]
             assert r.json()["status"] == "analyzing"
 
-            # 4) 분석 실행
+            # 4) 분석 실행 (asyncio.create_task로 백그라운드에서 실행되며,
+            # 테스트에서는 background_tasks를 대기해 완료를 보장한다)
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",
                                   json={"target_srt_path": str(srt_path)})
             assert r.status_code == 200
+            assert r.json()["status"] == "analyzing"
+
+            # background task들이 완료될 때까지 대기한다.
+            # 패치가 활성 상태인 동안 waiting하므로, background task가
+            # extract_audio를 호출할 때 여전히 mock이 활성이다.
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}")
             assert r.json()["status"] == "review"
-            reported_count = r.json()["finding_count"]
 
             # 5) 분석 산출물 조회
             r = await client.get(f"/target-versions/{tv_id}/segments")
@@ -92,7 +106,6 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             r = await client.get(f"/target-versions/{tv_id}/findings")
             assert r.status_code == 200
             findings = r.json()
-            assert reported_count == len(findings)
             by_category = {f["category"]: f for f in findings}
             # Fix 4: 포맷 위반이 formatting finding으로 영속화된다.
             assert "translation" in by_category

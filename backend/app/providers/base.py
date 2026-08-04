@@ -31,31 +31,60 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
-    async def review_translation(self, pairs: List[dict], knowledge: str,
-                                  profile: dict, format_constraint: str) -> List[dict]:
-        """한국어-대상언어 텍스트 쌍을 대조해 오역/번역투/로컬라이제이션 문제를
-        찾는다. format_constraint(예: "줄당 50자 이내, 2줄 이내")를 프롬프트에
-        포함해 제안 문장이 애초에 포맷 규칙을 지키도록 유도한다. 반환값은
-        [{"segment_id": str, "category": "translation"|"localization",
-          "description": str(한국어), "suggested_text": str(대상언어),
-          "confidence": float}, ...]"""
+    async def correct_primary(self, pairs: List[dict], profile: dict,
+                               characters: List[dict], relationships: List[dict],
+                               pending_sensitive_hits: List[dict],
+                               knowledge: str, format_constraint: str,
+                               extra_instruction: str = "") -> List[dict]:
+        """Claude 1차: 사전에 없는 애매한 비속어/글로서리 표기/성별 일치/
+        존댓말·반말 일관성을 직접 고쳐 다시 쓴다. 변경이 필요한 세그먼트만
+        반환한다. 반환값은 [{"segment_id": str,
+        "category": "sensitivity"|"glossary"|"gender"|"register",
+        "corrected_text": str, "description": str(한국어)}, ...]"""
         ...
 
     @abstractmethod
-    async def check_sensitivity(self, pairs: List[dict], term_hits: List[dict]) -> List[dict]:
-        """사전 필터(term_hits)로 1차 검출된 민감어 후보를 문맥과 함께 정밀
-        판단한다. 반환값은 [{"segment_id": str, "description": str(한국어),
-        "severity": "high"|"medium"|"low"}, ...]"""
+    async def verify_and_refine(self, pairs: List[dict], original_target_by_id: dict,
+                                 profile: dict, knowledge: str, format_constraint: str,
+                                 extra_instruction: str = "") -> List[dict]:
+        """GPT 2차: 원문(korean_text)과 1차 결과(current_text)를 대조해
+        번역정확성·문화맥락·뉘앙스어조·화법·자연스러운흐름(직역투)·함축의미 6개
+        기준으로 검증하고, 로컬라이제이션(#8)을 처음 판단한다. 변경이 필요한
+        세그먼트만 반환한다. 반환값은 [{"segment_id": str,
+        "category": "translation"|"localization",
+        "corrected_text": str, "description": str(한국어)}, ...]"""
+        ...
+
+    @abstractmethod
+    async def shrink_line(self, text: str, max_chars: int, max_lines: int,
+                           extra_instruction: str = "") -> str:
+        """최종 안전망: 글자수 위반 한 줄만 의미를 보존하며 제약 안으로 줄인다."""
         ...
 
 
 def get_provider() -> ModelProvider:
-    name = os.getenv("QC_PROVIDER", "gemini")
+    name = os.getenv("QC_PROVIDER", "live")
     if name == "mock":
         if "PYTEST_CURRENT_TEST" not in os.environ:
             raise ProviderNotConfiguredError("mock 프로바이더는 자동화 테스트 전용입니다.")
         from app.providers.mock import MockProvider
         return MockProvider()
+    if name == "live":
+        from app.providers.live import LiveModelProvider
+        required = {
+            "ANTHROPIC_API_KEY": None, "CLAUDE_MODEL": None,
+            "OPENAI_API_KEY": None, "GPT_MODEL": None,
+        }
+        for key in required:
+            value = os.getenv(key)
+            if not value:
+                raise ProviderNotConfiguredError(f"{key} 환경변수가 설정되지 않았습니다.")
+            required[key] = value
+        return LiveModelProvider(
+            claude_api_key=required["ANTHROPIC_API_KEY"], claude_model=required["CLAUDE_MODEL"],
+            gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
+            gpt_transcribe_model=os.getenv("GPT_TRANSCRIBE_MODEL", "whisper-1"),
+        )
     raise ProviderNotConfiguredError(
         f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}. "
         "실제 STT/LLM 프로바이더는 이 계획의 범위 밖에서 구현합니다."

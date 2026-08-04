@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
@@ -152,11 +153,20 @@ async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monk
         tv_id = tv.id
 
     transport = ASGITransport(app=app)
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"):
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",
                                   json={"target_srt_path": str(srt_path)})
             assert r.status_code == 200
+
+            # background task들이 완료될 때까지 대기한다.
+            # 패치가 활성 상태인 동안 waiting하므로, background task가
+            # extract_audio를 호출할 때 여전히 mock이 활성이다.
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
             r = await client.get(f"/target-versions/{tv_id}/characters")
             assert r.status_code == 200
             chars = r.json()
@@ -203,3 +213,35 @@ async def test_lookup_returns_404_when_episode_missing(endpoint):
 
     assert r.status_code == 404
     assert r.json()["detail"] == "episode not found"
+
+
+@pytest.mark.asyncio
+async def test_get_target_version_returns_status_and_error_message():
+    async with async_session() as session:
+        title = Title(name="T", type="movie")
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="failed", error_message="Gemini API 오류: timeout")
+        session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "failed"
+    assert body["error_message"] == "Gemini API 오류: timeout"
+
+
+@pytest.mark.asyncio
+async def test_get_target_version_404_when_missing():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/target-versions/nonexistent")
+    assert r.status_code == 404

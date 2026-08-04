@@ -26,3 +26,12 @@ async def test_all_expected_tables_exist():
         "segments", "findings", "stt_corrections", "learned_examples", "exports",
     }
     assert expected.issubset(set(tables))
+
+
+@pytest.mark.asyncio
+async def test_findings_table_has_model_column():
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("findings")]
+        )
+    assert "model" in columns

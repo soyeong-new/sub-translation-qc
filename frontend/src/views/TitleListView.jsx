@@ -1,8 +1,9 @@
 // 작품을 등록하고 영상/SRT 파일을 업로드해 분석을 시작하는 화면.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
+  getTargetVersion,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -51,6 +52,37 @@ export default function TitleListView({ onSelect }) {
   const isSubmitting = status?.kind === "loading";
   const canSubmit = Boolean(name && videoFile && srtFile) && !isSubmitting;
 
+  // 컴포넌트가 언마운트된 뒤에는 폴링을 멈추고 setState도 호출하지 않도록
+  // 마운트 여부를 추적한다 (FileDropzone.jsx 등 다른 비동기 처리와 동일한 패턴).
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  function pollUntilDone(targetVersionId) {
+    return new Promise((resolve, reject) => {
+      const poll = async () => {
+        if (!isMountedRef.current) return;
+        try {
+          const tv = await getTargetVersion(targetVersionId);
+          if (!isMountedRef.current) return;
+          if (tv.status === "review") {
+            resolve();
+          } else if (tv.status === "failed") {
+            reject(new Error(tv.error_message || "분석 중 오류가 발생했습니다."));
+          } else {
+            setTimeout(poll, 2000);
+          }
+        } catch (err) {
+          if (isMountedRef.current) reject(err);
+        }
+      };
+      poll();
+    });
+  }
+
   function handleVideoSelected(selected) {
     if (!VIDEO_EXTENSIONS.includes(getExtension(selected.name))) {
       setStatus({
@@ -89,8 +121,9 @@ export default function TitleListView({ onSelect }) {
       const title = await createTitle(name, type);
       const episode = await createEpisode(title.id, null, videoUpload.path);
       const tv = await createTargetVersion(episode.id, "es", "LATAM");
-      setStatus({ kind: "loading", message: "분석 중..." });
+      setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
       await runAnalysis(tv.id, srtUpload.path);
+      await pollUntilDone(tv.id);
       setStatus({ kind: "success", message: "완료" });
       onSelect(tv.id);
     } catch (err) {

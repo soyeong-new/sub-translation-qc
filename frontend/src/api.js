@@ -68,6 +68,9 @@ export const correctStt = (segmentId, correctedText, reviewerName) =>
 export const exportTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export`);
 
+export const getTargetVersion = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}`);
+
 function uploadWithProgress(path, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();

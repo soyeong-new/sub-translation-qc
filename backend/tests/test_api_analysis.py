@@ -23,6 +23,7 @@ async def _setup_db():
 
 @pytest.mark.asyncio
 async def test_run_analysis_then_list_findings(tmp_path, monkeypatch):
+    import asyncio
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     srt_path = tmp_path / "target.srt"
@@ -37,13 +38,22 @@ async def test_run_analysis_then_list_findings(tmp_path, monkeypatch):
         tv_id = tv.id
 
     transport = ASGITransport(app=app)
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"):
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video", return_value=None):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(
                 f"/target-versions/{tv_id}/run-analysis",
                 json={"target_srt_path": str(srt_path)},
             )
             assert r.status_code == 200
+            assert r.json()["status"] == "analyzing"
+
+            # background task들이 완료될 때까지 대기한다.
+            # 패치가 활성 상태인 동안 waiting하므로, background task가
+            # extract_audio를 호출할 때 여전히 mock이 활성이다.
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
 
             r = await client.get(f"/target-versions/{tv_id}/findings")
             assert r.status_code == 200

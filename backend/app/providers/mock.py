@@ -17,22 +17,26 @@ class MockProvider(ModelProvider):
             result["characters"] = [{"label": "인물1", "gendered_segment_ids": []}]
         return result
 
-    async def review_translation(self, pairs: List[dict], knowledge: str,
-                                  profile: dict, format_constraint: str) -> List[dict]:
-        findings = []
-        for pair in pairs:
-            if "BAD_TRANSLATION" in pair.get("target_text", ""):
-                findings.append({
-                    "segment_id": pair["id"], "category": "translation",
-                    "description": "테스트용 오역 마커 감지",
-                    "suggested_text": "texto corregido",
-                    "confidence": 0.9,
-                })
-        return findings
-
-    async def check_sensitivity(self, pairs: List[dict], term_hits: List[dict]) -> List[dict]:
+    async def correct_primary(self, pairs: List[dict], profile: dict,
+                               characters: List[dict], relationships: List[dict],
+                               pending_sensitive_hits: List[dict],
+                               knowledge: str, format_constraint: str,
+                               extra_instruction: str = "") -> List[dict]:
         return [
-            {"segment_id": hit["segment_id"], "description": "민감어 문맥 확인 필요",
-             "severity": "medium"}
-            for hit in term_hits
+            {"segment_id": hit["segment_id"], "category": "sensitivity",
+             "corrected_text": "[교정됨]", "description": "테스트용 비속어 교정"}
+            for hit in pending_sensitive_hits
         ]
+
+    async def verify_and_refine(self, pairs: List[dict], original_target_by_id: dict,
+                                 profile: dict, knowledge: str, format_constraint: str,
+                                 extra_instruction: str = "") -> List[dict]:
+        return [
+            {"segment_id": p["id"], "category": "translation",
+             "corrected_text": "texto corregido", "description": "테스트용 오역 마커 감지"}
+            for p in pairs if "BAD_TRANSLATION" in p.get("current_text", "")
+        ]
+
+    async def shrink_line(self, text: str, max_chars: int, max_lines: int,
+                           extra_instruction: str = "") -> str:
+        return text[:max_chars]

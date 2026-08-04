@@ -18,3 +18,21 @@ def test_finding_category_must_be_known_value():
         suggested_text="b", confidence=0.8, source="llm", status="pending",
     )
     assert f.status == "pending"
+
+
+def test_finding_model_field_defaults_to_none():
+    f = Finding(
+        id="f1", target_version_id="tv1", segment_id="p1",
+        category="translation", description="근거", original_text="a",
+        suggested_text="b", confidence=0.8, source="llm",
+    )
+    assert f.model is None
+
+
+def test_finding_model_field_can_be_set():
+    f = Finding(
+        id="f1", target_version_id="tv1", segment_id="p1",
+        category="translation", description="근거", original_text="a",
+        suggested_text="b", confidence=0.8, source="llm", model="claude",
+    )
+    assert f.model == "claude"

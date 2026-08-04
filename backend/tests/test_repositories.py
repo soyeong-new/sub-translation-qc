@@ -247,3 +247,135 @@ async def test_save_pipeline_result_persists_format_violations_as_findings():
         assert line_length_row.original_text == "texto....."
         assert line_length_row.status == "pending"
         assert line_length_row.final_text == ""
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_same_segment_ellipsis_violation_twice():
+    """회귀 테스트(critical): 같은 세그먼트가 온점 위반으로 두 번 걸리면(최초
+    체크에서 한 번, GPT 2차 이후 최종 재체크에서 또 한 번 — pipeline.py가 GPT의
+    재작성이 새 온점을 만들 수 있어 재검사한다) FormatViolation 두 개가 같은
+    (segment_id, rule) 조합을 갖는다. 예전 구현은 id를
+    f"finding_{segment_id}_formatting_{rule}"로만 만들어 두 번째 저장 시
+    findings_pkey UNIQUE 제약을 위반했고, save_pipeline_result가 던진
+    IntegrityError를 background.analyze_and_save가 잡아 전체 target_version을
+    failed로 처리했다 — STT + Claude/GPT 두 패스 비용이 전부 날아가는 버그였다.
+    이 테스트는 save_pipeline_result가 예외 없이 두 finding을 모두(서로 다른
+    PK로) 저장하는지, 그리고 각 finding의 original_text가 파이프라인 최종
+    상태 하나로 뭉개지지 않고 그 체크포인트 고유의 "고치기 전" 텍스트를
+    유지하는지 검증한다(후속 리뷰에서 발견된 important 버그: original_text를
+    result["pairs"]의 최종 상태로 되짚어 재구성하면 두 finding이 서로 다른
+    시점에 감지됐는데도 동일한 — 그리고 대부분 틀린 — 값을 갖게 된다)."""
+    async with async_session() as session:
+        title = Title(name="Movie D", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+
+        violations = [
+            FormatViolation(segment_id="pair_1", rule="ellipsis",
+                            detail="연속 온점 4개 이상 감지 (최초)",
+                            auto_fixed=True, fixed_text="texto...",
+                            original_text="BAD_TRANSLATION texto...."),
+            FormatViolation(segment_id="pair_1", rule="ellipsis",
+                            detail="연속 온점 4개 이상 감지 (GPT 이후 재검사)",
+                            auto_fixed=True, fixed_text="espera...",
+                            original_text="espera......"),
+        ]
+        # IntegrityError 없이 커밋까지 끝나야 한다 — 예외가 나면 이 테스트가
+        # 실패한다. _result_with의 기본 pairs target text("texto.....")는 두
+        # violation의 original_text와도 다르게 둬서, repositories.py가 파이프라인
+        # 최종 상태로 되짚어 재구성하는 게 아니라 각 FormatViolation.original_text를
+        # 그대로 쓴다는 걸 구분해서 검증할 수 있게 한다.
+        await save_pipeline_result(session, tv.id, _result_with(format_violations=violations))
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert len(rows) == 2
+        assert len({r.id for r in rows}) == 2  # PK 충돌 없이 둘 다 저장됨
+        assert all(r.category == "formatting" and r.status == "approved" for r in rows)
+        by_description = {r.description: r for r in rows}
+        first = by_description["연속 온점 4개 이상 감지 (최초)"]
+        second = by_description["연속 온점 4개 이상 감지 (GPT 이후 재검사)"]
+        assert first.suggested_text == "texto..."
+        assert second.suggested_text == "espera..."
+        # 회귀(important): 각 체크포인트 고유의 original_text가 유지된다 — 둘
+        # 다 파이프라인 최종 pairs 상태("texto.....")로 뭉개지지 않는다.
+        assert first.original_text == "BAD_TRANSLATION texto...."
+        assert second.original_text == "espera......"
+        assert first.original_text != second.original_text
+        assert first.original_text != "texto....."
+        assert second.original_text != "texto....."
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_finding_model():
+    async with async_session() as session:
+        title = Title(name="Test Movie", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+
+        result = {
+            "findings": [Finding(
+                id="f1", target_version_id=tv.id, segment_id="p1",
+                category="translation", description="근거", original_text="a",
+                suggested_text="b", confidence=0.9, source="llm", model="claude",
+            )],
+            "format_violations": [], "characters": [], "relationships": [],
+            "gender_questions": [], "register_questions": [],
+            "pairs": [AlignedPair(
+                id="p1",
+                korean=SegmentText(start=0.0, end=1.5, text="한국어"),
+                target=SegmentText(start=0.0, end=1.5, text="target text"),
+            )],
+        }
+        await save_pipeline_result(session, tv.id, result)
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert rows[0].model == "claude"
+
+
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_final_text_and_status_for_pretreatment_findings():
+    """회귀(important): FindingRow(...) 생성에서 final_text/reviewer_name을
+    빠뜨리면, pretreatment.py/safety_net.py가 status="approved",
+    final_text=suggested_text로 직접 구성해 넘긴 Finding이 DB에는
+    final_text=""(기본값)로 저장된다 — 검수자 판단 없이 이미 확정된 자동교정
+    결과가 검수 화면에서 빈 텍스트로 보이는 버그였다. 이 회귀는 pretreatment/
+    safety_net을 파이프라인 테스트에서 직접 거치지 않으면(글로서리/CTA/비속어
+    사전이 비어 있으면 둘 다 findings=[]를 반환) 드러나지 않으므로, 여기서
+    run_pretreatment를 실제 글로서리 항목으로 실행해 진짜 Finding을 만들고
+    save_pipeline_result에 그대로 흘려보내 영속화된 행을 검증한다."""
+    from app.core.pretreatment import run_pretreatment
+    from app.schemas import AlignedPair, SegmentText
+
+    async with async_session() as session:
+        title = Title(name="Movie E", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+
+        pairs = [AlignedPair(id="pair_1",
+                              target=SegmentText(start=0.0, end=1.5, text="Cholsu가 왔다"))]
+        glossary = [{"canonical": "Chulsoo", "aliases": ["Cholsu"]}]
+        pretreatment = run_pretreatment(pairs, glossary, [], [], [], tv.id)
+        assert pretreatment.findings, "글로서리 항목이 실제로 Finding을 만들어야 이 테스트가 유효하다"
+
+        result = _result_with(findings=pretreatment.findings, pairs=pretreatment.pairs)
+        await save_pipeline_result(session, tv.id, result)
+        await session.commit()
+
+        rows = await get_findings(session, tv.id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.category == "glossary"
+        assert row.status == "approved"
+        assert row.suggested_text == "Chulsoo가 왔다"
+        # 이 assertion이 회귀의 핵심이다: final_text가 누락되면 ""로 저장된다.
+        assert row.final_text == "Chulsoo가 왔다"

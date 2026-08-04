@@ -217,3 +217,27 @@ async def test_export_returns_404_for_unknown_target_version():
     async with async_session() as session:
         rows = list((await session.execute(select(ExportRow))).scalars().all())
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_export_deletes_video_proxy_file(tmp_path):
+    proxy_path = tmp_path / "proxy.mp4"
+    proxy_path.write_bytes(b"fake video bytes")
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           video_proxy_path=str(proxy_path))
+        session.add(tv); await session.flush()
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200
+
+    assert not proxy_path.exists()
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.video_proxy_path is None

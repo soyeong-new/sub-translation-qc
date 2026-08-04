@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional
 from app.schemas import SegmentText
+from app.core.uploads import MEDIA_ROOT
 
 _TIME_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})"
@@ -73,3 +74,25 @@ def extract_audio(video_path: str, out_dir: Optional[str] = None) -> str:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
     )
     return out
+
+
+def generate_video_proxy(video_path: str, out_dir: Optional[str] = None) -> str:
+    """검수 화면 재생용 저화질(480p) 프록시를 만든다. 오디오 추출과 인물 판단엔
+    원본 화질이 필요 없고, 검수 시 장면 맥락·성별 확인 같은 시각적 확인엔
+    저화질로 충분하다 — 영상은 검수 끝까지 필요하지만 원본 그대로는 아니다."""
+    out_dir_p = Path(out_dir) if out_dir else MEDIA_ROOT / "video_proxy"
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+    stem = Path(video_path).stem
+    out = str(out_dir_p / f"{stem}_proxy.mp4")
+    subprocess.run(
+        ["ffmpeg", "-i", video_path, "-vf", "scale=-2:480",
+         "-c:v", "libx264", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-y", out],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+    return out
+
+
+def delete_original_video(video_path: str) -> None:
+    """프록시 생성 후 원본을 지운다. 스토리지 한도 안에서 여러 작품을 처리하려면
+    필수 동작이다. 파일이 이미 없어도(중복 호출 등) 에러 없이 넘어간다."""
+    Path(video_path).unlink(missing_ok=True)

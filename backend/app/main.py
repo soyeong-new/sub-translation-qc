@@ -1,9 +1,12 @@
 """작품 등록부터 분석 실행, 검수, export까지 담당하는 FastAPI 엔드포인트 모음."""
 
+import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
 from app.db import async_session
@@ -11,16 +14,34 @@ from app.models import (
     Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment,
     SttCorrection, ExportRow,
 )
-from app.core.pipeline import run_pipeline
-from app.core.ingest import extract_audio  # noqa: F401 (테스트에서 patch 대상)
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
+from app.core.requery import requery_finding, RequeryNotSupportedError
 from app.core.uploads import (
-    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS,
+    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, MEDIA_ROOT,
 )
+from app.language_profiles.loader import load_profile
+from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
-from app.repositories import save_pipeline_result, get_findings as repo_get_findings
+from app.repositories import get_findings as repo_get_findings
+from app.background import analyze_and_save
+
 
 app = FastAPI(title="Sub Translation QC ES")
+
+(MEDIA_ROOT / "video_proxy").mkdir(parents=True, exist_ok=True)
+# 프록시 디렉터리만 마운트한다 — media/ 전체를 마운트하면 원본 업로드 영상
+# (media/video/)과 원본 SRT(media/srt/)까지 인증 없이 그대로 서빙돼버린다.
+# 검수 화면이 실제로 필요로 하는 건 저화질 프록시뿐이다.
+app.mount("/media/video_proxy", StaticFiles(directory=str(MEDIA_ROOT / "video_proxy")),
+          name="media_video_proxy")
+
+
+@app.on_event("startup")
+async def _init_background_task_registry():
+    # asyncio는 참조가 없는 태스크를 도중에 가비지컬렉션할 수 있다(공식 문서
+    # 권고사항) — run-analysis가 만든 태스크를 여기 보관해 완료 전에 사라지지
+    # 않게 한다.
+    app.state.background_tasks = set()
 
 
 class TitleIn(BaseModel):
@@ -73,12 +94,26 @@ async def create_target_version(episode_id: str, payload: TargetVersionIn):
         return {"id": tv.id, "status": tv.status}
 
 
+@app.get("/target-versions/{target_version_id}")
+async def get_target_version(target_version_id: str):
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        video_proxy_url = (
+            f"/media/video_proxy/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT / 'video_proxy')}"
+            if tv.video_proxy_path else None
+        )
+        return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
+                "video_proxy_url": video_proxy_url}
+
+
 class RunAnalysisIn(BaseModel):
     target_srt_path: str
 
 
 @app.post("/target-versions/{target_version_id}/run-analysis")
-async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
+async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: Request):
     async with async_session() as session:
         tv = await session.get(TargetVersion, target_version_id)
         if tv is None:
@@ -86,24 +121,14 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn):
         episode = await session.get(Episode, tv.episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
-
-    provider = get_provider()
-    result = await run_pipeline(
-        korean_audio_path=episode.video_path,
-        target_srt_path=payload.target_srt_path,
-        language=tv.target_language, variant=tv.variant,
-        target_version_id=target_version_id, provider=provider,
-    )
-
-    async with async_session() as session:
-        await save_pipeline_result(session, target_version_id, result)
-        tv = await session.get(TargetVersion, target_version_id)
-        tv.status = "review"
+        tv.status = "analyzing"
+        tv.error_message = None
         await session.commit()
-    # 포맷 위반도 category="formatting" finding으로 저장되므로(repositories),
-    # 여기서 보고하는 개수도 GET /findings가 돌려주는 개수와 일치해야 한다.
-    finding_count = len(result["findings"]) + len(result["format_violations"])
-    return {"status": "review", "finding_count": finding_count}
+
+    task = asyncio.create_task(analyze_and_save(target_version_id, payload.target_srt_path))
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
+    return {"status": "analyzing"}
 
 
 @app.get("/target-versions/{target_version_id}/findings")
@@ -114,7 +139,7 @@ async def list_findings(target_version_id: str):
             {"id": r.id, "segment_id": r.segment_id, "category": r.category,
              "description": r.description, "original_text": r.original_text,
              "suggested_text": r.suggested_text, "status": r.status,
-             "final_text": r.final_text}
+             "model": r.model, "final_text": r.final_text}
             for r in rows
         ]
 
@@ -205,6 +230,38 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
             finding.final_text = finding.suggested_text
         await session.commit()
         return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
+
+
+class RequeryIn(BaseModel):
+    instruction: str
+    reviewer_name: str
+
+
+@app.post("/findings/{finding_id}/requery")
+async def requery(finding_id: str, payload: RequeryIn):
+    async with async_session() as session:
+        finding = await session.get(FindingRow, finding_id)
+        if finding is None:
+            raise HTTPException(404, "finding not found")
+        segment = await session.get(Segment, finding.segment_id)
+        if segment is None:
+            raise HTTPException(404, "segment not found")
+        tv = await session.get(TargetVersion, finding.target_version_id)
+        profile = load_profile(tv.target_language, tv.variant) if tv else {}
+
+        provider = get_provider()
+        knowledge = load_knowledge()
+        try:
+            new_suggested_text = await requery_finding(
+                finding, segment, payload.instruction, provider, knowledge, profile)
+        except RequeryNotSupportedError as exc:
+            raise HTTPException(400, str(exc))
+
+        finding.suggested_text = new_suggested_text
+        finding.status = "pending"
+        finding.description = f"[다시 질문: {payload.instruction}] {finding.description}"
+        await session.commit()
+        return {"id": finding.id, "status": finding.status, "suggested_text": finding.suggested_text}
 
 
 class ConfirmGenderIn(BaseModel):
@@ -298,6 +355,10 @@ async def export_target_version(target_version_id: str):
             finding_count=stats.finding_count,
             reflection_rate=stats.reflection_rate,
         ))
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is not None and tv.video_proxy_path:
+            Path(tv.video_proxy_path).unlink(missing_ok=True)
+            tv.video_proxy_path = None
         await session.commit()
 
     return {
