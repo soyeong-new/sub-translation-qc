@@ -13,3 +13,4 @@ __pycache__/
 backend/venv/
 /backend/media
 /backend/.env
+.superpowers/
