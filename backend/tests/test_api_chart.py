@@ -170,3 +170,142 @@ async def test_list_title_characters_and_relationships(monkeypatch):
         assert rels[0]["relationship_type"] == "연인"
         assert rels[0]["speaker_label"] == "민지"
         assert rels[0]["addressee_label"] == "서준"
+
+
+@pytest.mark.asyncio
+async def test_create_character_then_delete(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/titles/{title_id}/characters", json={"label": "지훈"})
+        assert r.status_code == 200
+        char_id = r.json()["id"]
+        assert r.json()["label"] == "지훈"
+
+        r = await client.get(f"/titles/{title_id}/characters")
+        assert len(r.json()) == 1
+
+        r = await client.delete(f"/characters/{char_id}")
+        assert r.status_code == 200
+
+        r = await client.get(f"/titles/{title_id}/characters")
+        assert len(r.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_update_character_label_and_gender(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.flush()
+        char = Character(title_id=title.id, label="민지")
+        session.add(char)
+        await session.commit()
+        char_id = char.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch(f"/characters/{char_id}",
+                               json={"label": "김민지", "suggested_gender": "female"})
+        assert r.status_code == 200
+        assert r.json()["label"] == "김민지"
+        assert r.json()["suggested_gender"] == "female"
+
+
+@pytest.mark.asyncio
+async def test_delete_character_also_removes_its_relationships(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.flush()
+        a = Character(title_id=title.id, label="민지")
+        b = Character(title_id=title.id, label="서준")
+        session.add_all([a, b])
+        await session.flush()
+        rel = Relationship(title_id=title.id, speaker_character_id=a.id, addressee_character_id=b.id)
+        session.add(rel)
+        await session.commit()
+        title_id, char_id = title.id, a.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete(f"/characters/{char_id}")
+        assert r.status_code == 200
+
+        r = await client.get(f"/titles/{title_id}/relationships")
+        assert r.json() == []
+
+
+@pytest.mark.asyncio
+async def test_create_relationship_gets_or_creates_characters_by_label(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/titles/{title_id}/relationships",
+                              json={"speaker_label": "민지", "addressee_label": "서준",
+                                    "relationship_type": "연인"})
+        assert r.status_code == 200
+        assert r.json()["speaker_label"] == "민지"
+        assert r.json()["relationship_type"] == "연인"
+
+        r = await client.get(f"/titles/{title_id}/characters")
+        assert len(r.json()) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_and_delete_relationship(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.flush()
+        a = Character(title_id=title.id, label="민지")
+        b = Character(title_id=title.id, label="서준")
+        session.add_all([a, b])
+        await session.flush()
+        rel = Relationship(title_id=title.id, speaker_character_id=a.id, addressee_character_id=b.id)
+        session.add(rel)
+        await session.commit()
+        title_id, rel_id = title.id, rel.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch(f"/relationships/{rel_id}", json={"relationship_type": "남매"})
+        assert r.status_code == 200
+        assert r.json()["relationship_type"] == "남매"
+
+        r = await client.delete(f"/relationships/{rel_id}")
+        assert r.status_code == 200
+
+        r = await client.get(f"/titles/{title_id}/relationships")
+        assert r.json() == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_chart_sets_status_confirmed(monkeypatch):
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series", chart_extraction_status="review_needed")
+        session.add(title)
+        await session.commit()
+        title_id = title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/titles/{title_id}/chart/confirm")
+        assert r.status_code == 200
+        assert r.json()["chart_extraction_status"] == "confirmed"

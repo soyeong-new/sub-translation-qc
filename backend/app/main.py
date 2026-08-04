@@ -3,12 +3,12 @@
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from app.db import async_session
 from app.models import (
     Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment,
@@ -192,6 +192,134 @@ async def list_title_relationships(title_id: str):
                 "confirmed_formality_level": r.confirmed_formality_level,
             })
         return result
+
+
+class CreateCharacterIn(BaseModel):
+    label: str
+    suggested_gender: Optional[Literal["male", "female"]] = None
+
+
+@app.post("/titles/{title_id}/characters")
+async def create_character(title_id: str, payload: CreateCharacterIn):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        char = Character(title_id=title_id, label=payload.label,
+                         suggested_gender=payload.suggested_gender, source="manual")
+        session.add(char)
+        await session.commit()
+        return {"id": char.id, "label": char.label, "suggested_gender": char.suggested_gender}
+
+
+class UpdateCharacterIn(BaseModel):
+    label: Optional[str] = None
+    suggested_gender: Optional[Literal["male", "female"]] = None
+
+
+@app.patch("/characters/{character_id}")
+async def update_character(character_id: str, payload: UpdateCharacterIn):
+    async with async_session() as session:
+        char = await session.get(Character, character_id)
+        if char is None:
+            raise HTTPException(404, "character not found")
+        if payload.label is not None:
+            char.label = payload.label
+        if payload.suggested_gender is not None:
+            char.suggested_gender = payload.suggested_gender
+        await session.commit()
+        return {"id": char.id, "label": char.label, "suggested_gender": char.suggested_gender}
+
+
+@app.delete("/characters/{character_id}")
+async def delete_character(character_id: str):
+    async with async_session() as session:
+        char = await session.get(Character, character_id)
+        if char is None:
+            raise HTTPException(404, "character not found")
+        # Relationship이 characters.id를 하드 FK로 참조하므로(ondelete 없음),
+        # 인물을 지우기 전에 그 인물이 관련된 관계부터 지워야 한다.
+        await session.execute(
+            delete(Relationship).where(
+                (Relationship.speaker_character_id == character_id) |
+                (Relationship.addressee_character_id == character_id)
+            )
+        )
+        await session.delete(char)
+        await session.commit()
+        return {"id": character_id, "deleted": True}
+
+
+class CreateRelationshipIn(BaseModel):
+    speaker_label: str
+    addressee_label: str
+    relationship_type: Optional[str] = None
+
+
+@app.post("/titles/{title_id}/relationships")
+async def create_relationship(title_id: str, payload: CreateRelationshipIn):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+
+        async def get_or_create(label: str) -> Character:
+            existing = (await session.execute(
+                select(Character).where(Character.title_id == title_id, Character.label == label)
+            )).scalars().first()
+            if existing is None:
+                existing = Character(title_id=title_id, label=label, source="manual")
+                session.add(existing)
+                await session.flush()
+            return existing
+
+        speaker = await get_or_create(payload.speaker_label)
+        addressee = await get_or_create(payload.addressee_label)
+        rel = Relationship(title_id=title_id, speaker_character_id=speaker.id,
+                           addressee_character_id=addressee.id,
+                           relationship_type=payload.relationship_type)
+        session.add(rel)
+        await session.commit()
+        return {"id": rel.id, "speaker_label": speaker.label, "addressee_label": addressee.label,
+                "relationship_type": rel.relationship_type}
+
+
+class UpdateRelationshipIn(BaseModel):
+    relationship_type: Optional[str] = None
+
+
+@app.patch("/relationships/{relationship_id}")
+async def update_relationship(relationship_id: str, payload: UpdateRelationshipIn):
+    async with async_session() as session:
+        rel = await session.get(Relationship, relationship_id)
+        if rel is None:
+            raise HTTPException(404, "relationship not found")
+        if payload.relationship_type is not None:
+            rel.relationship_type = payload.relationship_type
+        await session.commit()
+        return {"id": rel.id, "relationship_type": rel.relationship_type}
+
+
+@app.delete("/relationships/{relationship_id}")
+async def delete_relationship(relationship_id: str):
+    async with async_session() as session:
+        rel = await session.get(Relationship, relationship_id)
+        if rel is None:
+            raise HTTPException(404, "relationship not found")
+        await session.delete(rel)
+        await session.commit()
+        return {"id": relationship_id, "deleted": True}
+
+
+@app.post("/titles/{title_id}/chart/confirm")
+async def confirm_chart(title_id: str):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        title.chart_extraction_status = "confirmed"
+        await session.commit()
+        return {"id": title.id, "chart_extraction_status": title.chart_extraction_status}
 
 
 @app.post("/episodes/{episode_id}/target-versions")
