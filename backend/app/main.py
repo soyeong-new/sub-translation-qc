@@ -17,7 +17,7 @@ from app.models import (
 from app.core.export import assemble_final_srt, compute_stats, safety_net_check
 from app.core.requery import requery_finding, RequeryNotSupportedError
 from app.core.uploads import (
-    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, MEDIA_ROOT,
+    save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, IMAGE_EXTENSIONS, MEDIA_ROOT,
 )
 from app.language_profiles.loader import load_profile, list_profiles
 from app.knowledge.loader import load_knowledge
@@ -392,6 +392,15 @@ async def upload_video(file: UploadFile = File(...)):
 async def upload_srt(file: UploadFile = File(...)):
     try:
         path = await save_upload("srt", file.filename, file.read, SRT_EXTENSIONS)
+    except UnsupportedFileType as exc:
+        raise HTTPException(400, str(exc))
+    return {"path": path}
+
+
+@app.post("/uploads/chart-image")
+async def upload_chart_image(file: UploadFile = File(...)):
+    try:
+        path = await save_upload("chart_image", file.filename, file.read, IMAGE_EXTENSIONS)
     except UnsupportedFileType as exc:
         raise HTTPException(400, str(exc))
     return {"path": path}

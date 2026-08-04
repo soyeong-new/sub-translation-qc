@@ -8,6 +8,7 @@ MEDIA_ROOT = Path(__file__).resolve().parents[2] / "media"
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
 SRT_EXTENSIONS = {".srt"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 _CHUNK_SIZE = 1024 * 1024  # 1MB
 
