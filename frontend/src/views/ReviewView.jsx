@@ -416,7 +416,7 @@ function FactConfirmationPanel({
   );
 }
 
-export default function ReviewView({ targetVersionId, onBack }) {
+export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
   const [findings, setFindings] = useState(null); // null = 로딩 중
   const [loadError, setLoadError] = useState(null);
   const [reviewerName, setReviewerName] = useState("");
@@ -426,6 +426,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [editText, setEditText] = useState("");
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
   const [exportResult, setExportResult] = useState(null);
+  const [titleId, setTitleId] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
 
   // "사실 확인" 사이드바 상태 — Findings(위 state들)와는 완전히 분리된 데이터
@@ -467,7 +468,10 @@ export default function ReviewView({ targetVersionId, onBack }) {
     let cancelled = false;
     getTargetVersion(targetVersionId)
       .then((data) => {
-        if (!cancelled) setPipelineWarnings(data.warnings ?? []);
+        if (!cancelled) {
+          setPipelineWarnings(data.warnings ?? []);
+          setTitleId(data.title_id ?? null);
+        }
       })
       .catch(() => {
         // 경고 배너는 부가 정보라 실패해도 화면 전체를 막지 않는다.
@@ -641,6 +645,14 @@ export default function ReviewView({ targetVersionId, onBack }) {
               &larr; 목록으로
             </button>
             <h1 className="text-xl font-semibold text-card-foreground">리뷰 — Findings</h1>
+            {titleId && (
+              <button
+                onClick={() => onOpenChart(titleId)}
+                className="mt-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                인물관계도 확인 →
+              </button>
+            )}
           </div>
           <div className="w-full max-w-xs">
             <Field id="reviewer-name" label="검수자 이름">
