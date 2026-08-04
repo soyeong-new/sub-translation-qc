@@ -319,3 +319,43 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
     assert result["video_proxy_path"] == "/fake/cached_proxy.mp4"
     korean_pair = next(p for p in result["pairs"] if p.korean is not None)
     assert korean_pair.korean.text == "캐시된 대사"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_records_warning_when_build_registry_raises(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _analyze_characters_raises(*args, **kwargs):
+        raise RuntimeError("인물 식별 API 오류")
+
+    monkeypatch.setattr(provider, "analyze_characters", _analyze_characters_raises)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    assert result["warnings"] == [{"stage": "인물 식별", "message": "인물 식별 API 오류"}]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_returns_empty_warnings_when_all_stages_succeed(tmp_path):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+        )
+
+    assert result["warnings"] == []

@@ -110,7 +110,7 @@ async def get_target_version(target_version_id: str):
             if tv.video_proxy_path else None
         )
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
-                "video_proxy_url": video_proxy_url}
+                "video_proxy_url": video_proxy_url, "warnings": tv.warnings or []}
 
 
 class RunAnalysisIn(BaseModel):

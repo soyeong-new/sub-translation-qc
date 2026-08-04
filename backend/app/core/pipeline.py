@@ -39,6 +39,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     호출자(background.py)의 저장 사이 어딘가에서 죽었을 때 원본도 없고 결과도
     없는 상태가 된다. 호출자가 결과를 실제로 커밋한 뒤에 지우도록
     `video_path`를 결과에 그대로 담아 돌려준다."""
+    warnings: list = []
     target_segments = load_srt(target_srt_path)
 
     if cached_korean_segments is not None and cached_video_proxy_path is not None:
@@ -124,11 +125,12 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     # 든 STT 비용을 낭비하지 않고 계속 진행된다.
     try:
         registry = await build_registry(pairs, profile, provider)
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "인물/관계 식별 실패, 빈 레지스트리로 계속 진행 (target_version_id=%s)",
             target_version_id)
         registry = {"characters": [], "relationships": []}
+        warnings.append({"stage": "인물 식별", "message": str(exc)})
     characters = prior_characters if prior_characters is not None else registry["characters"]
     relationships = prior_relationships if prior_relationships is not None else registry["relationships"]
     gender_questions = find_gender_conflicts(characters)
@@ -149,11 +151,12 @@ async def run_pipeline(video_path: str, target_srt_path: str,
             claude_pairs, profile, characters, relationships,
             pretreatment.pending_sensitive_hits, knowledge, format_constraint,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Claude 1차 교정 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
             target_version_id)
         claude_corrections = []
+        warnings.append({"stage": "Claude 1차 교정", "message": str(exc)})
     claude_findings = findings_from_corrections(
         target_version_id, pairs, claude_corrections, stage="claude")
     apply_corrections(pairs, claude_corrections)
@@ -167,11 +170,12 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         gpt_corrections = await provider.verify_and_refine(
             gpt_pairs, original_target_by_id, profile, knowledge, format_constraint,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "GPT 2차 검증 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
             target_version_id)
         gpt_corrections = []
+        warnings.append({"stage": "GPT 2차 검증", "message": str(exc)})
     gpt_findings = findings_from_corrections(
         target_version_id, pairs, gpt_corrections, stage="gpt")
     apply_corrections(pairs, gpt_corrections)
@@ -209,6 +213,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
         "korean_segments_raw": korean_raw,
+        "warnings": warnings,
         "findings": (
             pretreatment.findings + claude_findings + gpt_findings + safety_net_findings
         ),

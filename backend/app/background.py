@@ -48,6 +48,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             tv = await session.get(TargetVersion, target_version_id)
             tv.status = "review"
             tv.video_proxy_path = result.get("video_proxy_path")
+            tv.warnings = result.get("warnings") or None
             episode_row = await session.get(Episode, tv.episode_id)
             if episode_row.stt_cache is None:
                 # 최초 성공 시에만 캐시를 채운다 — 이미 캐시가 있으면(다른
