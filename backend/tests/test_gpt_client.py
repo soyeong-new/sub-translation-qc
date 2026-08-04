@@ -171,3 +171,21 @@ async def test_verify_and_refine_falls_back_when_profile_empty():
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "대상언어" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_handles_none_valued_register_system_section():
+    """YAML에 register_system: 처럼 섹션 헤더만 있고 본문이 없으면 PyYAML이
+    None으로 파싱한다. profile.get("register_system", {})는 키가 존재하는
+    경우(None이라도) 기본값 {}를 쓰지 않으므로 None.get(...)에서 AttributeError가
+    난다 — 이를 방지하는 회귀 테스트."""
+    payload = {"findings": [{"segment_id": "p1", "category": "translation",
+                              "corrected_text": "texto final", "description": "정확성 보완"}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.verify_and_refine(
+        pairs=[{"id": "p1", "korean_text": "안녕", "current_text": "hola corregido"}],
+        original_target_by_id={"p1": "hola original"},
+        profile={"language": "es", "variant": "LATAM", "register_system": None},
+        knowledge="", format_constraint="줄당 50자 이내",
+    )
+    assert result == payload["findings"]

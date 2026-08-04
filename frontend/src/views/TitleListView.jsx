@@ -22,6 +22,13 @@ function getExtension(filename) {
   return idx === -1 ? "" : filename.slice(idx).toLowerCase();
 }
 
+// <select>의 value/React key로만 쓰이는 안정적인 문자열. 실제 language/variant는
+// 이 문자열을 파싱하지 않고 languageProfiles 배열에서 매칭해 얻는다 — variant에
+// "_"가 포함될 수 있어(예: "BR_formal") 문자열을 되돌려 split하면 값이 깨진다.
+function profileKey(p) {
+  return `${p.language}_${p.variant}`;
+}
+
 const inputClass =
   "block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground " +
   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 " +
@@ -50,10 +57,10 @@ export default function TitleListView({ onSelect }) {
   const [srtProgress, setSrtProgress] = useState(null);
   const [status, setStatus] = useState(null); // { kind: "loading" | "success" | "error", message: string }
   const [languageProfiles, setLanguageProfiles] = useState([]);
-  const [selectedProfileKey, setSelectedProfileKey] = useState("");
+  const [selectedProfile, setSelectedProfile] = useState(null); // { language, variant }
   const isSubmitting = status?.kind === "loading";
   const canSubmit =
-    Boolean(name && videoFile && srtFile && selectedProfileKey) && !isSubmitting;
+    Boolean(name && videoFile && srtFile && selectedProfile) && !isSubmitting;
 
   // 컴포넌트가 언마운트된 뒤에는 폴링을 멈추고 setState도 호출하지 않도록
   // 마운트 여부를 추적한다 (FileDropzone.jsx 등 다른 비동기 처리와 동일한 패턴).
@@ -70,7 +77,7 @@ export default function TitleListView({ onSelect }) {
         if (!isMountedRef.current) return;
         setLanguageProfiles(profiles);
         if (profiles.length > 0) {
-          setSelectedProfileKey(`${profiles[0].language}_${profiles[0].variant}`);
+          setSelectedProfile(profiles[0]);
         }
       })
       .catch((err) => {
@@ -138,8 +145,7 @@ export default function TitleListView({ onSelect }) {
       setStatus({ kind: "loading", message: "등록 중..." });
       const title = await createTitle(name, type);
       const episode = await createEpisode(title.id, null, videoUpload.path);
-      const [selectedLanguage, selectedVariant] = selectedProfileKey.split("_");
-      const tv = await createTargetVersion(episode.id, selectedLanguage, selectedVariant);
+      const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
       setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
       await runAnalysis(tv.id, srtUpload.path);
       await pollUntilDone(tv.id);
@@ -192,14 +198,17 @@ export default function TitleListView({ onSelect }) {
           <Field id="target-language" label="대상언어">
             <select
               id="target-language"
-              value={selectedProfileKey}
-              onChange={(e) => setSelectedProfileKey(e.target.value)}
+              value={selectedProfile ? profileKey(selectedProfile) : ""}
+              onChange={(e) => {
+                const match = languageProfiles.find((p) => profileKey(p) === e.target.value);
+                setSelectedProfile(match ?? null);
+              }}
               disabled={isSubmitting || languageProfiles.length === 0}
               className={inputClass}
             >
               {languageProfiles.length === 0 && <option value="">불러오는 중...</option>}
               {languageProfiles.map((p) => (
-                <option key={`${p.language}_${p.variant}`} value={`${p.language}_${p.variant}`}>
+                <option key={profileKey(p)} value={profileKey(p)}>
                   {p.language} ({p.variant})
                 </option>
               ))}

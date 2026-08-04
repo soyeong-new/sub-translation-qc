@@ -121,3 +121,21 @@ async def test_correct_primary_falls_back_when_profile_empty():
     )
     sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
     assert "대상언어" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_handles_none_valued_grammar_agreement_section():
+    """YAML에 grammar_agreement: 처럼 섹션 헤더만 있고 본문이 없으면 PyYAML이
+    None으로 파싱한다. profile.get("grammar_agreement", {})는 키가 존재하는
+    경우(None이라도) 기본값 {}를 쓰지 않으므로 None.get(...)에서 AttributeError가
+    난다 — 이를 방지하는 회귀 테스트."""
+    payload = [{"segment_id": "p1", "category": "gender",
+                "corrected_text": "está feliz", "description": "성별 일치 수정"}]
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.correct_primary(
+        pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "esta feliz"}],
+        profile={"language": "es", "variant": "LATAM", "grammar_agreement": None},
+        characters=[], relationships=[], pending_sensitive_hits=[],
+        knowledge="", format_constraint="줄당 50자 이내",
+    )
+    assert result == payload

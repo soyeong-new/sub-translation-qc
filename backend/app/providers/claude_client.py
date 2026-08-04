@@ -76,8 +76,8 @@ class ClaudeClient:
         language = profile.get("language") or "대상언어"
         variant = profile.get("variant")
         language_label = f"{language}({variant})" if variant else language
-        grammar_instruction = profile.get("grammar_agreement", {}).get("llm_instruction", "")
-        register_instruction = profile.get("register_system", {}).get("llm_instruction", "")
+        grammar_instruction = (profile.get("grammar_agreement") or {}).get("llm_instruction", "")
+        register_instruction = (profile.get("register_system") or {}).get("llm_instruction", "")
 
         system = (
             f"너는 한국어-{language_label} 자막의 1차 교정자다. 다음 항목만 직접 "

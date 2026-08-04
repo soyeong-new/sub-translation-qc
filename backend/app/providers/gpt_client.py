@@ -56,8 +56,8 @@ class GptClient:
         language = profile.get("language") or "대상언어"
         variant = profile.get("variant")
         language_label = f"{language}({variant})" if variant else language
-        register_instruction = profile.get("register_system", {}).get("llm_instruction", "")
-        naturalness_instruction = profile.get("naturalness_check", {}).get("llm_instruction", "")
+        register_instruction = (profile.get("register_system") or {}).get("llm_instruction", "")
+        naturalness_instruction = (profile.get("naturalness_check") or {}).get("llm_instruction", "")
 
         enriched = [
             {**p, "original_qc_srt_text": original_target_by_id.get(p["id"], p["current_text"])}
