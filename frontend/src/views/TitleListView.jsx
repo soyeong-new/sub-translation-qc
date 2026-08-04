@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
-  getTargetVersion,
+  getTargetVersion, listLanguageProfiles,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -49,8 +49,11 @@ export default function TitleListView({ onSelect }) {
   const [videoProgress, setVideoProgress] = useState(null);
   const [srtProgress, setSrtProgress] = useState(null);
   const [status, setStatus] = useState(null); // { kind: "loading" | "success" | "error", message: string }
+  const [languageProfiles, setLanguageProfiles] = useState([]);
+  const [selectedProfileKey, setSelectedProfileKey] = useState("");
   const isSubmitting = status?.kind === "loading";
-  const canSubmit = Boolean(name && videoFile && srtFile) && !isSubmitting;
+  const canSubmit =
+    Boolean(name && videoFile && srtFile && selectedProfileKey) && !isSubmitting;
 
   // 컴포넌트가 언마운트된 뒤에는 폴링을 멈추고 setState도 호출하지 않도록
   // 마운트 여부를 추적한다 (FileDropzone.jsx 등 다른 비동기 처리와 동일한 패턴).
@@ -59,6 +62,16 @@ export default function TitleListView({ onSelect }) {
     return () => {
       isMountedRef.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    listLanguageProfiles().then((profiles) => {
+      if (!isMountedRef.current) return;
+      setLanguageProfiles(profiles);
+      if (profiles.length > 0) {
+        setSelectedProfileKey(`${profiles[0].language}_${profiles[0].variant}`);
+      }
+    });
   }, []);
 
   function pollUntilDone(targetVersionId) {
@@ -120,7 +133,8 @@ export default function TitleListView({ onSelect }) {
       setStatus({ kind: "loading", message: "등록 중..." });
       const title = await createTitle(name, type);
       const episode = await createEpisode(title.id, null, videoUpload.path);
-      const tv = await createTargetVersion(episode.id, "es", "LATAM");
+      const [selectedLanguage, selectedVariant] = selectedProfileKey.split("_");
+      const tv = await createTargetVersion(episode.id, selectedLanguage, selectedVariant);
       setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
       await runAnalysis(tv.id, srtUpload.path);
       await pollUntilDone(tv.id);
@@ -167,6 +181,23 @@ export default function TitleListView({ onSelect }) {
             >
               <option value="movie">영화</option>
               <option value="series">드라마</option>
+            </select>
+          </Field>
+
+          <Field id="target-language" label="대상언어">
+            <select
+              id="target-language"
+              value={selectedProfileKey}
+              onChange={(e) => setSelectedProfileKey(e.target.value)}
+              disabled={isSubmitting || languageProfiles.length === 0}
+              className={inputClass}
+            >
+              {languageProfiles.length === 0 && <option value="">불러오는 중...</option>}
+              {languageProfiles.map((p) => (
+                <option key={`${p.language}_${p.variant}`} value={`${p.language}_${p.variant}`}>
+                  {p.language} ({p.variant})
+                </option>
+              ))}
             </select>
           </Field>
 

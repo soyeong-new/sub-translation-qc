@@ -11,6 +11,8 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+export const listLanguageProfiles = () => request("/language-profiles");
+
 export const createTitle = (name, type) =>
   request("/titles", { method: "POST", body: JSON.stringify({ name, type }) });
 
