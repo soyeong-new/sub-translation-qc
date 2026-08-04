@@ -19,7 +19,7 @@ from app.core.requery import requery_finding, RequeryNotSupportedError
 from app.core.uploads import (
     save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, MEDIA_ROOT,
 )
-from app.language_profiles.loader import load_profile
+from app.language_profiles.loader import load_profile, list_profiles
 from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
 from app.repositories import get_findings as repo_get_findings
@@ -57,6 +57,11 @@ class EpisodeIn(BaseModel):
 class TargetVersionIn(BaseModel):
     target_language: str
     variant: str
+
+
+@app.get("/language-profiles")
+async def get_language_profiles():
+    return list_profiles()
 
 
 @app.post("/titles")
