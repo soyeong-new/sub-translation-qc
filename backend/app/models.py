@@ -28,6 +28,10 @@ class Episode(Base):
     title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
     episode_no: Mapped[int | None] = mapped_column(nullable=True)
     video_path: Mapped[str] = mapped_column(String)
+    # STT/영상 프록시 캐시 — 같은 에피소드의 여러 target_version이 재사용하고,
+    # 재시도 시에도 원본 영상 없이(최초 성공 후 삭제됨) 재분석이 가능해진다.
+    stt_cache: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    video_proxy_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class Character(Base):
@@ -56,6 +60,9 @@ class TargetVersion(Base):
     status: Mapped[str] = mapped_column(String, default="analyzing")
     error_message: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     video_proxy_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # 파이프라인 단계별 부분 실패(예: 인물 식별 실패)를 사람에게 보여주기 위한
+    # 목록. [{"stage": "인물 식별", "message": "..."}] 형태. 전부 성공하면 None.
+    warnings: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class Segment(Base):

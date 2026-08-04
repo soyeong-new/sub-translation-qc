@@ -15,7 +15,7 @@ async def main():
     provider = LiveModelProvider(
         claude_api_key=os.environ["ANTHROPIC_API_KEY"], claude_model=os.environ["CLAUDE_MODEL"],
         gpt_api_key=os.environ["OPENAI_API_KEY"], gpt_model=os.environ["GPT_MODEL"],
-        gpt_transcribe_model=os.environ.get("GPT_TRANSCRIBE_MODEL", "whisper-1"),
+        gpt_transcribe_model=os.environ.get("GPT_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
     )
     profile = {"checks_enabled": {"gender_agreement": True, "register_consistency": True}}
     format_constraint = "줄당 50자 이내, 세그먼트당 최대 2줄을 지켜서 제안할 것."

@@ -9,7 +9,7 @@ from app.providers.gpt_client import GptClient
 class LiveModelProvider(ModelProvider):
     def __init__(self, claude_api_key: str, claude_model: str,
                  gpt_api_key: str, gpt_model: str,
-                 gpt_transcribe_model: str = "whisper-1"):
+                 gpt_transcribe_model: str = "gpt-4o-mini-transcribe"):
         self._claude = ClaudeClient(api_key=claude_api_key, model=claude_model)
         self._gpt = GptClient(api_key=gpt_api_key, model=gpt_model,
                                transcribe_model=gpt_transcribe_model)

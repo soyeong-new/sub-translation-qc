@@ -97,3 +97,92 @@ async def test_run_analysis_returns_404_when_episode_missing(tmp_path, monkeypat
                                   json={"target_srt_path": str(srt_path)})
     assert r.status_code == 404
     assert r.json()["detail"] == "episode not found"
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_can_be_retried_without_integrity_error(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="pending"); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    # GET /target-versions/{id}가 video_proxy_url을 MEDIA_ROOT/video_proxy
+    # 기준 상대경로로 계산하므로("/fake/proxy.mp4" 같은 경로를 주면
+    # Path.relative_to()가 ValueError를 던진다 — 이 테스트가 검증하려는
+    # PK 충돌 버그와는 무관한 별개의 기존 동작), 실제 generate_video_proxy가
+    # 만드는 것과 같은 형태로 MEDIA_ROOT/video_proxy 하위 경로를 mock한다.
+    from app.core.uploads import MEDIA_ROOT
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy.mp4")
+
+    transport = ASGITransport(app=app)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.background.delete_original_video", return_value=None):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            for _ in range(2):
+                r = await client.post(
+                    f"/target-versions/{tv_id}/run-analysis",
+                    json={"target_srt_path": str(srt_path)},
+                )
+                assert r.status_code == 200
+                if app.state.background_tasks:
+                    await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}")
+            assert r.status_code == 200
+            assert r.json()["status"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="pending"); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    from app.providers.mock import MockProvider
+
+    async def _analyze_characters_raises(*args, **kwargs):
+        raise RuntimeError("인물 식별 API 오류")
+
+    monkeypatch.setattr(MockProvider, "analyze_characters", _analyze_characters_raises)
+
+    # GET /target-versions/{id}가 video_proxy_url을 MEDIA_ROOT/video_proxy
+    # 기준 상대경로로 계산하므로("/fake/proxy.mp4" 같은 경로를 주면
+    # Path.relative_to()가 ValueError를 던진다 — 이 테스트가 검증하려는
+    # warnings 노출과는 무관한 별개의 기존 동작), 실제 generate_video_proxy가
+    # 만드는 것과 같은 형태로 MEDIA_ROOT/video_proxy 하위 경로를 mock한다.
+    from app.core.uploads import MEDIA_ROOT
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy_warnings.mp4")
+
+    transport = ASGITransport(app=app)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.background.delete_original_video", return_value=None):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(f"/target-versions/{tv_id}/run-analysis",
+                              json={"target_srt_path": str(srt_path)})
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}")
+    assert r.status_code == 200
+    assert r.json()["warnings"] == [{"stage": "인물 식별", "message": "인물 식별 API 오류"}]

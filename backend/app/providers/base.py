@@ -83,7 +83,7 @@ def get_provider() -> ModelProvider:
         return LiveModelProvider(
             claude_api_key=required["ANTHROPIC_API_KEY"], claude_model=required["CLAUDE_MODEL"],
             gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
-            gpt_transcribe_model=os.getenv("GPT_TRANSCRIBE_MODEL", "whisper-1"),
+            gpt_transcribe_model=os.getenv("GPT_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),
         )
     raise ProviderNotConfiguredError(
         f"알 수 없거나 아직 구현되지 않은 프로바이더: {name}. "

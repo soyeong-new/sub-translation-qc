@@ -27,3 +27,17 @@ def load_profile(language: str, variant: str) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"언어 프로파일을 찾을 수 없습니다: {path}")
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def list_profiles() -> list[dict]:
+    """language_profiles/ 폴더의 {language}_{variant}.yaml 파일을 스캔해
+    선택 가능한 언어/변형 목록을 반환한다. 새 프로파일 파일을 추가하면
+    코드 수정 없이 이 목록에 자동으로 나타난다."""
+    profiles = []
+    for path in sorted(_DIR.glob("*.yaml")):
+        stem = path.stem  # 예: "es_LATAM"
+        if "_" not in stem:
+            continue
+        language, variant = stem.split("_", 1)
+        profiles.append({"language": language, "variant": variant})
+    return profiles

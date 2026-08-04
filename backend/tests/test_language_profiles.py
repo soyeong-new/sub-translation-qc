@@ -1,5 +1,5 @@
 import pytest
-from app.language_profiles.loader import load_profile
+from app.language_profiles.loader import load_profile, list_profiles
 
 
 def test_load_es_latam_profile_has_expected_shape():
@@ -44,3 +44,17 @@ def test_load_profile_rejects_numeric_and_special_chars():
         load_profile("es", "LATAM-br")
     with pytest.raises(FileNotFoundError):
         load_profile("es-ES", "LATAM")
+
+
+def test_list_profiles_includes_es_latam():
+    profiles = list_profiles()
+    assert {"language": "es", "variant": "LATAM"} in profiles
+
+
+def test_list_profiles_ignores_non_yaml_files(tmp_path, monkeypatch):
+    import app.language_profiles.loader as loader_module
+    monkeypatch.setattr(loader_module, "_DIR", tmp_path)
+    (tmp_path / "es_LATAM.yaml").write_text("language: es\nvariant: LATAM\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("not a profile", encoding="utf-8")
+    profiles = loader_module.list_profiles()
+    assert profiles == [{"language": "es", "variant": "LATAM"}]

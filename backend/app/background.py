@@ -28,12 +28,17 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             episode = await session.get(Episode, tv.episode_id)
 
         provider = get_provider()
+        cached_segments = (
+            episode.stt_cache.get("segments") if episode.stt_cache else None
+        )
         result = await asyncio.wait_for(
             run_pipeline(
                 video_path=episode.video_path,
                 target_srt_path=target_srt_path,
                 language=tv.target_language, variant=tv.variant,
                 target_version_id=target_version_id, provider=provider,
+                cached_korean_segments=cached_segments,
+                cached_video_proxy_path=episode.video_proxy_path,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )
@@ -43,6 +48,13 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             tv = await session.get(TargetVersion, target_version_id)
             tv.status = "review"
             tv.video_proxy_path = result.get("video_proxy_path")
+            tv.warnings = result.get("warnings") or None
+            episode_row = await session.get(Episode, tv.episode_id)
+            if episode_row.stt_cache is None:
+                # 최초 성공 시에만 캐시를 채운다 — 이미 캐시가 있으면(다른
+                # target_version이 먼저 채웠거나 재시도인 경우) 덮어쓰지 않는다.
+                episode_row.stt_cache = {"segments": result.get("korean_segments_raw", [])}
+                episode_row.video_proxy_path = result.get("video_proxy_path")
             await session.commit()
 
         # 원본 영상은 결과가 전부 커밋된 뒤에만 지운다. run_pipeline은 원본을

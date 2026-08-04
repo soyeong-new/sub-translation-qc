@@ -11,6 +11,7 @@ import {
   confirmGender,
   confirmFormality,
   correctStt,
+  getTargetVersion,
 } from "../api.js";
 
 // 카테고리 라벨/색상: Task 21 Step 0에서 확정한 6종 팔레트를 그대로 재사용한다
@@ -425,6 +426,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [editText, setEditText] = useState("");
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
   const [exportResult, setExportResult] = useState(null);
+  const [pipelineWarnings, setPipelineWarnings] = useState([]);
 
   // "사실 확인" 사이드바 상태 — Findings(위 state들)와는 완전히 분리된 데이터
   // 흐름을 가진다: 인물 성별 / 관계 격식 / STT 원문 세 섹션.
@@ -455,6 +457,20 @@ export default function ReviewView({ targetVersionId, onBack }) {
       })
       .catch((err) => {
         if (!cancelled) setLoadError(err.message ?? "findings를 불러오지 못했습니다.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [targetVersionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getTargetVersion(targetVersionId)
+      .then((data) => {
+        if (!cancelled) setPipelineWarnings(data.warnings ?? []);
+      })
+      .catch(() => {
+        // 경고 배너는 부가 정보라 실패해도 화면 전체를 막지 않는다.
       });
     return () => {
       cancelled = true;
@@ -639,6 +655,19 @@ export default function ReviewView({ targetVersionId, onBack }) {
           </div>
         </div>
       </header>
+
+      {pipelineWarnings.length > 0 && (
+        <div className="mx-auto max-w-6xl px-6 pt-4">
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <p className="font-medium">일부 분석 단계 실패</p>
+            <ul className="mt-1 list-disc pl-5">
+              {pipelineWarnings.map((w, i) => (
+                <li key={i}>{w.stage}: {w.message}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* 본문을 좌측 "사실 확인" 사이드바 / 우측 Findings·내보내기 본문으로 분리한다.
           두 영역은 레이아웃(사이드바 vs 본문 컬럼)과 스타일(점선 accent 테두리 vs

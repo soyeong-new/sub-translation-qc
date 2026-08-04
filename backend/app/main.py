@@ -19,10 +19,10 @@ from app.core.requery import requery_finding, RequeryNotSupportedError
 from app.core.uploads import (
     save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS, MEDIA_ROOT,
 )
-from app.language_profiles.loader import load_profile
+from app.language_profiles.loader import load_profile, list_profiles
 from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
-from app.repositories import get_findings as repo_get_findings
+from app.repositories import get_findings as repo_get_findings, delete_target_version_results
 from app.background import analyze_and_save
 
 
@@ -57,6 +57,11 @@ class EpisodeIn(BaseModel):
 class TargetVersionIn(BaseModel):
     target_language: str
     variant: str
+
+
+@app.get("/language-profiles")
+async def get_language_profiles():
+    return list_profiles()
 
 
 @app.post("/titles")
@@ -105,7 +110,7 @@ async def get_target_version(target_version_id: str):
             if tv.video_proxy_path else None
         )
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
-                "video_proxy_url": video_proxy_url}
+                "video_proxy_url": video_proxy_url, "warnings": tv.warnings or []}
 
 
 class RunAnalysisIn(BaseModel):
@@ -121,8 +126,14 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: 
         episode = await session.get(Episode, tv.episode_id)
         if episode is None:
             raise HTTPException(404, "episode not found")
+        # 재시도(이미 한 번 분석된 target_version에 다시 요청)일 수 있으므로,
+        # 이전 실행의 Segment/Finding을 먼저 지운다 — 요청이 끝나기 전에
+        # 동기적으로 처리해 폴링하는 클라이언트가 옛 결과를 잠깐이라도 보지
+        # 않게 한다.
+        await delete_target_version_results(session, target_version_id)
         tv.status = "analyzing"
         tv.error_message = None
+        tv.warnings = None
         await session.commit()
 
     task = asyncio.create_task(analyze_and_save(target_version_id, payload.target_srt_path))
