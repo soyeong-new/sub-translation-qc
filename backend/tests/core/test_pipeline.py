@@ -154,38 +154,6 @@ async def test_pipeline_rechecks_ellipsis_after_gpt_pass(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_continues_when_build_registry_raises(tmp_path, monkeypatch):
-    """C2 회귀: build_registry(analyze_characters, 실제 LLM 네트워크 호출)가
-    실패해도 전체 분석이 실패 처리되면 안 된다 — Claude/GPT 패스와 동일한 부분
-    실패 허용 원칙이 인물/관계 식별에도 적용돼야 한다. 실패 시 빈 레지스트리로
-    진행하고, 이미 든 STT 비용을 낭비하지 않도록 나머지 파이프라인(Claude/GPT/
-    안전망)은 계속 실행돼야 한다."""
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text(TARGET_SRT, encoding="utf-8")
-    provider = MockProvider()
-
-    async def _analyze_characters_raises(*args, **kwargs):
-        raise RuntimeError("인물 식별 API 오류")
-
-    monkeypatch.setattr(provider, "analyze_characters", _analyze_characters_raises)
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4",
-            target_srt_path=str(srt_path),
-            language="es", variant="LATAM",
-            target_version_id="tv1", provider=provider,
-        )
-
-    assert result["characters"] == []
-    assert result["relationships"] == []
-    # GPT 2차는 계속 실행되어 BAD_TRANSLATION 마커를 정상 탐지한다 — 인물 식별
-    # 실패가 나머지 파이프라인을 막지 않았다는 증거.
-    assert any(f.model == "gpt" for f in result["findings"])
-
-
-@pytest.mark.asyncio
 async def test_pipeline_does_not_delete_original_video(tmp_path, monkeypatch):
     """C2 회귀: run_pipeline 자신은 더 이상 원본 영상을 지우지 않는다 — 결과가
     호출자(background.py)에 의해 실제로 커밋된 뒤에만 지워야 하기 때문이다.
@@ -322,29 +290,6 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
 
 
 @pytest.mark.asyncio
-async def test_pipeline_records_warning_when_build_registry_raises(tmp_path, monkeypatch):
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text(TARGET_SRT, encoding="utf-8")
-    provider = MockProvider()
-
-    async def _analyze_characters_raises(*args, **kwargs):
-        raise RuntimeError("인물 식별 API 오류")
-
-    monkeypatch.setattr(provider, "analyze_characters", _analyze_characters_raises)
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4",
-            target_srt_path=str(srt_path),
-            language="es", variant="LATAM",
-            target_version_id="tv1", provider=provider,
-        )
-
-    assert result["warnings"] == [{"stage": "인물 식별", "message": "인물 식별 API 오류"}]
-
-
-@pytest.mark.asyncio
 async def test_pipeline_returns_empty_warnings_when_all_stages_succeed(tmp_path):
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
@@ -359,3 +304,89 @@ async def test_pipeline_returns_empty_warnings_when_all_stages_succeed(tmp_path)
         )
 
     assert result["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_flags_lines_needing_gender_or_formality_check(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n\n"
+        "2\n00:00:20,000 --> 00:00:22,000\nHola.\n",
+        encoding="utf-8",
+    )
+    provider = MockProvider()
+
+    async def _flag_first_only(pairs, profile):
+        return [
+            {"id": p["id"], "gender_check_needed": p["id"] == "pair_1",
+             "formality_check_needed": False}
+            for p in pairs
+        ]
+
+    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_first_only)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    resolutions = result["segment_resolutions"]
+    assert len(resolutions) == 1
+    assert resolutions[0]["gender_check_needed"] is True
+    assert resolutions[0]["formality_check_needed"] is False
+
+
+@pytest.mark.asyncio
+async def test_pipeline_finds_anchor_candidates_for_flagged_scene(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _transcribe_with_name(audio_path):
+        return [{"start": 0.0, "end": 2.0, "text": "민지야 피곤해 보인다"}]
+
+    async def _flag_all(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
+                for p in pairs]
+
+    monkeypatch.setattr(provider, "transcribe", _transcribe_with_name)
+    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_all)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            prior_characters=[{"id": "c1", "label": "민지"}],
+        )
+
+    resolutions = result["segment_resolutions"]
+    assert len(resolutions) == 1
+    assert resolutions[0]["gender_anchor_candidates"] == [{"id": "c1", "label": "민지"}]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_continues_when_check_grammar_necessity_raises(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION aquí....\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _raises(pairs, profile):
+        raise RuntimeError("문법 판단 API 오류")
+
+    monkeypatch.setattr(provider, "check_grammar_necessity", _raises)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    assert result["segment_resolutions"] == []
+    assert result["warnings"] == [{"stage": "문법 필요성 판단", "message": "문법 판단 API 오류"}]
+    # 나머지 파이프라인은 계속 진행된다 — GPT 2차가 BAD_TRANSLATION 마커를 정상 탐지.
+    assert any(f.model == "gpt" for f in result["findings"])

@@ -25,6 +25,9 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
                                 result: dict) -> None:
     # segments 먼저: findings.segment_id가 segments.id를 참조하는 FK이므로,
     # 네임스페이싱된 pair.id를 Segment.id로 써서 findings가 참조할 수 있게 한다.
+    resolution_by_segment: dict = {
+        r["segment_id"]: r for r in result.get("segment_resolutions", [])
+    }
     for index, pair in enumerate(result["pairs"]):
         if pair.target is not None:
             start, end = pair.target.start, pair.target.end
@@ -32,11 +35,14 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
             start, end = pair.korean.start, pair.korean.end
         else:
             start, end = 0.0, 0.0
+        resolution = resolution_by_segment.get(pair.id, {})
         session.add(Segment(
             id=_ns(target_version_id, pair.id), target_version_id=target_version_id,
             index=index, start=start, end=end,
             korean_text=pair.korean.text if pair.korean else "",
             target_text=pair.target.text if pair.target else "",
+            gender_check_needed=bool(resolution.get("gender_check_needed")),
+            formality_check_needed=bool(resolution.get("formality_check_needed")),
         ))
 
     # 명시적 flush: segments를 findings보다 먼저 INSERT해야

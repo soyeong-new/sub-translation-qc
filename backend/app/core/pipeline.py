@@ -14,8 +14,8 @@ from app.knowledge.loader import (
     load_knowledge, load_sensitive_terms, load_glossary, load_cta_patterns,
     load_profanity_dictionary,
 )
-from app.core.character_registry import build_registry
-from app.core.consistency_check import find_gender_conflicts, find_register_conflicts
+from app.core.scene_splitting import split_into_scenes
+from app.core.anchor_matching import find_anchor_candidates
 from app.core.pretreatment import run_pretreatment
 from app.core.diffing import findings_from_corrections, apply_corrections
 from app.schemas import SegmentText
@@ -118,23 +118,50 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         p.id: p.target.text for p in pairs if p.target is not None
     }
 
-    # design §에러 처리: 인물/관계 식별(analyze_characters, 실제 LLM 네트워크
-    # 호출)이 실패해도 전체 분석을 실패 처리하지 않는다 — Claude/GPT 패스와
-    # 동일한 부분 실패 허용 원칙. 빈 레지스트리로 진행하면 성별/존댓말 관련
-    # 질문이 생략될 뿐, 나머지 파이프라인(사전필터/Claude/GPT/안전망)은 이미
-    # 든 STT 비용을 낭비하지 않고 계속 진행된다.
+    # 인물/관계 로스터는 이제 title에 이미 있는 Character/Relationship에서
+    # 그대로 받아온다(prior_characters/prior_relationships) — 매 실행마다
+    # LLM으로 처음부터 다시 추론하지 않는다. 아무것도 안 넘어오면(아직 로스터가
+    # 없는 title) 빈 목록으로 시작한다.
+    characters = prior_characters if prior_characters is not None else []
+    relationships = prior_relationships if prior_relationships is not None else []
+
+    # 문법 필요성 판단(줄 단위, LLM): 성별/격식 판단이 실제로 필요한 줄만
+    # 골라낸다. 걸리지 않은 줄은 이후 앵커 매칭·사람 리뷰에 전혀 들어가지 않는다.
+    grammar_pairs = [
+        {"id": p.id, "target_text": p.target.text if p.target else ""}
+        for p in pairs if p.target is not None
+    ]
+    segment_resolutions: list = []
     try:
-        registry = await build_registry(pairs, profile, provider)
+        grammar_flags = await provider.check_grammar_necessity(grammar_pairs, profile)
+        flags_by_id = {f["id"]: f for f in grammar_flags}
+        flagged_pairs = [
+            p for p in pairs
+            if flags_by_id.get(p.id, {}).get("gender_check_needed")
+            or flags_by_id.get(p.id, {}).get("formality_check_needed")
+        ]
+        if flagged_pairs:
+            scenes = split_into_scenes(pairs)
+            scene_by_pair_id = {}
+            for scene in scenes:
+                for scene_pair in scene:
+                    scene_by_pair_id[scene_pair.id] = scene
+            for p in flagged_pairs:
+                flags = flags_by_id[p.id]
+                scene = scene_by_pair_id.get(p.id, [p])
+                candidates = find_anchor_candidates(scene, characters) if characters else []
+                segment_resolutions.append({
+                    "segment_id": p.id,
+                    "gender_check_needed": bool(flags.get("gender_check_needed")),
+                    "formality_check_needed": bool(flags.get("formality_check_needed")),
+                    "gender_anchor_candidates": candidates if flags.get("gender_check_needed") else [],
+                    "formality_anchor_candidates": candidates if flags.get("formality_check_needed") else [],
+                })
     except Exception as exc:
         logger.exception(
-            "인물/관계 식별 실패, 빈 레지스트리로 계속 진행 (target_version_id=%s)",
+            "문법 필요성 판단 실패, 성별/격식 체크 생략하고 계속 진행 (target_version_id=%s)",
             target_version_id)
-        registry = {"characters": [], "relationships": []}
-        warnings.append({"stage": "인물 식별", "message": str(exc)})
-    characters = prior_characters if prior_characters is not None else registry["characters"]
-    relationships = prior_relationships if prior_relationships is not None else registry["relationships"]
-    gender_questions = find_gender_conflicts(characters)
-    register_questions = find_register_conflicts(relationships)
+        warnings.append({"stage": "문법 필요성 판단", "message": str(exc)})
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
@@ -208,8 +235,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         "format_violations": format_violations,
         "characters": characters,
         "relationships": relationships,
-        "gender_questions": gender_questions,
-        "register_questions": register_questions,
+        "segment_resolutions": segment_resolutions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
         "korean_segments_raw": korean_raw,

@@ -510,6 +510,40 @@ async def test_save_chart_extraction_result_creates_characters_and_relationships
 
 
 @pytest.mark.asyncio
+async def test_save_pipeline_result_persists_segment_resolution_flags():
+    async with async_session() as session:
+        title = Title(name="T", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+
+        result = {
+            "pairs": [AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="Esta cansada."))],
+            "findings": [], "format_violations": [],
+            "characters": [], "relationships": [],
+            "segment_resolutions": [
+                {"segment_id": "p1", "gender_check_needed": True, "formality_check_needed": False,
+                 "gender_anchor_candidates": [], "formality_anchor_candidates": []},
+            ],
+        }
+        await save_pipeline_result(session, tv.id, result)
+        await session.commit()
+        tv_id = tv.id
+
+    async with async_session() as session:
+        seg = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id)
+        )).scalars().first()
+        assert seg.gender_check_needed is True
+        assert seg.formality_check_needed is False
+
+
+@pytest.mark.asyncio
 async def test_save_chart_extraction_result_does_not_overwrite_confirmed_gender():
     from app.repositories import save_chart_extraction_result
 
