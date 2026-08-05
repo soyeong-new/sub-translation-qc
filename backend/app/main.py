@@ -448,6 +448,76 @@ async def list_segments(target_version_id: str):
         ]
 
 
+@app.get("/target-versions/{target_version_id}/flagged-segments")
+async def list_flagged_segments(target_version_id: str):
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(Segment).where(
+                Segment.target_version_id == target_version_id,
+                (Segment.gender_check_needed == True) | (Segment.formality_check_needed == True),  # noqa: E712
+            ).order_by(Segment.index)
+        )).scalars().all()
+        return [
+            {"id": s.id, "start": s.start, "end": s.end,
+             "korean_text": s.korean_text, "target_text": s.target_text,
+             "gender_check_needed": s.gender_check_needed,
+             "formality_check_needed": s.formality_check_needed,
+             "resolved_character_id": s.resolved_character_id,
+             "resolved_gender_raw": s.resolved_gender_raw,
+             "resolved_relationship_id": s.resolved_relationship_id,
+             "resolved_formality_raw": s.resolved_formality_raw}
+            for s in rows
+        ]
+
+
+class ResolveGenderIn(BaseModel):
+    character_id: Optional[str] = None
+    gender: Optional[Literal["male", "female"]] = None
+
+
+@app.post("/segments/{segment_id}/resolve-gender")
+async def resolve_gender(segment_id: str, payload: ResolveGenderIn):
+    if bool(payload.character_id) == bool(payload.gender):
+        raise HTTPException(400, "character_id와 gender 중 정확히 하나만 지정해야 합니다.")
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        if payload.character_id:
+            seg.resolved_character_id = payload.character_id
+            seg.resolved_gender_raw = None
+        else:
+            seg.resolved_gender_raw = payload.gender
+            seg.resolved_character_id = None
+        await session.commit()
+        return {"id": seg.id, "resolved_character_id": seg.resolved_character_id,
+                "resolved_gender_raw": seg.resolved_gender_raw}
+
+
+class ResolveFormalityIn(BaseModel):
+    relationship_id: Optional[str] = None
+    formality_level: Optional[Literal["formal", "informal"]] = None
+
+
+@app.post("/segments/{segment_id}/resolve-formality")
+async def resolve_formality(segment_id: str, payload: ResolveFormalityIn):
+    if bool(payload.relationship_id) == bool(payload.formality_level):
+        raise HTTPException(400, "relationship_id와 formality_level 중 정확히 하나만 지정해야 합니다.")
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        if payload.relationship_id:
+            seg.resolved_relationship_id = payload.relationship_id
+            seg.resolved_formality_raw = None
+        else:
+            seg.resolved_formality_raw = payload.formality_level
+            seg.resolved_relationship_id = None
+        await session.commit()
+        return {"id": seg.id, "resolved_relationship_id": seg.resolved_relationship_id,
+                "resolved_formality_raw": seg.resolved_formality_raw}
+
+
 @app.get("/target-versions/{target_version_id}/characters")
 async def list_characters(target_version_id: str):
     """인물은 target_version이 아니라 title 단위로 공유된다 (Task 18 confirm-gender와
