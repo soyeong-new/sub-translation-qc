@@ -1,9 +1,30 @@
 from app.schemas import AlignedPair, SegmentText
-from app.core.anchor_matching import find_anchor_candidates
+from app.core.anchor_matching import find_anchor_candidates, find_relationship_anchor_candidates
 
 
 def _pair(id_, text):
     return AlignedPair(id=id_, korean=SegmentText(start=0.0, end=1.0, text=text), target=None)
+
+
+def test_find_relationship_anchor_candidates_matches_when_both_names_appear():
+    scene = [_pair("p1", "민지야, 서준이가 그러는데")]
+    relationships = [
+        {"id": "r1", "speaker_label": "민지", "addressee_label": "서준"},
+        {"id": "r2", "speaker_label": "민지", "addressee_label": "지훈"},
+    ]
+    result = find_relationship_anchor_candidates(scene, relationships)
+    assert result == [{"id": "r1", "label": "민지 → 서준"}]
+
+
+def test_find_relationship_anchor_candidates_requires_both_names_in_scene():
+    scene = [_pair("p1", "민지야 밥 먹었어?")]
+    relationships = [{"id": "r1", "speaker_label": "민지", "addressee_label": "서준"}]
+    assert find_relationship_anchor_candidates(scene, relationships) == []
+
+
+def test_find_relationship_anchor_candidates_returns_empty_for_empty_roster():
+    scene = [_pair("p1", "민지야 서준아")]
+    assert find_relationship_anchor_candidates(scene, []) == []
 
 
 def test_find_anchor_candidates_matches_label_appearing_in_scene_text():

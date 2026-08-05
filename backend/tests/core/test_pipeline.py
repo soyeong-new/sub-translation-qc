@@ -368,6 +368,40 @@ async def test_pipeline_finds_anchor_candidates_for_flagged_scene(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_pipeline_finds_relationship_anchor_candidates_for_flagged_scene(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\n¿Tú o usted?\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _transcribe_with_names(audio_path):
+        return [{"start": 0.0, "end": 2.0, "text": "민지야 서준이한테 존댓말 써야 돼?"}]
+
+    async def _flag_all(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": False, "formality_check_needed": True}
+                for p in pairs]
+
+    monkeypatch.setattr(provider, "transcribe", _transcribe_with_names)
+    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_all)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            prior_relationships=[
+                {"id": "r1", "speaker_label": "민지", "addressee_label": "서준"},
+            ],
+        )
+
+    resolutions = result["segment_resolutions"]
+    assert len(resolutions) == 1
+    assert resolutions[0]["formality_anchor_candidates"] == [{"id": "r1", "label": "민지 → 서준"}]
+    # gender_anchor_candidates는 formality용과 다른 계산이어야 한다 — 이 세그먼트는
+    # gender_check_needed가 False이므로 빈 리스트여야 한다.
+    assert resolutions[0]["gender_anchor_candidates"] == []
+
+
+@pytest.mark.asyncio
 async def test_pipeline_batches_check_grammar_necessity_for_long_episodes(tmp_path, monkeypatch):
     """회귀(Finding 2): check_grammar_necessity는 줄 하나당 결과 객체 하나를
     빠짐없이 반환해야 하는 스키마라, 실제 에피소드 분량(수백 줄)을 한 번의

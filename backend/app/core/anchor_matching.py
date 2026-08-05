@@ -22,3 +22,18 @@ def _scene_text(scene: List[AlignedPair]) -> str:
 def find_anchor_candidates(scene: List[AlignedPair], roster: List[dict]) -> List[dict]:
     text = _scene_text(scene)
     return [character for character in roster if character.get("label") and character["label"] in text]
+
+
+def find_relationship_anchor_candidates(scene: List[AlignedPair], relationships: List[dict]) -> List[dict]:
+    """씬 텍스트에 관계의 화자·상대 라벨이 **둘 다** 명시적으로 등장하는 관계만
+    후보로 태깅한다. gender와 달리 한쪽 이름만으로는 두 사람 사이의 관계를
+    특정할 근거가 부족하므로(예: "민지"만 나오면 민지가 등장하는 여러 관계 중
+    어느 것인지 알 수 없다), 화자/상대 라벨이 모두 나온 관계만 후보로 삼는다."""
+    text = _scene_text(scene)
+    candidates = []
+    for rel in relationships:
+        speaker_label = rel.get("speaker_label")
+        addressee_label = rel.get("addressee_label")
+        if speaker_label and addressee_label and speaker_label in text and addressee_label in text:
+            candidates.append({"id": rel["id"], "label": f"{speaker_label} → {addressee_label}"})
+    return candidates

@@ -15,7 +15,7 @@ from app.knowledge.loader import (
     load_profanity_dictionary,
 )
 from app.core.scene_splitting import split_into_scenes
-from app.core.anchor_matching import find_anchor_candidates
+from app.core.anchor_matching import find_anchor_candidates, find_relationship_anchor_candidates
 from app.core.pretreatment import run_pretreatment
 from app.core.diffing import findings_from_corrections, apply_corrections
 from app.schemas import SegmentText
@@ -169,13 +169,16 @@ async def run_pipeline(video_path: str, target_srt_path: str,
             for p in flagged_pairs:
                 flags = flags_by_id[p.id]
                 scene = scene_by_pair_id.get(p.id, [p])
-                candidates = find_anchor_candidates(scene, characters) if characters else []
+                gender_candidates = find_anchor_candidates(scene, characters) if characters else []
+                formality_candidates = (
+                    find_relationship_anchor_candidates(scene, relationships) if relationships else []
+                )
                 segment_resolutions.append({
                     "segment_id": p.id,
                     "gender_check_needed": bool(flags.get("gender_check_needed")),
                     "formality_check_needed": bool(flags.get("formality_check_needed")),
-                    "gender_anchor_candidates": candidates if flags.get("gender_check_needed") else [],
-                    "formality_anchor_candidates": candidates if flags.get("formality_check_needed") else [],
+                    "gender_anchor_candidates": gender_candidates if flags.get("gender_check_needed") else [],
+                    "formality_anchor_candidates": formality_candidates if flags.get("formality_check_needed") else [],
                 })
     except Exception as exc:
         logger.exception(
