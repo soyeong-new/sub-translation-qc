@@ -43,6 +43,8 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
             target_text=pair.target.text if pair.target else "",
             gender_check_needed=bool(resolution.get("gender_check_needed")),
             formality_check_needed=bool(resolution.get("formality_check_needed")),
+            gender_anchor_candidates=resolution.get("gender_anchor_candidates"),
+            formality_anchor_candidates=resolution.get("formality_anchor_candidates"),
         ))
 
     # 명시적 flush: segments를 findings보다 먼저 INSERT해야

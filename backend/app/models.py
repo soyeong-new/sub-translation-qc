@@ -101,6 +101,12 @@ class Segment(Base):
     resolved_relationship_id: Mapped[str | None] = mapped_column(
         ForeignKey("relationships.id"), nullable=True, default=None)
     resolved_formality_raw: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # 앵커 매칭 결과(분석 시점) — 이 세그먼트가 속한 씬에서 이름이 실제로 언급된
+    # 로스터 인물 후보 목록. [{"id": str, "label": str}, ...] 형태를 그대로
+    # 저장해 읽을 때 추가 조회 없이 바로 검수 UI의 "후보에서 고르기" 버튼을
+    # 채울 수 있게 한다. 후보가 없거나 애초에 체크가 필요 없었던 세그먼트는 None.
+    gender_anchor_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    formality_anchor_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class FindingRow(Base):

@@ -94,3 +94,13 @@ async def test_segments_table_has_resolution_columns():
     for col in ("gender_check_needed", "formality_check_needed", "resolved_character_id",
                 "resolved_gender_raw", "resolved_relationship_id", "resolved_formality_raw"):
         assert col in columns, f"{col} 컬럼이 없음"
+
+
+@pytest.mark.asyncio
+async def test_segments_table_has_anchor_candidates_columns():
+    async with engine.begin() as conn:
+        columns = await conn.run_sync(
+            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("segments")]
+        )
+    for col in ("gender_anchor_candidates", "formality_anchor_candidates"):
+        assert col in columns, f"{col} 컬럼이 없음"

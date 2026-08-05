@@ -465,7 +465,9 @@ async def list_flagged_segments(target_version_id: str):
              "resolved_character_id": s.resolved_character_id,
              "resolved_gender_raw": s.resolved_gender_raw,
              "resolved_relationship_id": s.resolved_relationship_id,
-             "resolved_formality_raw": s.resolved_formality_raw}
+             "resolved_formality_raw": s.resolved_formality_raw,
+             "gender_anchor_candidates": s.gender_anchor_candidates or [],
+             "formality_anchor_candidates": s.formality_anchor_candidates or []}
             for s in rows
         ]
 

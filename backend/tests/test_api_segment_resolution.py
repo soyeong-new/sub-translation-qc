@@ -35,7 +35,10 @@ async def _make_segment(**overrides) -> tuple[str, str]:
 
 @pytest.mark.asyncio
 async def test_list_flagged_segments_returns_only_flagged_ones():
-    tv_id, flagged_id = await _make_segment(gender_check_needed=True)
+    tv_id, flagged_id = await _make_segment(
+        gender_check_needed=True,
+        gender_anchor_candidates=[{"id": "char-1", "label": "민지"}],
+    )
     async with async_session() as session:
         title = (await session.execute(
             __import__("sqlalchemy").select(Title)
@@ -53,6 +56,10 @@ async def test_list_flagged_segments_returns_only_flagged_ones():
     assert len(body) == 1
     assert body[0]["id"] == flagged_id
     assert body[0]["gender_check_needed"] is True
+    # 앵커 매칭 후보가 있는 세그먼트는 그대로 내려주고, 없는(None) 세그먼트는
+    # 프런트가 다루기 쉽도록 빈 리스트로 정규화한다.
+    assert body[0]["gender_anchor_candidates"] == [{"id": "char-1", "label": "민지"}]
+    assert body[0]["formality_anchor_candidates"] == []
 
 
 @pytest.mark.asyncio

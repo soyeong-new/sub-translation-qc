@@ -523,12 +523,17 @@ async def test_save_pipeline_result_persists_segment_resolution_flags():
         await session.flush()
 
         result = {
-            "pairs": [AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="Esta cansada."))],
+            "pairs": [
+                AlignedPair(id="p1", target=SegmentText(start=0, end=1, text="Esta cansada.")),
+                AlignedPair(id="p2", target=SegmentText(start=1, end=2, text="Que tal.")),
+            ],
             "findings": [], "format_violations": [],
             "characters": [], "relationships": [],
             "segment_resolutions": [
                 {"segment_id": "p1", "gender_check_needed": True, "formality_check_needed": False,
-                 "gender_anchor_candidates": [], "formality_anchor_candidates": []},
+                 "gender_anchor_candidates": [{"id": "char-1", "label": "민지"}],
+                 "formality_anchor_candidates": []},
+                {"segment_id": "p2", "gender_check_needed": False, "formality_check_needed": True},
             ],
         }
         await save_pipeline_result(session, tv.id, result)
@@ -536,11 +541,18 @@ async def test_save_pipeline_result_persists_segment_resolution_flags():
         tv_id = tv.id
 
     async with async_session() as session:
-        seg = (await session.execute(
-            select(Segment).where(Segment.target_version_id == tv_id)
-        )).scalars().first()
-        assert seg.gender_check_needed is True
-        assert seg.formality_check_needed is False
+        segs = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id).order_by(Segment.index)
+        )).scalars().all()
+        seg1, seg2 = segs
+        assert seg1.gender_check_needed is True
+        assert seg1.formality_check_needed is False
+        assert seg1.gender_anchor_candidates == [{"id": "char-1", "label": "민지"}]
+        assert seg1.formality_anchor_candidates == []
+        # segment_resolutions에 앵커 후보 키 자체가 없는 경우(예: p2)에는
+        # None으로 저장된다 — save_pipeline_result가 기본값을 만들어내지 않는다.
+        assert seg2.gender_anchor_candidates is None
+        assert seg2.formality_anchor_candidates is None
 
 
 @pytest.mark.asyncio
