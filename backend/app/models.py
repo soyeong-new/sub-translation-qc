@@ -37,6 +37,11 @@ class Episode(Base):
     # 재시도 시에도 원본 영상 없이(최초 성공 후 삭제됨) 재분석이 가능해진다.
     stt_cache: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     video_proxy_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # 영어 SRT(선택) — 성별 확인이 필요한 줄에 대명사 힌트를 붙이는 참고
+    # 자료로만 쓰인다(design §영어 SRT 대조: 자동 확정에는 쓰지 않음).
+    # Episode 레벨인 이유는 한국어 영상/대상언어 SRT와 동일 — 같은 화를 여러
+    # target_version(언어)으로 분석해도 참고할 영어 대사는 하나로 공유된다.
+    english_srt_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class Character(Base):
@@ -107,6 +112,11 @@ class Segment(Base):
     # 채울 수 있게 한다. 후보가 없거나 애초에 체크가 필요 없었던 세그먼트는 None.
     gender_anchor_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     formality_anchor_candidates: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # 영어 SRT 대명사 힌트(분석 시점 계산, 참고용) — {"text", "he_count",
+    # "she_count"} 형태. 영어 SRT가 없거나 겹치는 대사가 없으면 None.
+    # gender_check_needed인 세그먼트에만 계산된다(design §영어 SRT 대조:
+    # "걸린 줄과 시간대가 겹치는 세그먼트가 있으면").
+    english_pronoun_hint: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class FindingRow(Base):
