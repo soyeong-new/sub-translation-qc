@@ -613,9 +613,24 @@ async def requery(finding_id: str, payload: RequeryIn):
 
         provider = get_provider()
         knowledge = load_knowledge()
+
+        resolved_character = None
+        if segment.resolved_character_id:
+            char = await session.get(Character, segment.resolved_character_id)
+            if char is not None:
+                resolved_character = {"id": char.id, "label": char.label,
+                                      "confirmed_gender": char.confirmed_gender}
+        resolved_relationship = None
+        if segment.resolved_relationship_id:
+            rel = await session.get(Relationship, segment.resolved_relationship_id)
+            if rel is not None:
+                resolved_relationship = {
+                    "id": rel.id, "confirmed_formality_level": rel.confirmed_formality_level}
+
         try:
             new_suggested_text = await requery_finding(
-                finding, segment, payload.instruction, provider, knowledge, profile)
+                finding, segment, payload.instruction, provider, knowledge, profile,
+                resolved_character=resolved_character, resolved_relationship=resolved_relationship)
         except RequeryNotSupportedError as exc:
             raise HTTPException(400, str(exc))
 
