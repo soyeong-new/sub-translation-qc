@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy
+from app.core.pronoun_hints import find_pronoun_hint
 from app.core.alignment import align
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
 from app.core.safety_net import shrink_violating_lines
@@ -37,7 +38,8 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         prior_characters: Optional[list] = None,
                         prior_relationships: Optional[list] = None,
                         cached_korean_segments: Optional[list] = None,
-                        cached_video_proxy_path: Optional[str] = None) -> dict:
+                        cached_video_proxy_path: Optional[str] = None,
+                        english_srt_path: Optional[str] = None) -> dict:
     """design §전체 파이프라인의 오케스트레이터. S1(사전/규칙) → S2(Claude 1차)
     → S3(GPT 2차) → S4(최종 안전망) 순서로 순차 실행하며, 각 단계의 diff가
     findings가 된다. 오디오/영상 프록시는 STT 직후 한 번만 생성한다.
@@ -49,6 +51,16 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     `video_path`를 결과에 그대로 담아 돌려준다."""
     warnings: list = []
     target_segments = load_srt(target_srt_path)
+
+    english_segments: list = []
+    if english_srt_path:
+        try:
+            english_segments = load_srt(english_srt_path)
+        except Exception as exc:
+            logger.exception(
+                "영어 SRT 파싱 실패, 대명사 힌트 생략하고 계속 진행 (target_version_id=%s)",
+                target_version_id)
+            warnings.append({"stage": "영어 SRT 대조", "message": str(exc)})
 
     if cached_korean_segments is not None and cached_video_proxy_path is not None:
         # Episode 단위 캐시 재사용 — 같은 화를 다른 대상언어로 다시 분석하거나
@@ -173,12 +185,21 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                 formality_candidates = (
                     find_relationship_anchor_candidates(scene, relationships) if relationships else []
                 )
+                gender_needed = bool(flags.get("gender_check_needed"))
+                english_hint = (
+                    find_pronoun_hint(p.target.start, p.target.end, english_segments)
+                    if gender_needed and english_segments and p.target is not None
+                    else None
+                )
                 segment_resolutions.append({
                     "segment_id": p.id,
-                    "gender_check_needed": bool(flags.get("gender_check_needed")),
+                    "gender_check_needed": gender_needed,
                     "formality_check_needed": bool(flags.get("formality_check_needed")),
-                    "gender_anchor_candidates": gender_candidates if flags.get("gender_check_needed") else [],
-                    "formality_anchor_candidates": formality_candidates if flags.get("formality_check_needed") else [],
+                    "gender_anchor_candidates": gender_candidates if gender_needed else [],
+                    "formality_anchor_candidates": (
+                        formality_candidates if flags.get("formality_check_needed") else []
+                    ),
+                    "english_pronoun_hint": english_hint,
                 })
     except Exception as exc:
         logger.exception(

@@ -556,6 +556,30 @@ async def test_save_pipeline_result_persists_segment_resolution_flags():
 
 
 @pytest.mark.asyncio
+async def test_save_pipeline_result_persists_english_pronoun_hint():
+    async with async_session() as session:
+        title = Title(name="T", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+
+        result = _result_with(segment_resolutions=[{
+            "segment_id": "pair_1",
+            "gender_check_needed": True,
+            "formality_check_needed": False,
+            "gender_anchor_candidates": [],
+            "formality_anchor_candidates": [],
+            "english_pronoun_hint": {"text": "She looks tired.", "he_count": 0, "she_count": 1},
+        }])
+        await save_pipeline_result(session, tv.id, result)
+        await session.commit()
+        seg = await session.get(Segment, f"{tv.id}:pair_1")
+        assert seg.english_pronoun_hint == {
+            "text": "She looks tired.", "he_count": 0, "she_count": 1,
+        }
+
+
+@pytest.mark.asyncio
 async def test_save_chart_extraction_result_does_not_overwrite_confirmed_gender():
     from app.repositories import save_chart_extraction_result
 

@@ -473,3 +473,82 @@ async def test_pipeline_continues_when_check_grammar_necessity_raises(tmp_path, 
     assert result["warnings"] == [{"stage": "문법 필요성 판단", "message": "문법 판단 API 오류"}]
     # 나머지 파이프라인은 계속 진행된다 — GPT 2차가 BAD_TRANSLATION 마커를 정상 탐지.
     assert any(f.model == "gpt" for f in result["findings"])
+
+
+@pytest.mark.asyncio
+async def test_pipeline_attaches_english_pronoun_hint_to_gender_flagged_segment(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
+    english_srt_path = tmp_path / "english.srt"
+    english_srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nShe is tired.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _flag_gender(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
+                for p in pairs]
+
+    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_gender)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            english_srt_path=str(english_srt_path),
+        )
+
+    resolutions = result["segment_resolutions"]
+    assert len(resolutions) == 1
+    assert resolutions[0]["english_pronoun_hint"] == {
+        "text": "She is tired.", "he_count": 0, "she_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pipeline_english_pronoun_hint_is_none_without_english_srt_path(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _flag_gender(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
+                for p in pairs]
+
+    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_gender)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    assert result["segment_resolutions"][0]["english_pronoun_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_compute_pronoun_hint_for_formality_only_flags(tmp_path, monkeypatch):
+    """design §영어 SRT 대조는 "걸린 줄"(성별 체크가 필요한 줄)에 한정된다 —
+    격식만 걸린 줄에는 영어 SRT 힌트를 계산하지 않는다(대명사는 성별 신호이지
+    격식 신호가 아니다)."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\n¿Tú o usted?\n", encoding="utf-8")
+    english_srt_path = tmp_path / "english.srt"
+    english_srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nShe is tired.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _flag_formality(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": False, "formality_check_needed": True}
+                for p in pairs]
+
+    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_formality)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            english_srt_path=str(english_srt_path),
+        )
+
+    assert result["segment_resolutions"][0]["english_pronoun_hint"] is None

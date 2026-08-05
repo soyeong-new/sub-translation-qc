@@ -73,6 +73,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
                 cached_video_proxy_path=episode.video_proxy_path,
                 prior_characters=prior_characters,
                 prior_relationships=prior_relationships,
+                english_srt_path=episode.english_srt_path,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )
