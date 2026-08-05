@@ -140,6 +140,38 @@ async def test_resolve_formality_with_relationship_id_links_segment():
 
 
 @pytest.mark.asyncio
+async def test_resolve_gender_with_nonexistent_character_id_returns_400():
+    """회귀(Finding 3): 검수 UI의 앵커 후보 버튼은 분석 시점 스냅샷이라, 그
+    사이 인물이 지워졌으면 존재하지 않는 character_id가 그대로 들어올 수
+    있다. 저장 전에 존재를 확인해 400으로 막아야지, commit 시점
+    IntegrityError(500)가 나면 안 된다."""
+    tv_id, seg_id = await _make_segment(gender_check_needed=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/segments/{seg_id}/resolve-gender",
+                              json={"character_id": "does-not-exist"})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_resolve_formality_with_nonexistent_relationship_id_returns_400():
+    tv_id, seg_id = await _make_segment(formality_check_needed=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/segments/{seg_id}/resolve-formality",
+                              json={"relationship_id": "does-not-exist"})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_flagged_segments_returns_404_for_nonexistent_target_version():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/target-versions/does-not-exist/flagged-segments")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_resolve_formality_with_raw_value():
     tv_id, seg_id = await _make_segment(formality_check_needed=True)
     transport = ASGITransport(app=app)

@@ -22,6 +22,14 @@ from app.schemas import SegmentText
 
 logger = logging.getLogger(__name__)
 
+# check_grammar_necessity는 입력 줄 하나당 결과 객체 하나를 빠짐없이 반환해야 하는
+# 스키마라(correct_primary처럼 바뀐 줄만 sparse하게 돌려주는 게 아님), 에피소드
+# 전체를 한 번에 보내면 max_tokens(4096)을 넘겨 응답이 JSON 중간에서 잘리고
+# 파싱이 통째로 실패한다 — 이러면 성별/격식 체크가 에피소드 전체에서 조용히
+# 사라진다. 실제 에피소드 길이(보통 수백 줄)에서도 한 번의 호출이 넘치지 않도록
+# 배치로 나눠 보낸다.
+GRAMMAR_NECESSITY_BATCH_SIZE = 100
+
 
 async def run_pipeline(video_path: str, target_srt_path: str,
                         language: str, variant: str, target_version_id: str,
@@ -133,7 +141,19 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     ]
     segment_resolutions: list = []
     try:
-        grammar_flags = await provider.check_grammar_necessity(grammar_pairs, profile)
+        batches = [
+            grammar_pairs[i:i + GRAMMAR_NECESSITY_BATCH_SIZE]
+            for i in range(0, len(grammar_pairs), GRAMMAR_NECESSITY_BATCH_SIZE)
+        ]
+        # 배치들은 서로 완전히 독립적인 호출이라(각 줄을 그 줄 텍스트만 보고
+        # 판단) 동시에 돌려도 안전하다 — 이 코드베이스가 이미 correct_primary/
+        # verify_and_refine 등 독립 LLM 호출에 asyncio.gather를 쓰는 것과 동일한
+        # 패턴. 배치 중 하나라도 예외를 던지면 gather가 그대로 전파해 바깥
+        # try/except가 기존처럼 경고로 변환하고 나머지 파이프라인은 계속 진행한다.
+        batch_results = await asyncio.gather(
+            *(provider.check_grammar_necessity(batch, profile) for batch in batches)
+        )
+        grammar_flags = [flag for batch_result in batch_results for flag in batch_result]
         flags_by_id = {f["id"]: f for f in grammar_flags}
         flagged_pairs = [
             p for p in pairs

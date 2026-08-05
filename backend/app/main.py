@@ -8,7 +8,7 @@ from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, update
 from app.db import async_session
 from app.models import (
     Title, Episode, TargetVersion, FindingRow, Character, Relationship, Segment,
@@ -278,6 +278,28 @@ async def delete_character(character_id: str):
         char = await session.get(Character, character_id)
         if char is None:
             raise HTTPException(404, "character not found")
+        # Segment.resolved_character_id도 characters.id를 하드 FK로 참조한다
+        # (ondelete 없음) — 이 인물로 해결된 세그먼트가 있으면 그 링크부터
+        # 끊어야 한다. 세그먼트 자체나 다른 필드는 그대로 두고 resolved_character_id만
+        # NULL로 되돌린다 — "해결된 대상이 사라졌으니 다시 미해결 상태로" 되는 게
+        # 맞는 동작이다(gender_check_needed 등 플래그는 그대로 유지돼 다시 검수 대상이 됨).
+        await session.execute(
+            update(Segment).where(Segment.resolved_character_id == character_id)
+            .values(resolved_character_id=None)
+        )
+        # 이 인물이 관련된 Relationship들도 곧 지워질 텐데, 그 관계로 해결된
+        # 세그먼트가 있다면 Segment.resolved_relationship_id가 매달린 채 남아
+        # 같은 FK 문제를 일으킨다 — 관계를 지우기 전에 먼저 링크를 끊는다.
+        await session.execute(
+            update(Segment).where(
+                Segment.resolved_relationship_id.in_(
+                    select(Relationship.id).where(
+                        (Relationship.speaker_character_id == character_id) |
+                        (Relationship.addressee_character_id == character_id)
+                    )
+                )
+            ).values(resolved_relationship_id=None)
+        )
         # Relationship이 characters.id를 하드 FK로 참조하므로(ondelete 없음),
         # 인물을 지우기 전에 그 인물이 관련된 관계부터 지워야 한다.
         await session.execute(
@@ -347,6 +369,13 @@ async def delete_relationship(relationship_id: str):
         rel = await session.get(Relationship, relationship_id)
         if rel is None:
             raise HTTPException(404, "relationship not found")
+        # Segment.resolved_relationship_id가 relationships.id를 하드 FK로
+        # 참조하므로(ondelete 없음), 이 관계로 해결된 세그먼트가 있으면 링크부터
+        # 끊어야 한다 — delete_character의 동일한 패턴 참고.
+        await session.execute(
+            update(Segment).where(Segment.resolved_relationship_id == relationship_id)
+            .values(resolved_relationship_id=None)
+        )
         await session.delete(rel)
         await session.commit()
         return {"id": relationship_id, "deleted": True}
@@ -451,6 +480,9 @@ async def list_segments(target_version_id: str):
 @app.get("/target-versions/{target_version_id}/flagged-segments")
 async def list_flagged_segments(target_version_id: str):
     async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
         rows = (await session.execute(
             select(Segment).where(
                 Segment.target_version_id == target_version_id,
@@ -486,6 +518,12 @@ async def resolve_gender(segment_id: str, payload: ResolveGenderIn):
         if seg is None:
             raise HTTPException(404, "segment not found")
         if payload.character_id:
+            # 검수 화면의 앵커 후보 버튼은 분석 시점 스냅샷이므로, 그 사이 인물이
+            # 지워졌으면 여기서 존재를 먼저 확인해 깔끔한 400으로 막아야 한다 —
+            # 그냥 저장하면 commit 시점에 처리되지 않은 IntegrityError(500)가 난다.
+            char = await session.get(Character, payload.character_id)
+            if char is None:
+                raise HTTPException(400, "존재하지 않는 인물입니다.")
             seg.resolved_character_id = payload.character_id
             seg.resolved_gender_raw = None
         else:
@@ -510,6 +548,11 @@ async def resolve_formality(segment_id: str, payload: ResolveFormalityIn):
         if seg is None:
             raise HTTPException(404, "segment not found")
         if payload.relationship_id:
+            # resolve_gender와 동일한 이유로, 저장 전에 관계가 실제로 존재하는지
+            # 먼저 확인한다.
+            rel = await session.get(Relationship, payload.relationship_id)
+            if rel is None:
+                raise HTTPException(400, "존재하지 않는 관계입니다.")
             seg.resolved_relationship_id = payload.relationship_id
             seg.resolved_formality_raw = None
         else:

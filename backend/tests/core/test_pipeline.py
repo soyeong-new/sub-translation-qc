@@ -368,6 +368,55 @@ async def test_pipeline_finds_anchor_candidates_for_flagged_scene(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_pipeline_batches_check_grammar_necessity_for_long_episodes(tmp_path, monkeypatch):
+    """회귀(Finding 2): check_grammar_necessity는 줄 하나당 결과 객체 하나를
+    빠짐없이 반환해야 하는 스키마라, 실제 에피소드 분량(수백 줄)을 한 번의
+    호출로 보내면 max_tokens을 넘겨 응답이 잘리고 파싱이 실패해 성별/격식
+    체크가 통째로 사라진다. 150줄(배치 크기 100의 2배 이상)을 넣어 provider가
+    두 번 이상 호출되는지, 그리고 모든 줄이 어느 한 배치에는 빠짐없이
+    포함되는지 확인한다."""
+    def _timestamp(total_seconds: int) -> str:
+        m, s = divmod(total_seconds, 60)
+        h, m = divmod(m, 60)
+        return f"{h:02d}:{m:02d}:{s:02d},000"
+
+    LINE_COUNT = 150
+    srt_lines = []
+    for i in range(LINE_COUNT):
+        start = i * 2
+        end = start + 1
+        srt_lines.append(
+            f"{i + 1}\n{_timestamp(start)} --> {_timestamp(end)}\nLinea {i}.\n"
+        )
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
+    provider = MockProvider()
+
+    batch_calls: list[list[str]] = []
+
+    async def _spy_check_grammar_necessity(pairs, profile):
+        batch_calls.append([p["id"] for p in pairs])
+        # 모든 줄을 성별 체크 필요로 표시해 segment_resolutions에서 전체
+        # 커버리지를 검증할 수 있게 한다.
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
+                for p in pairs]
+
+    monkeypatch.setattr(provider, "check_grammar_necessity", _spy_check_grammar_necessity)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    assert len(batch_calls) > 1, "150줄이면 배치 크기 100으로 최소 2번 호출돼야 한다"
+    covered_ids = {seg_id for batch in batch_calls for seg_id in batch}
+    assert len(covered_ids) == LINE_COUNT, "모든 줄이 어느 한 배치에는 빠짐없이 포함돼야 한다"
+    assert len(result["segment_resolutions"]) == LINE_COUNT
+
+
+@pytest.mark.asyncio
 async def test_pipeline_continues_when_check_grammar_necessity_raises(tmp_path, monkeypatch):
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(

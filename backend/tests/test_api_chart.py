@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db import engine, async_session
-from app.models import Base, Title, Character, Relationship
+from app.models import Base, Title, Character, Relationship, Episode, TargetVersion, Segment
 
 
 @pytest.fixture(autouse=True)
@@ -327,6 +327,126 @@ async def test_delete_character_also_removes_its_relationships(monkeypatch):
 
         r = await client.get(f"/titles/{title_id}/relationships")
         assert r.json() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_character_nulls_out_resolved_segments(monkeypatch):
+    """회귀(Finding 1): Segment.resolved_character_id는 characters.id를 하드
+    FK로 참조한다(ondelete 없음). 어떤 세그먼트가 이 인물로 이미 해결돼 있는
+    상태에서 인물을 지우면, 링크를 먼저 끊지 않을 경우 asyncpg가 FK 위반으로
+    500을 낸다 — 200이 나오고 그 세그먼트의 resolved_character_id가 다시
+    None(미해결 상태)으로 돌아가야 한다."""
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.flush()
+        char = Character(title_id=title.id, label="민지")
+        session.add(char)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                      korean_text="안녕", target_text="hola",
+                      gender_check_needed=True, resolved_character_id=char.id)
+        session.add(seg)
+        await session.commit()
+        char_id, seg_id = char.id, seg.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete(f"/characters/{char_id}")
+    assert r.status_code == 200
+
+    async with async_session() as session:
+        seg = await session.get(Segment, seg_id)
+        assert seg.resolved_character_id is None
+        assert seg.gender_check_needed is True
+
+
+@pytest.mark.asyncio
+async def test_delete_relationship_nulls_out_resolved_segments(monkeypatch):
+    """회귀(Finding 1): delete_relationship판. Segment.resolved_relationship_id도
+    하드 FK라 같은 문제가 생긴다."""
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.flush()
+        a = Character(title_id=title.id, label="민지")
+        b = Character(title_id=title.id, label="서준")
+        session.add_all([a, b])
+        await session.flush()
+        rel = Relationship(title_id=title.id, speaker_character_id=a.id, addressee_character_id=b.id)
+        session.add(rel)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                      korean_text="안녕", target_text="hola",
+                      formality_check_needed=True, resolved_relationship_id=rel.id)
+        session.add(seg)
+        await session.commit()
+        rel_id, seg_id = rel.id, seg.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete(f"/relationships/{rel_id}")
+    assert r.status_code == 200
+
+    async with async_session() as session:
+        seg = await session.get(Segment, seg_id)
+        assert seg.resolved_relationship_id is None
+        assert seg.formality_check_needed is True
+
+
+@pytest.mark.asyncio
+async def test_delete_character_nulls_out_segments_resolved_to_its_relationships(monkeypatch):
+    """회귀(Finding 1): delete_character는 그 인물이 낀 Relationship도 함께
+    지운다(기존 동작). 그 관계로 이미 해결된 세그먼트가 있으면 Relationship을
+    지우기 전에 그 링크도 끊어야 한다 — 안 그러면 인물 삭제가 간접적으로
+    같은 FK 위반을 유발한다."""
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    async with async_session() as session:
+        title = Title(name="T", type="series")
+        session.add(title)
+        await session.flush()
+        a = Character(title_id=title.id, label="민지")
+        b = Character(title_id=title.id, label="서준")
+        session.add_all([a, b])
+        await session.flush()
+        rel = Relationship(title_id=title.id, speaker_character_id=a.id, addressee_character_id=b.id)
+        session.add(rel)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                      korean_text="안녕", target_text="hola",
+                      formality_check_needed=True, resolved_relationship_id=rel.id)
+        session.add(seg)
+        await session.commit()
+        char_id, seg_id = a.id, seg.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete(f"/characters/{char_id}")
+    assert r.status_code == 200
+
+    async with async_session() as session:
+        seg = await session.get(Segment, seg_id)
+        assert seg.resolved_relationship_id is None
 
 
 @pytest.mark.asyncio
