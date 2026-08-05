@@ -87,6 +87,20 @@ class Segment(Base):
     end: Mapped[float] = mapped_column(Float)
     korean_text: Mapped[str] = mapped_column(String, default="")
     target_text: Mapped[str] = mapped_column(String, default="")
+    # 문법 필요성 판단(줄 단위 LLM) 결과 — 이 값이 True인 세그먼트만 앵커 매칭·
+    # 사람 리뷰 대상이 된다.
+    gender_check_needed: Mapped[bool] = mapped_column(Boolean, default=False)
+    formality_check_needed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 해결 결과 — 인물 연결(앵커 있음, 재사용 가능) 또는 즉답값(앵커 없음, 이
+    # 세그먼트에만 적용) 둘 중 하나만 채워진다. 성별과 격식은 서로 독립이라
+    # 한 세그먼트에 둘 다 걸리면 네 필드 중 최대 2개(성별 계열 1개 + 격식 계열
+    # 1개)가 채워질 수 있다.
+    resolved_character_id: Mapped[str | None] = mapped_column(
+        ForeignKey("characters.id"), nullable=True, default=None)
+    resolved_gender_raw: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    resolved_relationship_id: Mapped[str | None] = mapped_column(
+        ForeignKey("relationships.id"), nullable=True, default=None)
+    resolved_formality_raw: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class FindingRow(Base):
