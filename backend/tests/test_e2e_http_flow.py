@@ -75,6 +75,14 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             tv_id = r.json()["id"]
             assert r.json()["status"] == "analyzing"
 
+            # Task 5(290b60d) 이후 run_pipeline은 더 이상 스스로 인물을
+            # 추론하지 않는다 — title에 이미 등록된 Character를 그대로 받아
+            # 앵커 매칭에 쓴다. 그래서 이 인물 등록도 실제 엔드포인트
+            # (POST /titles/{id}/characters)로 미리 해 둔다.
+            r = await client.post(f"/titles/{title_id}/characters",
+                                  json={"label": "인물1"})
+            assert r.status_code == 200
+
             # 4) 분석 실행 (asyncio.create_task로 백그라운드에서 실행되며,
             # 테스트에서는 background_tasks를 대기해 완료를 보장한다)
             r = await client.post(f"/target-versions/{tv_id}/run-analysis",

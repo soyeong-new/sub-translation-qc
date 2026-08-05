@@ -9,8 +9,9 @@ asyncio.TimeoutError를 "던지고" 내부 태스크를 취소하지만, wait_fo
 
 import asyncio
 import logging
+from sqlalchemy import select
 from app.db import async_session
-from app.models import TargetVersion, Episode, Title
+from app.models import TargetVersion, Episode, Title, Character, Relationship
 from app.core.pipeline import run_pipeline
 from app.core.ingest import delete_original_video
 from app.repositories import save_pipeline_result, save_chart_extraction_result
@@ -29,6 +30,35 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             tv = await session.get(TargetVersion, target_version_id)
             episode = await session.get(Episode, tv.episode_id)
 
+            # 인물/관계 로스터는 title에 이미 저장된 Character/Relationship에서
+            # 읽어온다(에피소드 간 공유) — run_pipeline이 더 이상 스스로
+            # 추론하지 않으므로(Task 5), 여기서 넘겨주지 않으면 앵커 매칭이
+            # 항상 빈 로스터를 상대로 돌게 된다.
+            character_rows = (await session.execute(
+                select(Character).where(Character.title_id == episode.title_id)
+            )).scalars().all()
+            prior_characters = [
+                {"id": c.id, "label": c.label, "confirmed_gender": c.confirmed_gender}
+                for c in character_rows
+            ]
+            label_by_character_id = {c.id: c.label for c in character_rows}
+
+            relationship_rows = (await session.execute(
+                select(Relationship).where(Relationship.title_id == episode.title_id)
+            )).scalars().all()
+            prior_relationships = [
+                {
+                    "id": r.id,
+                    "speaker_character_id": r.speaker_character_id,
+                    "addressee_character_id": r.addressee_character_id,
+                    "speaker_label": label_by_character_id.get(r.speaker_character_id),
+                    "addressee_label": label_by_character_id.get(r.addressee_character_id),
+                    "relationship_type": r.relationship_type,
+                    "confirmed_formality_level": r.confirmed_formality_level,
+                }
+                for r in relationship_rows
+            ]
+
         provider = get_provider()
         cached_segments = (
             episode.stt_cache.get("segments") if episode.stt_cache else None
@@ -41,6 +71,8 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
                 target_version_id=target_version_id, provider=provider,
                 cached_korean_segments=cached_segments,
                 cached_video_proxy_path=episode.video_proxy_path,
+                prior_characters=prior_characters,
+                prior_relationships=prior_relationships,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )

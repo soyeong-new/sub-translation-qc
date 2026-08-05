@@ -252,6 +252,51 @@ async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, 
         assert any(s.korean_text == "캐시된 문장" for s in segs)
 
 
+@pytest.mark.asyncio
+async def test_analyze_and_save_passes_titles_existing_roster_to_run_pipeline(
+        tmp_path, monkeypatch):
+    """회귀 테스트: run_pipeline이 더 이상 스스로 Character/Relationship을
+    추론하지 않으므로(Task 5), analyze_and_save가 title에 이미 저장된
+    로스터를 직접 조회해 prior_characters/prior_relationships로 넘겨야 한다.
+    이걸 빼먹으면 앵커 매칭이 매번 빈 로스터를 상대로 돌아 아무 후보도 찾지
+    못한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        character = Character(title_id=episode.title_id, label="민지", confirmed_gender="female")
+        session.add(character)
+        await session.commit()
+        character_id = character.id
+
+    captured_kwargs = {}
+    from app.core.pipeline import run_pipeline as real_run_pipeline
+
+    async def _spy_run_pipeline(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return await real_run_pipeline(*args, **kwargs)
+
+    with patch("app.background.run_pipeline", side_effect=_spy_run_pipeline), \
+         patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    assert captured_kwargs.get("prior_characters") == [
+        {"id": character_id, "label": "민지", "confirmed_gender": "female"}
+    ]
+    assert captured_kwargs.get("prior_relationships") == []
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "review"
+
+
 async def _make_title() -> str:
     async with async_session() as session:
         title = Title(name="T", type="series", created_at=datetime.now())

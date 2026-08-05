@@ -133,9 +133,12 @@ async def test_list_relationships_404_for_missing_target_version():
 
 @pytest.mark.asyncio
 async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monkeypatch):
-    """run_pipeline이 만든 인물이 실제로 영속화돼 GET /characters로 조회되는지
-    확인한다 (es_LATAM 프로필은 checks_enabled.gender_agreement가 true라
-    character_registry가 동작한다)."""
+    """Task 5(290b60d) 이후로 run_pipeline은 더 이상 스스로 인물을 추론하지
+    않는다 — 인물/관계 로스터는 title에 이미 저장된 Character/Relationship에서
+    그대로 읽어와(prior_characters/prior_relationships) 넘겨받는다. 그래서 이
+    테스트는 "LLM이 새로 인물을 발견하는지"가 아니라, title에 미리 등록해 둔
+    인물이 실제 run-analysis HTTP 흐름을 거쳐도 그대로 유지되고 GET
+    /characters로 조회되는지를 확인한다."""
     from unittest.mock import patch
 
     monkeypatch.setenv("QC_PROVIDER", "mock")
@@ -149,6 +152,8 @@ async def test_characters_are_populated_after_a_real_run_analysis(tmp_path, monk
         episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
         tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
         session.add(tv)
+        character = Character(title_id=title.id, label="인물1")
+        session.add(character)
         await session.commit()
         tv_id = tv.id
 

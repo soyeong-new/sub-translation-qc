@@ -144,6 +144,12 @@ async def test_run_analysis_can_be_retried_without_integrity_error(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatch):
+    """Task 5(290b60d)로 run_pipeline이 더 이상 analyze_characters를 호출하지
+    않으므로(인물/관계 로스터는 이제 title의 기존 Character/Relationship
+    테이블에서 읽어온다 — build_registry 방식 폐지), 이 테스트가 검증하려는
+    "파이프라인 어느 단계가 실패해도 그 warning이 GET으로 노출되는가"를 계속
+    확인하려면 실제로 여전히 호출되는 단계(check_grammar_necessity, 문법
+    필요성 판단)를 실패시켜야 한다."""
     import asyncio
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
@@ -160,10 +166,10 @@ async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatc
 
     from app.providers.mock import MockProvider
 
-    async def _analyze_characters_raises(*args, **kwargs):
-        raise RuntimeError("인물 식별 API 오류")
+    async def _check_grammar_necessity_raises(*args, **kwargs):
+        raise RuntimeError("문법 필요성 판단 API 오류")
 
-    monkeypatch.setattr(MockProvider, "analyze_characters", _analyze_characters_raises)
+    monkeypatch.setattr(MockProvider, "check_grammar_necessity", _check_grammar_necessity_raises)
 
     # GET /target-versions/{id}가 video_proxy_url을 MEDIA_ROOT/video_proxy
     # 기준 상대경로로 계산하므로("/fake/proxy.mp4" 같은 경로를 주면
@@ -185,7 +191,9 @@ async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatc
 
             r = await client.get(f"/target-versions/{tv_id}")
     assert r.status_code == 200
-    assert r.json()["warnings"] == [{"stage": "인물 식별", "message": "인물 식별 API 오류"}]
+    assert r.json()["warnings"] == [
+        {"stage": "문법 필요성 판단", "message": "문법 필요성 판단 API 오류"}
+    ]
 
 
 @pytest.mark.asyncio
