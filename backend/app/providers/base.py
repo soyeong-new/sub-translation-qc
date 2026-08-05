@@ -61,6 +61,16 @@ class ModelProvider(ABC):
         """최종 안전망: 글자수 위반 한 줄만 의미를 보존하며 제약 안으로 줄인다."""
         ...
 
+    @abstractmethod
+    async def check_grammar_necessity(self, pairs: List[dict], profile: dict) -> List[dict]:
+        """대상언어 줄 하나하나가 문법적으로 성별 일치(#5,#9)나 격식(존댓말/
+        반말) 판단이 필요한 줄인지 독립적으로 판단한다. 씬이나 다른 줄과
+        무관하게 그 줄 텍스트 하나만 보고 답한다. 반환값은 입력 pairs와
+        1:1 대응하는 [{"id": str, "gender_check_needed": bool,
+        "formality_check_needed": bool}, ...] — 판단이 필요 없는 줄도
+        포함해서 전부 반환한다."""
+        ...
+
 
 def get_provider() -> ModelProvider:
     name = os.getenv("QC_PROVIDER", "live")

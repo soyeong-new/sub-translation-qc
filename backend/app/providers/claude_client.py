@@ -24,6 +24,17 @@ _SHRINK_SCHEMA_INSTRUCTION = (
     "다른 설명을 붙이지 마라."
 )
 
+_GRAMMAR_NECESSITY_SCHEMA_INSTRUCTION = (
+    "입력 배열의 각 항목마다 정확히 하나의 결과 객체를 반환하라(빠뜨리지 마라). "
+    "각 항목은 정확히 다음 키를 가져야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "gender_check_needed (불리언, 이 줄에 사람을 가리키는 성별 표시 형용사·"
+    "과거분사가 있으면 true), "
+    "formality_check_needed (불리언, 이 줄이 존댓말/반말(tú/usted) 선택이 "
+    "걸리는 대화체 문장이면 true). "
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라.'
+)
+
 
 class ClaudeClient:
     def __init__(self, api_key: str, model: str):
@@ -114,3 +125,32 @@ class ClaudeClient:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         result = await self._call_object(system, text)
         return result["shrunk_text"]
+
+    async def check_grammar_necessity(self, pairs: List[dict], profile: dict) -> List[dict]:
+        language = profile.get("language") or "대상언어"
+        variant = profile.get("variant")
+        language_label = f"{language}({variant})" if variant else language
+        system = (
+            f"다음은 {language_label} 자막 줄 목록이다. 각 줄이 문법적으로 "
+            "성별 일치나 존댓말/반말 판단이 필요한 줄인지만 순수하게 문법적으로 "
+            "판단하라 — 누가 말했는지, 맥락이 무엇인지는 몰라도 된다. 그 줄 "
+            "텍스트 자체에 성별 표시 형용사/과거분사가 있는지, 대화체 문장인지만 "
+            "보고 판단하라.\n" + _GRAMMAR_NECESSITY_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(pairs, ensure_ascii=False)
+        response = await self._sdk_client.messages.create(
+            model=self._model, max_tokens=4096, system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        text = self._extract_text(response)
+        try:
+            parsed = json.loads(text)
+            # 스키마 지침은 {"results": [...]} 객체를 요구하지만, Claude가
+            # 배열을 바로 반환하는 경우도 허용한다(둘 다 유효한 응답으로 취급).
+            results = parsed if isinstance(parsed, list) else parsed["results"]
+            if not isinstance(results, list):
+                raise TypeError("results가 리스트가 아님")
+            return results
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            preview = text[:200] if text else "<empty>"
+            raise ValueError(f"문법 필요성 판단 응답이 기대한 형태가 아님: {preview}") from exc

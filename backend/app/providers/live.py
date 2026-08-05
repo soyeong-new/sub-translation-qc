@@ -41,3 +41,6 @@ class LiveModelProvider(ModelProvider):
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
                            extra_instruction: str = "") -> str:
         return await self._claude.shrink_line(text, max_chars, max_lines, extra_instruction)
+
+    async def check_grammar_necessity(self, pairs: List[dict], profile: dict) -> List[dict]:
+        return await self._claude.check_grammar_necessity(pairs, profile)

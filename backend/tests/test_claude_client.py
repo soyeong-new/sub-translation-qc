@@ -139,3 +139,25 @@ async def test_correct_primary_handles_none_valued_grammar_agreement_section():
         knowledge="", format_constraint="줄당 50자 이내",
     )
     assert result == payload
+
+
+@pytest.mark.asyncio
+async def test_check_grammar_necessity_returns_flags_per_segment():
+    payload = [
+        {"id": "p1", "gender_check_needed": True, "formality_check_needed": False},
+        {"id": "p2", "gender_check_needed": False, "formality_check_needed": True},
+    ]
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.check_grammar_necessity(
+        pairs=[{"id": "p1", "target_text": "Estoy cansada."},
+               {"id": "p2", "target_text": "¿Ya comiste?"}],
+        profile={"language": "es", "variant": "LATAM"},
+    )
+    assert result == payload
+
+
+@pytest.mark.asyncio
+async def test_check_grammar_necessity_raises_on_malformed_json():
+    client = _make_client_with_fake_sdk("JSON 아님")
+    with pytest.raises(ValueError):
+        await client.check_grammar_necessity(pairs=[], profile={})
