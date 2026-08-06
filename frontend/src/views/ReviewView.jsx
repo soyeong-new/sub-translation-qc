@@ -12,7 +12,11 @@ import {
   confirmFormality,
   correctStt,
   getTargetVersion,
+  getFlaggedSegments,
+  resolveGender,
+  resolveFormality,
 } from "../api.js";
+import FlaggedSegmentStepper, { isSegmentResolved } from "./FlaggedSegmentStepper.jsx";
 
 // 카테고리 라벨/색상: Task 21 Step 0에서 확정한 6종 팔레트를 그대로 재사용한다
 // (frontend/tailwind.config.js의 theme.extend.colors.finding.*). 새 색상을 만들지 않는다.
@@ -428,6 +432,10 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
   const [exportResult, setExportResult] = useState(null);
   const [titleId, setTitleId] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
+  const [videoProxyUrl, setVideoProxyUrl] = useState(null);
+  const [flaggedSegments, setFlaggedSegments] = useState(null); // null = 로딩 중
+  const [flaggedSegmentsError, setFlaggedSegmentsError] = useState(null);
+  const [stepperOpen, setStepperOpen] = useState(false);
 
   // "사실 확인" 사이드바 상태 — Findings(위 state들)와는 완전히 분리된 데이터
   // 흐름을 가진다: 인물 성별 / 관계 격식 / STT 원문 세 섹션.
@@ -471,6 +479,7 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
         if (!cancelled) {
           setPipelineWarnings(data.warnings ?? []);
           setTitleId(data.title_id ?? null);
+          setVideoProxyUrl(data.video_proxy_url ?? null);
         }
       })
       .catch(() => {
@@ -514,6 +523,22 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
         if (!cancelled) setSegmentsError(err.message ?? "세그먼트 목록을 불러오지 못했습니다.");
       });
 
+    return () => {
+      cancelled = true;
+    };
+  }, [targetVersionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFlaggedSegments(null);
+    setFlaggedSegmentsError(null);
+    getFlaggedSegments(targetVersionId)
+      .then((data) => {
+        if (!cancelled) setFlaggedSegments(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setFlaggedSegmentsError(err.message ?? "확인이 필요한 줄을 불러오지 못했습니다.");
+      });
     return () => {
       cancelled = true;
     };
@@ -619,6 +644,22 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
     }
   }
 
+  async function handleResolveGender(segmentId, payload) {
+    const updated = await resolveGender(segmentId, payload);
+    setFlaggedSegments((prev) =>
+      prev ? prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)) : prev
+    );
+    return updated;
+  }
+
+  async function handleResolveFormality(segmentId, payload) {
+    const updated = await resolveFormality(segmentId, payload);
+    setFlaggedSegments((prev) =>
+      prev ? prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)) : prev
+    );
+    return updated;
+  }
+
   async function handleExport() {
     setExportStatus({ kind: "loading" });
     try {
@@ -652,6 +693,17 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
               >
                 인물관계도 확인 →
               </button>
+            )}
+            {flaggedSegments && flaggedSegments.length > 0 && (
+              <button
+                onClick={() => setStepperOpen(true)}
+                className="mt-1 ml-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                성별·격식 확인 ({flaggedSegments.filter((s) => !isSegmentResolved(s)).length}/{flaggedSegments.length}) →
+              </button>
+            )}
+            {flaggedSegmentsError && (
+              <p className="mt-1 text-xs text-destructive">{flaggedSegmentsError}</p>
             )}
           </div>
           <div className="w-full max-w-xs">
@@ -812,6 +864,16 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
           </div>
         </div>
       </main>
+
+      {stepperOpen && flaggedSegments && flaggedSegments.length > 0 && (
+        <FlaggedSegmentStepper
+          segments={flaggedSegments}
+          videoProxyUrl={videoProxyUrl}
+          onResolveGender={handleResolveGender}
+          onResolveFormality={handleResolveFormality}
+          onClose={() => setStepperOpen(false)}
+        />
+      )}
     </div>
   );
 }
