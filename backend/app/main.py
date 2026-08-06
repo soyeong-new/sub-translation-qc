@@ -55,6 +55,7 @@ class TitleIn(BaseModel):
 class EpisodeIn(BaseModel):
     episode_no: int | None = None
     video_path: str
+    english_srt_path: str | None = None
 
 
 class TargetVersionIn(BaseModel):
@@ -83,7 +84,8 @@ async def create_episode(title_id: str, payload: EpisodeIn):
         if title is None:
             raise HTTPException(404, "title not found")
         episode = Episode(title_id=title_id, episode_no=payload.episode_no,
-                          video_path=payload.video_path)
+                          video_path=payload.video_path,
+                          english_srt_path=payload.english_srt_path)
         session.add(episode)
         await session.commit()
         return {"id": episode.id, "title_id": title_id}
@@ -499,7 +501,8 @@ async def list_flagged_segments(target_version_id: str):
              "resolved_relationship_id": s.resolved_relationship_id,
              "resolved_formality_raw": s.resolved_formality_raw,
              "gender_anchor_candidates": s.gender_anchor_candidates or [],
-             "formality_anchor_candidates": s.formality_anchor_candidates or []}
+             "formality_anchor_candidates": s.formality_anchor_candidates or [],
+             "english_pronoun_hint": s.english_pronoun_hint}
             for s in rows
         ]
 
@@ -801,6 +804,15 @@ async def upload_video(file: UploadFile = File(...)):
 async def upload_srt(file: UploadFile = File(...)):
     try:
         path = await save_upload("srt", file.filename, file.read, SRT_EXTENSIONS)
+    except UnsupportedFileType as exc:
+        raise HTTPException(400, str(exc))
+    return {"path": path}
+
+
+@app.post("/uploads/srt-en")
+async def upload_srt_en(file: UploadFile = File(...)):
+    try:
+        path = await save_upload("srt_en", file.filename, file.read, SRT_EXTENSIONS)
     except UnsupportedFileType as exc:
         raise HTTPException(400, str(exc))
     return {"path": path}

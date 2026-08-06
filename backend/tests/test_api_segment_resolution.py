@@ -63,6 +63,31 @@ async def test_list_flagged_segments_returns_only_flagged_ones():
 
 
 @pytest.mark.asyncio
+async def test_list_flagged_segments_includes_english_pronoun_hint():
+    tv_id, seg_id = await _make_segment(
+        gender_check_needed=True,
+        english_pronoun_hint={"text": "She left.", "he_count": 0, "she_count": 1},
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/flagged-segments")
+    assert r.status_code == 200
+    assert r.json()[0]["english_pronoun_hint"] == {
+        "text": "She left.", "he_count": 0, "she_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_flagged_segments_english_pronoun_hint_defaults_to_none():
+    tv_id, seg_id = await _make_segment(gender_check_needed=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/flagged-segments")
+    assert r.status_code == 200
+    assert r.json()[0]["english_pronoun_hint"] is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_gender_with_character_id_links_segment():
     tv_id, seg_id = await _make_segment(gender_check_needed=True)
     async with async_session() as session:
