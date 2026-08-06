@@ -16,10 +16,12 @@ export const listLanguageProfiles = () => request("/language-profiles");
 export const createTitle = (name, type) =>
   request("/titles", { method: "POST", body: JSON.stringify({ name, type }) });
 
-export const createEpisode = (titleId, episodeNo, videoPath) =>
+export const createEpisode = (titleId, episodeNo, videoPath, englishSrtPath = null) =>
   request(`/titles/${titleId}/episodes`, {
     method: "POST",
-    body: JSON.stringify({ episode_no: episodeNo, video_path: videoPath }),
+    body: JSON.stringify({
+      episode_no: episodeNo, video_path: videoPath, english_srt_path: englishSrtPath,
+    }),
   });
 
 export const createTargetVersion = (episodeId, targetLanguage, variant) =>
@@ -44,6 +46,21 @@ export const submitReviewAction = (findingId, action, reviewerName, finalText = 
 
 export const listSegments = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/segments`);
+
+export const getFlaggedSegments = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/flagged-segments`);
+
+export const resolveGender = (segmentId, { characterId = null, gender = null } = {}) =>
+  request(`/segments/${segmentId}/resolve-gender`, {
+    method: "POST",
+    body: JSON.stringify({ character_id: characterId, gender }),
+  });
+
+export const resolveFormality = (segmentId, { relationshipId = null, formalityLevel = null } = {}) =>
+  request(`/segments/${segmentId}/resolve-formality`, {
+    method: "POST",
+    body: JSON.stringify({ relationship_id: relationshipId, formality_level: formalityLevel }),
+  });
 
 export const listCharacters = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/characters`);
@@ -111,6 +128,9 @@ export const uploadSrt = (file, onProgress) =>
 
 export const uploadChartImage = (file, onProgress) =>
   uploadWithProgress("/uploads/chart-image", file, onProgress);
+
+export const uploadSrtEn = (file, onProgress) =>
+  uploadWithProgress("/uploads/srt-en", file, onProgress);
 
 export const listTitles = () => request("/titles");
 
