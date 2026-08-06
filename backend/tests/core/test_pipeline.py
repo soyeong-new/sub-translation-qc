@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from unittest.mock import patch
 from app.core.pipeline import run_pipeline
@@ -552,3 +554,84 @@ async def test_pipeline_does_not_compute_pronoun_hint_for_formality_only_flags(t
         )
 
     assert result["segment_resolutions"][0]["english_pronoun_hint"] is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_transcribes_in_chunks_and_merges_with_correct_offsets(tmp_path, monkeypatch):
+    """STT 오디오가 여러 조각으로 나뉘면, 각 조각을 병렬로 transcribe하고
+    조각 인덱스 * chunk_seconds만큼 타임코드를 보정해서 순서대로 이어붙여야
+    한다 (design: asyncio.gather는 완료 순서와 무관하게 입력 순서로 결과를
+    반환하므로, 병렬로 돌려도 최종 순서가 흐트러지지 않는다)."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHola.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _fake_transcribe(audio_path):
+        # 조각 경로별로 다른 세그먼트를 돌려줘서, 병합 결과의 순서/오프셋을
+        # 검증할 수 있게 한다. 두 조각 다 자기 파일 안에서는 0초부터
+        # 시작하는 세그먼트를 반환한다(진짜 STT가 조각 파일 하나를 새
+        # 오디오로 보고 처리하는 것과 동일).
+        if audio_path == "/fake/chunk0.wav":
+            return [{"start": 0.0, "end": 1.0, "text": "첫 조각"}]
+        if audio_path == "/fake/chunk1.wav":
+            return [{"start": 0.0, "end": 1.5, "text": "둘째 조각"}]
+        raise AssertionError(f"예상치 못한 조각 경로: {audio_path}")
+
+    monkeypatch.setattr(provider, "transcribe", _fake_transcribe)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.split_audio_into_chunks",
+               return_value=["/fake/chunk0.wav", "/fake/chunk1.wav"]), \
+         patch("app.core.pipeline.STT_CHUNK_SECONDS", 600.0):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    raw = result["korean_segments_raw"]
+    assert len(raw) == 2
+    assert raw[0]["text"] == "첫 조각"
+    assert raw[0]["start"] == 0.0
+    assert raw[0]["end"] == 1.0
+    assert raw[1]["text"] == "둘째 조각"
+    # 둘째 조각은 600초(STT_CHUNK_SECONDS) 오프셋이 더해져야 한다.
+    assert raw[1]["start"] == 600.0
+    assert raw[1]["end"] == 601.5
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cleans_up_chunk_files_but_not_original_when_no_split_needed(tmp_path, monkeypatch):
+    """split_audio_into_chunks가 분할 없이 원본 경로를 그대로 반환했을 때
+    (짧은 오디오), _transcribe_in_chunks가 그 경로를 지우면 안 된다 —
+    run_pipeline의 기존 finally 블록이 wav_path 자체를 이미 정리하므로,
+    여기서 또 지우면 안전하긴 하지만(unlink는 missing_ok) 원본이 아직
+    필요한 시점(예: 캐싱 재사용)에 조기 삭제될 위험을 열어두는 셈이라
+    개념적으로 원본은 절대 손대면 안 된다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHola.\n", encoding="utf-8")
+    provider = MockProvider()
+    fake_wav = "/fake/audio.wav"
+
+    unlinked_paths = []
+    original_unlink = Path.unlink
+
+    def _spy_unlink(self, missing_ok=False):
+        unlinked_paths.append(str(self))
+        return original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _spy_unlink)
+
+    with patch("app.core.pipeline.extract_audio", return_value=fake_wav), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.split_audio_into_chunks", return_value=[fake_wav]):
+        await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    # wav_path 자체는 run_pipeline의 기존 finally 블록이 한 번 지운다 — 그건
+    # 정상. 여기서 확인하려는 건 _transcribe_in_chunks가 "추가로 또" 같은
+    # 경로를 조각 정리 명목으로 지우려 하지 않는지다. fake_wav 경로가 두 번
+    # 이상 unlink 호출에 나타나면 안 된다.
+    assert unlinked_paths.count(fake_wav) <= 1

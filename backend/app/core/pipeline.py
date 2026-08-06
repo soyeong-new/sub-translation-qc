@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 from app.providers.base import ModelProvider
-from app.core.ingest import load_srt, extract_audio, generate_video_proxy
+from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
 from app.core.pronoun_hints import find_pronoun_hint
 from app.core.alignment import align
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
@@ -30,6 +30,46 @@ logger = logging.getLogger(__name__)
 # 사라진다. 실제 에피소드 길이(보통 수백 줄)에서도 한 번의 호출이 넘치지 않도록
 # 배치로 나눠 보낸다.
 GRAMMAR_NECESSITY_BATCH_SIZE = 100
+
+# gpt-4o-mini-transcribe(OpenAI 오디오 API)는 25MB/약 1500초(25분) 제한이
+# 있다. 16kHz mono 16bit PCM WAV는 초당 32KB라 25MB는 약 781초(≈13분)에
+# 해당하므로, 이보다 여유 있게 낮춰서 잡는다. split_audio_into_chunks의
+# 기본값과 같은 값이지만, 병합 시 오프셋 계산에 이 상수를 그대로 다시
+# 써야 하므로 여기서도 명시적으로 갖고 있는다.
+STT_CHUNK_SECONDS = 600.0
+
+
+def _offset_segments(segments: list, offset_seconds: float) -> list:
+    """STT 조각 결과의 타임코드(그 조각 파일 안에서 0초부터 시작하는 상대
+    시각)를 에피소드 전체 기준 절대 시각으로 보정한다."""
+    return [
+        {**s, "start": s["start"] + offset_seconds, "end": s["end"] + offset_seconds}
+        for s in segments
+    ]
+
+
+async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
+    """긴 오디오를 여러 조각으로 나눠 각각 STT한 뒤 이어붙인다.
+    asyncio.gather는 완료 순서와 무관하게 항상 입력 순서대로 결과를
+    반환하므로(공식 보장 사항), 조각을 시간 순서대로 넘기기만 하면 병렬로
+    돌려도 최종 결과 순서가 흐트러지지 않는다. split_audio_into_chunks가
+    분할 없이 원본 경로를 그대로 반환했을 수 있으므로(짧은 오디오),
+    정리(unlink) 시 원본 wav_path는 절대 지우지 않는다 — 그건 호출자의
+    finally 블록이 이미 담당한다."""
+    chunk_paths = await asyncio.to_thread(
+        split_audio_into_chunks, wav_path, STT_CHUNK_SECONDS)
+    try:
+        chunk_results = await asyncio.gather(
+            *(provider.transcribe(p) for p in chunk_paths)
+        )
+    finally:
+        for p in chunk_paths:
+            if p != wav_path:
+                Path(p).unlink(missing_ok=True)
+    merged: list = []
+    for i, segments in enumerate(chunk_results):
+        merged.extend(_offset_segments(segments, i * STT_CHUNK_SECONDS))
+    return merged
 
 
 async def run_pipeline(video_path: str, target_srt_path: str,
@@ -89,7 +129,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
             # 아무도 참조하지 않는 고아로 남는다 — 아래에서 결과를 직접 검사해
             # 그런 파일이 생겼으면 지우고 나서 실패를 전파한다.
             korean_raw, video_proxy_path = await asyncio.gather(
-                provider.transcribe(wav_path),
+                _transcribe_in_chunks(provider, wav_path),
                 asyncio.to_thread(generate_video_proxy, video_path),
                 return_exceptions=True,
             )
