@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
-  getTargetVersion, listLanguageProfiles, uploadChartImage, attachChartImage,
+  getTargetVersion, listLanguageProfiles, uploadChartImage, attachChartImage, uploadSrtEn,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -56,6 +56,8 @@ export default function TitleListView({ onSelect }) {
   const [srtFile, setSrtFile] = useState(null);
   const [chartImageFile, setChartImageFile] = useState(null);
   const [chartImageProgress, setChartImageProgress] = useState(null);
+  const [englishSrtFile, setEnglishSrtFile] = useState(null);
+  const [englishSrtProgress, setEnglishSrtProgress] = useState(null);
   const [videoProgress, setVideoProgress] = useState(null);
   const [srtProgress, setSrtProgress] = useState(null);
   const [status, setStatus] = useState(null); // { kind: "loading" | "success" | "error", message: string }
@@ -147,6 +149,18 @@ export default function TitleListView({ onSelect }) {
     setChartImageFile(selected);
   }
 
+  function handleEnglishSrtSelected(selected) {
+    if (!SRT_EXTENSIONS.includes(getExtension(selected.name))) {
+      setStatus({
+        kind: "error",
+        message: `지원하지 않는 자막 파일 형식입니다. (허용: ${SRT_EXTENSIONS.join(", ")})`,
+      });
+      return;
+    }
+    setStatus(null);
+    setEnglishSrtFile(selected);
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
     setVideoProgress(0);
@@ -170,7 +184,19 @@ export default function TitleListView({ onSelect }) {
           console.error("인물관계도 이미지 업로드 실패:", err);
         }
       }
-      const episode = await createEpisode(title.id, null, videoUpload.path);
+      // 영어 SRT는 선택 입력이라(인물관계도 이미지와 동일한 원칙), 있을 때만
+      // 업로드한다. 실패해도 전체 등록 흐름을 막지 않는다 — 성별/격식 확인은
+      // 영어 SRT 없이도 완전히 동작하는 독립 기능이고, 이건 참고 힌트일 뿐이다.
+      let englishSrtPath = null;
+      if (englishSrtFile) {
+        try {
+          const englishSrtUpload = await uploadSrtEn(englishSrtFile, setEnglishSrtProgress);
+          englishSrtPath = englishSrtUpload.path;
+        } catch (err) {
+          console.error("영어 SRT 업로드 실패:", err);
+        }
+      }
+      const episode = await createEpisode(title.id, null, videoUpload.path, englishSrtPath);
       const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
       setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
       await runAnalysis(tv.id, srtUpload.path);
@@ -183,6 +209,7 @@ export default function TitleListView({ onSelect }) {
       setVideoProgress(null);
       setSrtProgress(null);
       setChartImageProgress(null);
+      setEnglishSrtProgress(null);
     }
   }
 
@@ -259,6 +286,16 @@ export default function TitleListView({ onSelect }) {
             file={srtFile}
             onFileSelected={handleSrtSelected}
             progress={srtProgress}
+            disabled={isSubmitting}
+          />
+
+          <FileDropzone
+            id="english-srt-file"
+            label="영어 SRT 자막 (선택, 성별 확인 힌트 참고용)"
+            accept={SRT_EXTENSIONS.join(",")}
+            file={englishSrtFile}
+            onFileSelected={handleEnglishSrtSelected}
+            progress={englishSrtProgress}
             disabled={isSubmitting}
           />
 
