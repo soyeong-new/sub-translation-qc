@@ -79,6 +79,8 @@ async def create_title(payload: TitleIn):
 
 @app.post("/titles/{title_id}/episodes")
 async def create_episode(title_id: str, payload: EpisodeIn):
+    if payload.english_srt_path is not None:
+        _validate_english_srt_path(payload.english_srt_path)
     async with async_session() as session:
         title = await session.get(Title, title_id)
         if title is None:
@@ -95,22 +97,34 @@ class ChartImageIn(BaseModel):
     image_path: str
 
 
-def _validate_chart_image_path(image_path: str) -> None:
-    """image_path가 실제로 MEDIA_ROOT/chart_image 아래를 가리키는지 확인한다
-    (get_title의 chart_image_url 검증과 동일한 resolve-then-check 패턴 —
-    is_relative_to는 lexical하게만 비교하므로 ".."이 섞인 경로를 resolve() 없이
-    검사하면 실제로는 밖을 가리키는 경로도 통과시킬 수 있다). 클라이언트가
-    임의의 경로(예: /etc/passwd)를 넘겨 백그라운드 추출이 그 파일을 열어
-    Anthropic API로 전송해버리는 것을 막는다."""
-    chart_dir = MEDIA_ROOT / "chart_image"
+def _validate_media_subpath(path: str, subdir: str, error_message: str) -> None:
+    """path가 실제로 MEDIA_ROOT/subdir 아래를 가리키는지 확인한다 — is_relative_to는
+    lexical하게만 비교하므로 ".."이 섞인 경로를 resolve() 없이 검사하면 실제로는
+    밖을 가리키는 경로(예: /etc/passwd)도 통과시킬 수 있다. 클라이언트가 임의의
+    경로를 넘겨 서버가 그 파일을 열어(추출/파싱 후 API 응답으로 그대로 서빙하거나
+    Anthropic API로 전송) 임의 파일 읽기 통로가 되는 것을 막는다."""
+    target_dir = MEDIA_ROOT / subdir
     try:
-        resolved_path = Path(image_path).resolve()
-        resolved_dir = chart_dir.resolve()
+        resolved_path = Path(path).resolve()
+        resolved_dir = target_dir.resolve()
         if not resolved_path.is_relative_to(resolved_dir):
-            raise HTTPException(400, "유효하지 않은 이미지 경로입니다.")
+            raise HTTPException(400, error_message)
     except ValueError:
         # 다른 드라이브(Windows) 등 방어적 예외 상황도 무효 처리한다.
-        raise HTTPException(400, "유효하지 않은 이미지 경로입니다.")
+        raise HTTPException(400, error_message)
+
+
+def _validate_chart_image_path(image_path: str) -> None:
+    """image_path가 실제로 MEDIA_ROOT/chart_image 아래를 가리키는지 확인한다."""
+    _validate_media_subpath(image_path, "chart_image", "유효하지 않은 이미지 경로입니다.")
+
+
+def _validate_english_srt_path(english_srt_path: str) -> None:
+    """english_srt_path가 실제로 MEDIA_ROOT/srt_en 아래를 가리키는지 확인한다 —
+    pipeline.load_srt()가 이 경로를 열어 파싱하고, 매칭된 텍스트가
+    Segment.english_pronoun_hint로 저장되어 flagged-segments 응답을 통해 그대로
+    클라이언트에 노출되므로 chart_image_path와 동일한 이유로 검증이 필요하다."""
+    _validate_media_subpath(english_srt_path, "srt_en", "유효하지 않은 영어 자막 경로입니다.")
 
 
 @app.post("/titles/{title_id}/chart-image")

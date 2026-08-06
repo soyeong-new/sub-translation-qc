@@ -58,10 +58,16 @@ export default function FlaggedSegmentStepper({
 
   // 줄이 바뀔 때마다 그 줄의 구간으로 seek하고 재생한다. 구간 끝에 도달하면
   // 처음으로 되돌려 반복 재생한다(자동재생 요구사항 + "여러 번 다시 보기"를
-  // 매번 수동 되감기 없이 지원). <video> 엘리먼트 자체는 이 useEffect의
-  // 의존성 배열에 currentSegment만 있고 videoRef.current(엘리먼트)는 이
-  // 컴포넌트가 살아있는 동안 절대 바뀌지 않는다 — 그래서 리로드 없이 seek만
-  // 일어난다.
+  // 매번 수동 되감기 없이 지원). <video> 엘리먼트 자체는 이 컴포넌트가 살아있는
+  // 동안 절대 바뀌지 않는다 — 그래서 리로드 없이 seek만 일어난다.
+  //
+  // 의존성 배열은 일부러 currentSegment 전체가 아니라 id/start/end 세
+  // 프리미티브만 담는다 — 성별·격식 중 하나만 해결됐을 때(둘 다 필요한
+  // 줄에서), ReviewView가 세그먼트 배열을 { ...s, ...updated } 스프레드로
+  // 새 객체 참조를 만들어 넘겨줘도 같은 줄(id/start/end 불변)이면 이 이펙트가
+  // 재실행되지 않는다. currentSegment 객체 전체를 의존성으로 두면 매 부분
+  // 해결마다 새 객체로 인식돼 아직 검수 중인 영상이 처음으로 되감겨 재생되는
+  // 문제가 있었다(Finding #2).
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !currentSegment) return undefined;
@@ -81,7 +87,7 @@ export default function FlaggedSegmentStepper({
     }
     video.addEventListener("timeupdate", handleTimeUpdate);
     return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [currentSegment]);
+  }, [currentSegment?.id, currentSegment?.start, currentSegment?.end]);
 
   function goToNextUnresolved(fromIndex) {
     for (let i = fromIndex + 1; i < segments.length; i += 1) {
