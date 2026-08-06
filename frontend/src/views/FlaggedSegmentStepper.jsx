@@ -22,15 +22,24 @@ const navBtnClass =
 const closeBtnClass =
   `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
 
+// 성별/격식 각각의 확인 상태를 판단하는 단일 기준점. isSegmentResolved와
+// 컴포넌트 렌더 로직(genderResolved/formalityResolved) 모두 이 두 함수를
+// 그대로 재사용해, "확인됨"의 정의가 여러 곳에서 어긋나지 않게 한다.
+function isGenderResolved(segment) {
+  return !segment.gender_check_needed
+    || Boolean(segment.resolved_character_id) || Boolean(segment.resolved_gender_raw);
+}
+
+function isFormalityResolved(segment) {
+  return !segment.formality_check_needed
+    || Boolean(segment.resolved_relationship_id) || Boolean(segment.resolved_formality_raw);
+}
+
 // Segment의 확인 상태를 판단하는 단일 기준점. ReviewView.jsx가 진입 버튼의
 // 미확인 개수 배지를 계산할 때도 이 함수를 그대로 재사용해, "확인됨"의
 // 정의가 두 곳에서 어긋나지 않게 한다.
 export function isSegmentResolved(segment) {
-  const genderOk = !segment.gender_check_needed
-    || Boolean(segment.resolved_character_id) || Boolean(segment.resolved_gender_raw);
-  const formalityOk = !segment.formality_check_needed
-    || Boolean(segment.resolved_relationship_id) || Boolean(segment.resolved_formality_raw);
-  return genderOk && formalityOk;
+  return isGenderResolved(segment) && isFormalityResolved(segment);
 }
 
 export default function FlaggedSegmentStepper({
@@ -133,10 +142,8 @@ export default function FlaggedSegmentStepper({
     );
   }
 
-  const genderResolved = !currentSegment.gender_check_needed
-    || Boolean(currentSegment.resolved_character_id) || Boolean(currentSegment.resolved_gender_raw);
-  const formalityResolved = !currentSegment.formality_check_needed
-    || Boolean(currentSegment.resolved_relationship_id) || Boolean(currentSegment.resolved_formality_raw);
+  const genderResolved = isGenderResolved(currentSegment);
+  const formalityResolved = isFormalityResolved(currentSegment);
   const hint = currentSegment.english_pronoun_hint;
 
   return (
@@ -256,14 +263,14 @@ export default function FlaggedSegmentStepper({
 
       <footer className="flex items-center justify-between border-t border-border px-6 py-4">
         <button
-          disabled={currentIndex === 0}
+          disabled={pending || currentIndex === 0}
           onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
           className={navBtnClass}
         >
           &larr; 이전 줄
         </button>
         <button
-          disabled={currentIndex === segments.length - 1}
+          disabled={pending || currentIndex === segments.length - 1}
           onClick={() => setCurrentIndex((i) => Math.min(segments.length - 1, i + 1))}
           className={navBtnClass}
         >
