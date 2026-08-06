@@ -121,6 +121,36 @@ def test_split_audio_into_chunks_returns_original_path_when_file_is_not_valid_wa
     mock_run.assert_not_called()
 
 
+import subprocess
+import pytest
+
+
+def test_split_audio_into_chunks_cleans_up_partial_files_when_ffmpeg_fails(tmp_path):
+    """회귀(Finding #2): ffmpeg의 segment muxer는 조각 파일을 처리하는 대로
+    바로 디스크에 쓴다. 디스크 부족/손상된 입력 등으로 일부 조각을 쓴 뒤
+    subprocess.run이 CalledProcessError를 던지면, 이미 쓰인 조각 파일이
+    고아로 남으면 안 된다 — 실제 ffmpeg 동작을 흉내내어 mock이 파일 두
+    개를 실제로 써 놓은 뒤 실패하도록 하고, 실패 후 그 파일들이 사라졌는지
+    확인한다."""
+    wav = tmp_path / "long.wav"
+    _write_silent_wav(wav, seconds=5.0)
+    chunks_dir = tmp_path / "chunks"
+
+    def _fake_run(args, **kwargs):
+        # 진짜 ffmpeg처럼 실패 직전까지 일부 조각 파일을 실제로 써 놓는다.
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        (chunks_dir / "long_chunk000.wav").write_bytes(b"partial chunk 0")
+        (chunks_dir / "long_chunk001.wav").write_bytes(b"partial chunk 1")
+        raise subprocess.CalledProcessError(returncode=1, cmd=args)
+
+    with patch("subprocess.run", side_effect=_fake_run):
+        with pytest.raises(subprocess.CalledProcessError):
+            split_audio_into_chunks(str(wav), chunk_seconds=2.0, out_dir=str(chunks_dir))
+
+    assert not (chunks_dir / "long_chunk000.wav").exists()
+    assert not (chunks_dir / "long_chunk001.wav").exists()
+
+
 def test_split_audio_into_chunks_splits_long_audio_and_calls_ffmpeg_segment_muxer(tmp_path):
     wav = tmp_path / "long.wav"
     _write_silent_wav(wav, seconds=5.0)

@@ -53,11 +53,20 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
     asyncio.gather는 완료 순서와 무관하게 항상 입력 순서대로 결과를
     반환하므로(공식 보장 사항), 조각을 시간 순서대로 넘기기만 하면 병렬로
     돌려도 최종 결과 순서가 흐트러지지 않는다. split_audio_into_chunks가
-    분할 없이 원본 경로를 그대로 반환했을 수 있으므로(짧은 오디오),
-    정리(unlink) 시 원본 wav_path는 절대 지우지 않는다 — 그건 호출자의
-    finally 블록이 이미 담당한다."""
+    분할 없이 원본 경로를 그대로 반환했을 수 있으므로(짧은 오디오), 조각
+    정리(unlink) 시 원본 wav_path는 그 경로로는 절대 지우지 않는다 — 분할이
+    안 일어난 경우 원본 정리는 호출자의 finally 블록이 전담한다.
+
+    반면 분할이 실제로 일어난 경우(chunk_paths가 원본과 다른 실제 조각
+    파일들)에는, 조각들이 원본을 바이트 단위로 완전히 대체하는 복사본이라
+    원본이 그 순간부터 죽은 데이터가 된다 — 병렬 transcribe가 도는 동안
+    원본(~230MB급)까지 같이 들고 있으면 오디오 관련 디스크 사용량이 이
+    기능이 지원하려는 바로 그 상황(긴 콘텐츠)에서 불필요하게 두 배가 된다.
+    그래서 이 경우엔 transcribe를 시작하기 전에 원본을 바로 지운다."""
     chunk_paths = await asyncio.to_thread(
         split_audio_into_chunks, wav_path, STT_CHUNK_SECONDS)
+    if chunk_paths != [wav_path]:
+        Path(wav_path).unlink(missing_ok=True)
     try:
         chunk_results = await asyncio.gather(
             *(provider.transcribe(p) for p in chunk_paths)
@@ -69,6 +78,13 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
     merged: list = []
     for i, segments in enumerate(chunk_results):
         merged.extend(_offset_segments(segments, i * STT_CHUNK_SECONDS))
+    if not merged:
+        # 개별 조각에 세그먼트가 없는 것(무음 구간)은 정상이지만, 모든
+        # 조각을 병합한 결과가 통째로 비어 있다면 에피소드 전체에 대사가
+        # 없다는 뜻이다 — 이 경우는 여전히 진짜 실패다(과거 조각 분할 이전,
+        # transcribe가 에피소드 전체를 한 번에 처리하던 시절과 동일한 판단
+        # 기준을 병합 레벨로 옮긴 것).
+        raise ValueError("GPT STT 응답에 세그먼트가 없음")
     return merged
 
 

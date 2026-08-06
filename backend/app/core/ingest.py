@@ -125,9 +125,19 @@ def split_audio_into_chunks(wav_path: str, chunk_seconds: float = 600.0,
     stem = Path(wav_path).stem
     num_chunks = ceil(duration / chunk_seconds)
     pattern = str(out_dir_p / f"{stem}_chunk%03d.wav")
-    subprocess.run(
-        ["ffmpeg", "-i", wav_path, "-f", "segment", "-segment_time", str(chunk_seconds),
-         "-c", "copy", "-reset_timestamps", "1", "-y", pattern],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
-    )
+    try:
+        subprocess.run(
+            ["ffmpeg", "-i", wav_path, "-f", "segment", "-segment_time", str(chunk_seconds),
+             "-c", "copy", "-reset_timestamps", "1", "-y", pattern],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+        )
+    except subprocess.CalledProcessError:
+        # ffmpeg의 segment muxer는 조각 파일을 처리하는 대로 즉시 디스크에
+        # 쓴다 — 디스크 공간 부족, 손상된 입력, 강제 종료 등으로 일부 조각을
+        # 쓴 뒤 실패하면 그 조각들이 아무도 정리하지 않는 고아 파일로
+        # 남는다. 여기서 실패 시점까지 만들어졌을 조각 파일을 결정론적
+        # 이름 패턴으로 찾아 지우고 나서 예외를 그대로 다시 던진다.
+        for partial in out_dir_p.glob(f"{stem}_chunk*.wav"):
+            partial.unlink(missing_ok=True)
+        raise
     return [str(out_dir_p / f"{stem}_chunk{i:03d}.wav") for i in range(num_chunks)]

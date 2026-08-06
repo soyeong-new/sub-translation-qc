@@ -601,6 +601,132 @@ async def test_pipeline_transcribes_in_chunks_and_merges_with_correct_offsets(tm
 
 
 @pytest.mark.asyncio
+async def test_pipeline_tolerates_a_speech_free_chunk_among_others(tmp_path, monkeypatch):
+    """회귀(Finding #1): 조각 하나에 세그먼트가 없는 것(무음 구간, 엔드크레딧
+    등)은 그 자체로는 실패가 아니다 — 나머지 조각의 세그먼트만으로 병합
+    결과가 채워지면 파이프라인은 정상적으로 끝나야 한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHola.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _fake_transcribe(audio_path):
+        if audio_path == "/fake/chunk0.wav":
+            return []
+        return [{"start": 0.0, "end": 1.0, "text": "대사"}]
+
+    monkeypatch.setattr(provider, "transcribe", _fake_transcribe)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.split_audio_into_chunks",
+               return_value=["/fake/chunk0.wav", "/fake/chunk1.wav"]):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    assert len(result["korean_segments_raw"]) == 1
+    assert result["korean_segments_raw"][0]["text"] == "대사"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_raises_when_all_chunks_have_no_speech(tmp_path, monkeypatch):
+    """회귀(Finding #1): 모든 조각을 병합한 결과가 통째로 비어 있다면 —
+    에피소드 전체에 대사가 없다는 뜻이므로 — 여전히 진짜 실패로 처리해야
+    한다. 이 판단은 이제 조각 단위가 아니라 병합 후(_transcribe_in_chunks)
+    한 번만 이뤄진다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHola.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _empty_transcribe(audio_path):
+        return []
+
+    monkeypatch.setattr(provider, "transcribe", _empty_transcribe)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.split_audio_into_chunks",
+               return_value=["/fake/chunk0.wav", "/fake/chunk1.wav"]):
+        with pytest.raises(ValueError, match="GPT STT 응답에 세그먼트가 없음"):
+            await run_pipeline(
+                video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+                language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            )
+
+
+@pytest.mark.asyncio
+async def test_pipeline_deletes_original_wav_early_when_split_actually_occurred(tmp_path, monkeypatch):
+    """회귀(Finding #3): 분할이 실제로 일어났다면(청크가 원본을 완전히
+    대체) _transcribe_in_chunks가 병렬 transcribe를 시작하기 전에 원본
+    wav_path를 바로 지워야 한다 — 그래야 STT 진행 중 오디오 관련 디스크
+    사용량이 원본+조각으로 일시적으로 두 배가 되는 걸 막을 수 있다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHola.\n", encoding="utf-8")
+    provider = MockProvider()
+    wav_path = tmp_path / "audio.wav"
+    wav_path.write_bytes(b"fake wav")
+    chunk0 = tmp_path / "chunk0.wav"
+    chunk1 = tmp_path / "chunk1.wav"
+    chunk0.write_bytes(b"chunk0")
+    chunk1.write_bytes(b"chunk1")
+
+    wav_existed_during_transcribe = []
+
+    async def _fake_transcribe(audio_path):
+        wav_existed_during_transcribe.append(wav_path.exists())
+        return [{"start": 0.0, "end": 1.0, "text": "조각"}]
+
+    monkeypatch.setattr(provider, "transcribe", _fake_transcribe)
+
+    with patch("app.core.pipeline.extract_audio", return_value=str(wav_path)), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.split_audio_into_chunks",
+               return_value=[str(chunk0), str(chunk1)]):
+        await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    # 원본은 병렬 transcribe가 시작되기 전에(즉 그 동안 내내) 이미 없어야 한다.
+    assert wav_existed_during_transcribe == [False, False]
+    assert not wav_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_delete_original_wav_early_when_no_split_needed(tmp_path, monkeypatch):
+    """회귀(Finding #3): 분할이 일어나지 않았다면(원본이 이미 청크 길이보다
+    짧음) _transcribe_in_chunks는 원본을 손대면 안 된다 — run_pipeline의
+    바깥 finally 블록이 정확히 한 번 정리하는 게 유일한 소유권이어야
+    한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nHola.\n", encoding="utf-8")
+    provider = MockProvider()
+    wav_path = tmp_path / "audio.wav"
+    wav_path.write_bytes(b"fake wav")
+
+    wav_existed_during_transcribe = []
+
+    async def _fake_transcribe(audio_path):
+        wav_existed_during_transcribe.append(wav_path.exists())
+        return [{"start": 0.0, "end": 1.0, "text": "조각"}]
+
+    monkeypatch.setattr(provider, "transcribe", _fake_transcribe)
+
+    with patch("app.core.pipeline.extract_audio", return_value=str(wav_path)), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.core.pipeline.split_audio_into_chunks", return_value=[str(wav_path)]):
+        await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    assert wav_existed_during_transcribe == [True]
+    # run_pipeline의 바깥 finally 블록이 정확히 한 번 지운다.
+    assert not wav_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_cleans_up_chunk_files_but_not_original_when_no_split_needed(tmp_path, monkeypatch):
     """split_audio_into_chunks가 분할 없이 원본 경로를 그대로 반환했을 때
     (짧은 오디오), _transcribe_in_chunks가 그 경로를 지우면 안 된다 —

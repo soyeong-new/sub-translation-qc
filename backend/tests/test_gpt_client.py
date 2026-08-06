@@ -102,12 +102,16 @@ async def test_transcribe_sends_korean_language_hint_and_configured_model(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_transcribe_raises_when_no_segments(tmp_path):
+async def test_transcribe_returns_empty_list_when_no_segments(tmp_path):
+    """회귀(Finding #1): transcribe는 이제 청크 단위로 호출되므로, 세그먼트
+    없는 조각(무음 구간 등)은 그 자체로는 실패가 아니다 — 빈 리스트를
+    돌려주고, "에피소드 전체에 대사가 없음" 판단은
+    pipeline._transcribe_in_chunks가 모든 조각을 병합한 뒤에 한다."""
     client = _make_client_with_fake_transcribe([])
     audio_path = tmp_path / "audio.wav"
     audio_path.write_bytes(b"fake-audio-bytes")
-    with pytest.raises(ValueError):
-        await client.transcribe(str(audio_path))
+    result = await client.transcribe(str(audio_path))
+    assert result == []
 
 
 @pytest.mark.asyncio

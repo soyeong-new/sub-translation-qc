@@ -87,13 +87,20 @@ class GptClient:
         return await self._call(system, user)
 
     async def transcribe(self, audio_path: str) -> List[dict]:
+        """audio_path 하나의 STT 결과를 세그먼트 리스트로 반환한다. 호출자
+        (pipeline._transcribe_in_chunks)가 긴 오디오를 여러 조각으로 나눠 이
+        메서드를 조각당 한 번씩 호출하므로, 세그먼트가 하나도 없는 것(무음
+        구간, 엔드크레딧 등)은 그 조각만 보면 지극히 정상이다 — 여기서
+        실패로 처리하지 않고 빈 리스트를 반환한다. "에피소드 전체에 대사가
+        없음"이라는 진짜 실패 판단은 모든 조각을 병합한 뒤 호출자 쪽에서
+        한다."""
         with open(audio_path, "rb") as f:
             response = await self._sdk_client.audio.transcriptions.create(
                 model=self._transcribe_model, file=f, language="ko",
                 response_format="verbose_json", timestamp_granularities=["segment"],
             )
         if not response.segments:
-            raise ValueError("GPT STT 응답에 세그먼트가 없음")
+            return []
         return [{"start": seg.start, "end": seg.end, "text": seg.text}
                 for seg in response.segments]
 
