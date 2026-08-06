@@ -77,3 +77,65 @@ def test_delete_original_video_removes_file(tmp_path):
 
 def test_delete_original_video_does_not_raise_when_already_missing(tmp_path):
     delete_original_video(str(tmp_path / "does-not-exist.mp4"))
+
+
+import wave
+from app.core.ingest import split_audio_into_chunks
+
+
+def _write_silent_wav(path, seconds, sample_rate=16000):
+    """16kHz mono 16bit PCM 무음 WAV를 지정한 길이(초)만큼 실제로 만든다.
+    split_audio_into_chunks가 wave 모듈로 길이를 정확히 읽어야 하므로,
+    가짜 바이트가 아니라 진짜 WAV 헤더/프레임이 필요하다."""
+    n_frames = int(seconds * sample_rate)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(b"\x00\x00" * n_frames)
+
+
+def test_split_audio_into_chunks_returns_original_path_when_short_enough(tmp_path):
+    wav = tmp_path / "short.wav"
+    _write_silent_wav(wav, seconds=3.0)
+    with patch("subprocess.run") as mock_run:
+        result = split_audio_into_chunks(str(wav), chunk_seconds=10.0)
+    assert result == [str(wav)]
+    mock_run.assert_not_called()
+
+
+def test_split_audio_into_chunks_returns_original_path_when_file_missing(tmp_path):
+    missing = tmp_path / "does-not-exist.wav"
+    with patch("subprocess.run") as mock_run:
+        result = split_audio_into_chunks(str(missing), chunk_seconds=10.0)
+    assert result == [str(missing)]
+    mock_run.assert_not_called()
+
+
+def test_split_audio_into_chunks_returns_original_path_when_file_is_not_valid_wav(tmp_path):
+    garbage = tmp_path / "garbage.wav"
+    garbage.write_bytes(b"this is not a wav file")
+    with patch("subprocess.run") as mock_run:
+        result = split_audio_into_chunks(str(garbage), chunk_seconds=10.0)
+    assert result == [str(garbage)]
+    mock_run.assert_not_called()
+
+
+def test_split_audio_into_chunks_splits_long_audio_and_calls_ffmpeg_segment_muxer(tmp_path):
+    wav = tmp_path / "long.wav"
+    _write_silent_wav(wav, seconds=5.0)
+    with patch("subprocess.run") as mock_run:
+        result = split_audio_into_chunks(str(wav), chunk_seconds=2.0, out_dir=str(tmp_path / "chunks"))
+    # ceil(5.0 / 2.0) == 3개 조각
+    assert result == [
+        str(tmp_path / "chunks" / "long_chunk000.wav"),
+        str(tmp_path / "chunks" / "long_chunk001.wav"),
+        str(tmp_path / "chunks" / "long_chunk002.wav"),
+    ]
+    args = mock_run.call_args.args[0]
+    assert "ffmpeg" in args
+    assert "-f" in args and args[args.index("-f") + 1] == "segment"
+    assert "-segment_time" in args and args[args.index("-segment_time") + 1] == "2.0"
+    assert "-c" in args and args[args.index("-c") + 1] == "copy"
+    assert "-reset_timestamps" in args and args[args.index("-reset_timestamps") + 1] == "1"
+    assert str(tmp_path / "chunks" / "long_chunk%03d.wav") in args

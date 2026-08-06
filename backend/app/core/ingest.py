@@ -2,6 +2,8 @@
 
 import re
 import subprocess
+import wave
+from math import ceil
 from pathlib import Path
 from typing import List, Optional
 from app.schemas import SegmentText
@@ -96,3 +98,36 @@ def delete_original_video(video_path: str) -> None:
     """프록시 생성 후 원본을 지운다. 스토리지 한도 안에서 여러 작품을 처리하려면
     필수 동작이다. 파일이 이미 없어도(중복 호출 등) 에러 없이 넘어간다."""
     Path(video_path).unlink(missing_ok=True)
+
+
+def split_audio_into_chunks(wav_path: str, chunk_seconds: float = 600.0,
+                             out_dir: Optional[str] = None) -> List[str]:
+    """STT API의 파일 크기/길이 제한(gpt-4o-mini-transcribe 기준 25MB/약 25분)
+    안에 들어오도록 긴 오디오를 여러 조각으로 나눈다. 16kHz mono 16bit PCM
+    WAV는 초당 32KB라, 25MB는 약 781초(≈13분)에 해당한다 — chunk_seconds
+    기본값(600초=10분)은 이보다 여유 있게 낮췄다.
+
+    길이를 읽을 수 없거나(파일이 없거나 유효한 WAV가 아니거나) 이미
+    chunk_seconds보다 짧으면 원본 경로를 그대로 담은 리스트를 반환한다 —
+    이 폴백 덕분에 호출자가 별도 분기 없이 항상 "경로 리스트를 순서대로
+    돌면서 처리"하는 동일한 코드로 두 경우(분할함/안 함)를 모두 처리할 수
+    있다."""
+    try:
+        with wave.open(wav_path, "rb") as w:
+            duration = w.getnframes() / w.getframerate()
+    except (FileNotFoundError, wave.Error):
+        return [wav_path]
+    if duration <= chunk_seconds:
+        return [wav_path]
+
+    out_dir_p = Path(out_dir) if out_dir else Path(wav_path).parent
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+    stem = Path(wav_path).stem
+    num_chunks = ceil(duration / chunk_seconds)
+    pattern = str(out_dir_p / f"{stem}_chunk%03d.wav")
+    subprocess.run(
+        ["ffmpeg", "-i", wav_path, "-f", "segment", "-segment_time", str(chunk_seconds),
+         "-c", "copy", "-reset_timestamps", "1", "-y", pattern],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+    return [str(out_dir_p / f"{stem}_chunk{i:03d}.wav") for i in range(num_chunks)]
