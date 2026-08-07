@@ -12,7 +12,12 @@ _JSON_INSTRUCTION = (
 _PRIMARY_SCHEMA_INSTRUCTION = (
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'segment_id (문자열, 입력 pair의 "id"와 반드시 일치), '
-    'category (문자열, 반드시 "sensitivity", "glossary" 중 하나), '
+    'category (문자열, 반드시 다음 중 하나: '
+    '"sensitivity"(사전에 없어 애매한 비속어), '
+    '"mistranslation"(의미가 잘못 옮겨졌거나 함축된 의미가 빠진 경우), '
+    '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
+    '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
+    '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
     "corrected_text (문자열, 교정된 전체 대상언어 텍스트), "
     "description (문자열, 한국어로 무엇을 왜 고쳤는지). "
     "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라."
@@ -24,17 +29,12 @@ _SHRINK_SCHEMA_INSTRUCTION = (
     "다른 설명을 붙이지 마라."
 )
 
-_GRAMMAR_NECESSITY_SCHEMA_INSTRUCTION = (
-    "입력 배열의 각 항목마다 정확히 하나의 결과 객체를 반환하라(빠뜨리지 마라). "
-    "각 항목은 정확히 다음 키를 가져야 한다: "
+_BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'id (문자열, 입력의 "id"와 반드시 일치), '
-    "gender_check_needed (불리언, 이 줄에 사람을 가리키는 성별 표시 형용사·"
-    "과거분사가 있으면 true), "
-    "formality_check_needed (불리언, 이 줄이 존댓말/반말(tú/usted) 선택이 "
-    "걸리는 대화체 문장이면 true). "
-    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라.'
+    "korean_text (문자열, 자연스러운 한국어 역번역). "
+    "반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
 )
-
 
 class ClaudeClient:
     def __init__(self, api_key: str, model: str):
@@ -88,15 +88,18 @@ class ClaudeClient:
         language_label = f"{language}({variant})" if variant else language
 
         system = (
-            f"너는 한국어-{language_label} 자막의 1차 교정자다. 다음 항목만 직접 "
-            "고쳐서 다시 써라: (1) 사전에 없는 애매한 비속어, (2) 글로서리에 없는 "
-            "새 인물 이름의 표기 통일. "
-            "성별/격식 일치나 번역 품질 전반, 로컬라이제이션은 다루지 마라 "
-            "(2차 검수자의 몫). "
+            f"너는 한국어-{language_label} 자막의 검증자다. korean_text(원문)와 "
+            "target_text를 나란히 놓고 다음 기준으로 처음부터 독립적으로 검증·"
+            "교정하라: 사전에 없는 애매한 비속어, 번역정확성, 문화맥락, 뉘앙스어조, "
+            "자연스러운흐름(직역 지양, 한국어 어순을 그대로 따라간 부분을 찾아 "
+            "고칠 것), 함축의미, 로컬라이제이션(그 나라 문화에 맞는 표현인지). "
+            "성별/격식(존댓말·반말)은 화자를 특정할 근거가 없어 다루지 마라 — "
+            "검수자가 영상을 보고 직접 확인한다. 새 인물 이름의 표기 통일도 "
+            "다루지 마라(별도 사전으로 관리). "
             f"{format_constraint} 참고 지식베이스: {knowledge}\n"
         )
         system += (
-            f"사전에 없어 애매한 비속어 후보: "
+            f"사전에 없어 애매한 비속어 후보(참고용): "
             f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
             + _JSON_INSTRUCTION + "\n" + _PRIMARY_SCHEMA_INSTRUCTION
         )
@@ -117,31 +120,15 @@ class ClaudeClient:
         result = await self._call_object(system, text)
         return result["shrunk_text"]
 
-    async def check_grammar_necessity(self, pairs: List[dict], profile: dict) -> List[dict]:
+    async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
         language = profile.get("language") or "대상언어"
         variant = profile.get("variant")
         language_label = f"{language}({variant})" if variant else language
         system = (
-            f"다음은 {language_label} 자막 줄 목록이다. 각 줄이 문법적으로 "
-            "성별 일치나 존댓말/반말 판단이 필요한 줄인지만 순수하게 문법적으로 "
-            "판단하라 — 누가 말했는지, 맥락이 무엇인지는 몰라도 된다. 그 줄 "
-            "텍스트 자체에 성별 표시 형용사/과거분사가 있는지, 대화체 문장인지만 "
-            "보고 판단하라.\n" + _GRAMMAR_NECESSITY_SCHEMA_INSTRUCTION
+            f"다음은 {language_label} 텍스트 목록이다. 각 항목을 자연스러운 "
+            "한국어로 역번역하라 — 스페인어를 모르는 검수자가 원래 의미를 "
+            "가늠하기 위한 참고용이므로, 의역보다 원문 의미를 최대한 그대로 "
+            "전달하는 것을 우선하라.\n" + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
-        user = json.dumps(pairs, ensure_ascii=False)
-        response = await self._sdk_client.messages.create(
-            model=self._model, max_tokens=4096, system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        text = self._extract_text(response)
-        try:
-            parsed = json.loads(text)
-            # 스키마 지침은 {"results": [...]} 객체를 요구하지만, Claude가
-            # 배열을 바로 반환하는 경우도 허용한다(둘 다 유효한 응답으로 취급).
-            results = parsed if isinstance(parsed, list) else parsed["results"]
-            if not isinstance(results, list):
-                raise TypeError("results가 리스트가 아님")
-            return results
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            preview = text[:200] if text else "<empty>"
-            raise ValueError(f"문법 필요성 판단 응답이 기대한 형태가 아님: {preview}") from exc
+        user = json.dumps(texts, ensure_ascii=False)
+        return await self._call_array(system, user)

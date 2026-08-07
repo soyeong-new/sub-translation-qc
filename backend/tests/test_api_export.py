@@ -26,7 +26,7 @@ async def test_export_returns_srt_and_stats():
                       korean_text="", target_text="texto malo")
         session.add(seg); await session.flush()
         f = FindingRow(id="f1", target_version_id=tv.id, segment_id=seg.id,
-                       category="translation", description="근거",
+                       category="mistranslation", description="근거",
                        original_text="texto malo", suggested_text="texto bueno",
                        confidence=0.9, status="approved", final_text="texto bueno")
         session.add(f)
@@ -173,11 +173,11 @@ async def test_export_records_an_export_row():
         session.add(seg); await session.flush()
         session.add_all([
             FindingRow(id="fa", target_version_id=tv.id, segment_id=seg.id,
-                       category="translation", description="근거",
+                       category="mistranslation", description="근거",
                        original_text="texto malo", suggested_text="texto bueno",
                        confidence=0.9, status="approved", final_text="texto bueno"),
             FindingRow(id="fb", target_version_id=tv.id, segment_id=seg.id,
-                       category="translation", description="근거",
+                       category="mistranslation", description="근거",
                        original_text="texto malo", suggested_text="otro",
                        confidence=0.5, status="pending"),
         ])

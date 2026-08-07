@@ -58,7 +58,7 @@ async def test_run_analysis_then_list_findings(tmp_path, monkeypatch):
             r = await client.get(f"/target-versions/{tv_id}/findings")
             assert r.status_code == 200
             findings = r.json()
-            assert any(f["category"] == "translation" for f in findings)
+            assert any(f["category"] == "mistranslation" for f in findings)
 
 
 @pytest.mark.asyncio
@@ -147,7 +147,7 @@ async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatc
     """run_pipeline은 analyze_characters를 호출하지 않는다(인물/관계 로스터
     자체가 폐지됨). 이 테스트가 검증하려는 "파이프라인 어느 단계가 실패해도
     그 warning이 GET으로 노출되는가"를 계속 확인하려면 실제로 여전히
-    호출되는 단계(check_grammar_necessity, 문법 필요성 판단)를 실패시켜야
+    호출되는 단계(문법 필요성 판단, 이제 spaCy 기반 파이썬 함수)를 실패시켜야
     한다."""
     import asyncio
     monkeypatch.setenv("QC_PROVIDER", "mock")
@@ -163,12 +163,11 @@ async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatc
         await session.commit()
         tv_id = tv.id
 
-    from app.providers.mock import MockProvider
-
-    async def _check_grammar_necessity_raises(*args, **kwargs):
+    def _check_grammar_necessity_raises(*args, **kwargs):
         raise RuntimeError("문법 필요성 판단 API 오류")
 
-    monkeypatch.setattr(MockProvider, "check_grammar_necessity", _check_grammar_necessity_raises)
+    monkeypatch.setattr(
+        "app.core.pipeline.check_grammar_necessity", _check_grammar_necessity_raises)
 
     # GET /target-versions/{id}가 video_proxy_url을 MEDIA_ROOT/video_proxy
     # 기준 상대경로로 계산하므로("/fake/proxy.mp4" 같은 경로를 주면

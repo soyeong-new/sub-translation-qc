@@ -38,7 +38,7 @@ async def test_save_pipeline_result_persists_findings():
         result = {
             "findings": [Finding(
                 id="f1", target_version_id=tv.id, segment_id="p1",
-                category="translation", description="근거", original_text="a",
+                category="mistranslation", description="근거", original_text="a",
                 suggested_text="b", confidence=0.9, source="llm",
             )],
             "format_violations": [],
@@ -53,7 +53,7 @@ async def test_save_pipeline_result_persists_findings():
 
         rows = await get_findings(session, tv.id)
         assert len(rows) == 1
-        assert rows[0].category == "translation"
+        assert rows[0].category == "mistranslation"
 
         seg_rows = await session.execute(select(Segment).where(Segment.target_version_id == tv.id))
         segments = list(seg_rows.scalars().all())
@@ -73,7 +73,7 @@ def _pipeline_result(target_version_id: str) -> dict:
     return {
         "findings": [Finding(
             id="finding_pair_1_translation", target_version_id=target_version_id,
-            segment_id="pair_1", category="translation", description="근거",
+            segment_id="pair_1", category="mistranslation", description="근거",
             original_text="a", suggested_text="b", confidence=0.9, source="llm",
         )],
         "format_violations": [],
@@ -261,7 +261,7 @@ async def test_save_pipeline_result_persists_finding_model():
         result = {
             "findings": [Finding(
                 id="f1", target_version_id=tv.id, segment_id="p1",
-                category="translation", description="근거", original_text="a",
+                category="mistranslation", description="근거", original_text="a",
                 suggested_text="b", confidence=0.9, source="llm", model="claude",
             )],
             "format_violations": [],
@@ -335,7 +335,7 @@ async def test_delete_target_version_results_removes_segments_and_findings():
         session.add(seg)
         await session.flush()
         finding = FindingRow(
-            target_version_id=tv.id, segment_id=seg.id, category="translation",
+            target_version_id=tv.id, segment_id=seg.id, category="mistranslation",
             description="d", original_text="a", suggested_text="b", confidence=1.0,
         )
         session.add(finding)

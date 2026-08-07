@@ -26,28 +26,66 @@ async def test_pipeline_produces_findings_and_format_violations(tmp_path):
             provider=MockProvider(),
         )
 
-    assert any(f.category == "translation" and f.model == "gpt" for f in result["findings"])
+    assert any(f.category == "mistranslation" and f.model == "claude+gpt" for f in result["findings"])
     assert any(v.rule == "ellipsis" for v in result["format_violations"])
     assert result["video_proxy_path"] == "/fake/proxy.mp4"
     assert "pairs" in result
 
 
 @pytest.mark.asyncio
-async def test_pipeline_applies_claude_correction_before_gpt_sees_it(tmp_path, monkeypatch):
-    """GPT 2차는 Claude 1차가 이미 고친 텍스트를 이어받아야 한다 — 순차 구조의
-    핵심 계약. MockProvider.verify_and_refine은 current_text에 BAD_TRANSLATION이
-    남아있을 때만 찾아내므로, Claude가 먼저 그 마커를 지우면 GPT 쪽 finding이
-    생기지 않아야 순차 전달이 실제로 일어났음을 확인할 수 있다."""
+async def test_pipeline_runs_claude_and_gpt_on_the_same_original_text(tmp_path, monkeypatch):
+    """병렬 독립 검증의 핵심 계약: Claude와 GPT는 같은 원본을 동시에 받아야
+    하고, 어느 쪽도 상대가 뭘 고쳤는지/봤는지 모른 채 판단해야 한다(앵커링
+    편향 방지 — design §어떻게 사용하는지). 둘 다 받는 target_text가 서로
+    같고, 사전필터까지만 적용된 원본이어야 한다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     provider = MockProvider()
 
-    async def _claude_removes_marker(pairs, *args, **kwargs):
-        return [{"segment_id": pairs[0]["id"], "category": "sensitivity",
-                  "corrected_text": pairs[0]["target_text"].replace("BAD_TRANSLATION", "texto"),
-                  "description": "마커 제거"}]
+    captured = {}
 
-    monkeypatch.setattr(provider, "correct_primary", _claude_removes_marker)
+    async def _capture_claude(pairs, *args, **kwargs):
+        captured["claude_saw"] = pairs[0]["target_text"]
+        return []
+
+    async def _capture_gpt(pairs, *args, **kwargs):
+        captured["gpt_saw"] = pairs[0]["target_text"]
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _capture_claude)
+    monkeypatch.setattr(provider, "verify_and_refine", _capture_gpt)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    assert captured["claude_saw"] == captured["gpt_saw"] == "BAD_TRANSLATION aquí..."
+
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_applies_when_claude_and_gpt_agree(tmp_path, monkeypatch):
+    """같은 줄을 Claude/GPT 둘 다 지적하면(합의) 사람 승인 없이 자동
+    적용된다 — 스페인어를 모르는 검수자는 텍스트 품질을 판단할 수 없으므로,
+    합의가 유일한 신뢰도 신호다. 문구는 고정 규칙으로 GPT 쪽을 쓴다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _claude_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de claude", "description": "클로드 제안"}]
+
+    async def _gpt_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de gpt", "description": "지피티 제안"}]
+
+    monkeypatch.setattr(provider, "correct_primary", _claude_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _gpt_flags)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
@@ -58,8 +96,83 @@ async def test_pipeline_applies_claude_correction_before_gpt_sees_it(tmp_path, m
             target_version_id="tv1", provider=provider,
         )
 
-    assert not any(f.model == "gpt" for f in result["findings"])
-    assert any(f.model == "claude" for f in result["findings"])
+    finding = next(f for f in result["findings"] if f.model == "claude+gpt")
+    assert finding.status == "approved"
+    assert finding.suggested_text == "texto de gpt"
+    assert finding.final_text == "texto de gpt"
+    final_pair = next(p for p in result["pairs"] if p.target is not None)
+    assert final_pair.target.text == "texto de gpt"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_does_not_apply_when_only_one_model_flags_a_segment(tmp_path, monkeypatch):
+    """한쪽만 지적하면(불일치) 적용하지 않고 원문을 유지한다 — 사람이
+    스페인어 품질을 판단할 수 없으므로, 확신 없는 교정을 조용히 적용하는
+    건 위험하다. 대신 pending Finding으로 남겨 감사할 수 있게 한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _claude_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de claude", "description": "클로드만 지적"}]
+
+    async def _gpt_no_flags(pairs, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _claude_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _gpt_no_flags)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    finding = next(f for f in result["findings"] if f.model == "claude")
+    assert finding.status == "pending"
+    assert finding.final_text == ""
+    final_pair = next(p for p in result["pairs"] if p.target is not None)
+    assert final_pair.target.text == "BAD_TRANSLATION aquí..."
+
+
+@pytest.mark.asyncio
+async def test_pipeline_attaches_cross_model_backtranslation_to_disputed_finding(tmp_path, monkeypatch):
+    """의견이 갈린 제안은 반대쪽 모델이 역번역한 한국어를 description에
+    참고용으로 붙여야 한다 — 스페인어를 모르는 검수자가 최소한 의미가
+    통하는지는 가늠할 수 있게."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _claude_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de claude", "description": "클로드만 지적"}]
+
+    async def _gpt_no_flags(pairs, *args, **kwargs):
+        return []
+
+    async def _gpt_back_translates(texts, profile):
+        return [{"id": t["id"], "korean_text": f"역번역됨:{t['text']}"} for t in texts]
+
+    monkeypatch.setattr(provider, "correct_primary", _claude_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _gpt_no_flags)
+    monkeypatch.setattr(provider, "back_translate_with_gpt", _gpt_back_translates)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    finding = next(f for f in result["findings"] if f.model == "claude")
+    assert "역번역됨:texto de claude" in finding.description
 
 
 @pytest.mark.asyncio
@@ -125,7 +238,7 @@ async def test_pipeline_rechecks_ellipsis_after_gpt_pass(tmp_path, monkeypatch):
     provider = MockProvider()
 
     async def _gpt_introduces_ellipsis(pairs, *args, **kwargs):
-        return [{"segment_id": pairs[0]["id"], "category": "translation",
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
                   "corrected_text": "espera......", "description": "GPT가 늘어뜨림"}]
 
     monkeypatch.setattr(provider, "verify_and_refine", _gpt_introduces_ellipsis)
@@ -214,12 +327,11 @@ async def test_pipeline_cleans_up_orphaned_proxy_when_transcribe_fails(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_pipeline_gpt_original_reference_reflects_post_pretreatment_text(
+async def test_pipeline_verification_pairs_reflect_post_pretreatment_text(
         tmp_path, monkeypatch):
-    """I7 회귀: GPT 2차가 "1차 교정자가 뭔가 잘못 고쳤는지" 대조하는 데 쓰는
-    original_target_by_id는 사전필터(#3/#4/#6, 정책적 편집)까지 적용된 뒤의
-    텍스트여야 한다. 사전필터 이전의 진짜 원본을 기준으로 삼으면, GPT가
-    정책적으로 이미 치환/삭제된 내용을 "복원"하도록 유도될 수 있다."""
+    """Claude/GPT가 검증하는 target_text는 사전필터(#3/#4/#6, 정책적 편집)까지
+    적용된 뒤의 텍스트여야 한다 — 사전필터 이전 원본을 보여주면 이미
+    정책적으로 치환/삭제된 내용을 다시 "복원"하도록 유도될 수 있다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(
         "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION mierda....\n", encoding="utf-8")
@@ -227,8 +339,8 @@ async def test_pipeline_gpt_original_reference_reflects_post_pretreatment_text(
 
     captured = {}
 
-    async def _capture_verify_and_refine(pairs, original_target_by_id, *args, **kwargs):
-        captured["original_target_by_id"] = dict(original_target_by_id)
+    async def _capture_verify_and_refine(pairs, *args, **kwargs):
+        captured["target_text"] = pairs[0]["target_text"]
         return []
 
     monkeypatch.setattr(provider, "verify_and_refine", _capture_verify_and_refine)
@@ -246,9 +358,8 @@ async def test_pipeline_gpt_original_reference_reflects_post_pretreatment_text(
             target_version_id="tv1", provider=provider,
         )
 
-    original_text = next(iter(captured["original_target_by_id"].values()))
-    assert "mierda" not in original_text
-    assert "[삐-]" in original_text
+    assert "mierda" not in captured["target_text"]
+    assert "[삐-]" in captured["target_text"]
 
 
 @pytest.mark.asyncio
@@ -318,14 +429,14 @@ async def test_pipeline_flags_lines_needing_gender_or_formality_check(tmp_path, 
     )
     provider = MockProvider()
 
-    async def _flag_first_only(pairs, profile):
+    def _flag_first_only(pairs, profile):
         return [
             {"id": p["id"], "gender_check_needed": p["id"] == "pair_1",
              "formality_check_needed": False}
             for p in pairs
         ]
 
-    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_first_only)
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_first_only)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
@@ -341,65 +452,16 @@ async def test_pipeline_flags_lines_needing_gender_or_formality_check(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_pipeline_batches_check_grammar_necessity_for_long_episodes(tmp_path, monkeypatch):
-    """회귀(Finding 2): check_grammar_necessity는 줄 하나당 결과 객체 하나를
-    빠짐없이 반환해야 하는 스키마라, 실제 에피소드 분량(수백 줄)을 한 번의
-    호출로 보내면 max_tokens을 넘겨 응답이 잘리고 파싱이 실패해 성별/격식
-    체크가 통째로 사라진다. 150줄(배치 크기 100의 2배 이상)을 넣어 provider가
-    두 번 이상 호출되는지, 그리고 모든 줄이 어느 한 배치에는 빠짐없이
-    포함되는지 확인한다."""
-    def _timestamp(total_seconds: int) -> str:
-        m, s = divmod(total_seconds, 60)
-        h, m = divmod(m, 60)
-        return f"{h:02d}:{m:02d}:{s:02d},000"
-
-    LINE_COUNT = 150
-    srt_lines = []
-    for i in range(LINE_COUNT):
-        start = i * 2
-        end = start + 1
-        srt_lines.append(
-            f"{i + 1}\n{_timestamp(start)} --> {_timestamp(end)}\nLinea {i}.\n"
-        )
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
-    provider = MockProvider()
-
-    batch_calls: list[list[str]] = []
-
-    async def _spy_check_grammar_necessity(pairs, profile):
-        batch_calls.append([p["id"] for p in pairs])
-        # 모든 줄을 성별 체크 필요로 표시해 segment_resolutions에서 전체
-        # 커버리지를 검증할 수 있게 한다.
-        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
-                for p in pairs]
-
-    monkeypatch.setattr(provider, "check_grammar_necessity", _spy_check_grammar_necessity)
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
-            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
-        )
-
-    assert len(batch_calls) > 1, "150줄이면 배치 크기 100으로 최소 2번 호출돼야 한다"
-    covered_ids = {seg_id for batch in batch_calls for seg_id in batch}
-    assert len(covered_ids) == LINE_COUNT, "모든 줄이 어느 한 배치에는 빠짐없이 포함돼야 한다"
-    assert len(result["segment_resolutions"]) == LINE_COUNT
-
-
-@pytest.mark.asyncio
 async def test_pipeline_continues_when_check_grammar_necessity_raises(tmp_path, monkeypatch):
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(
         "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION aquí....\n", encoding="utf-8")
     provider = MockProvider()
 
-    async def _raises(pairs, profile):
+    def _raises(pairs, profile):
         raise RuntimeError("문법 판단 API 오류")
 
-    monkeypatch.setattr(provider, "check_grammar_necessity", _raises)
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _raises)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
@@ -410,8 +472,9 @@ async def test_pipeline_continues_when_check_grammar_necessity_raises(tmp_path, 
 
     assert result["segment_resolutions"] == []
     assert result["warnings"] == [{"stage": "문법 필요성 판단", "message": "문법 판단 API 오류"}]
-    # 나머지 파이프라인은 계속 진행된다 — GPT 2차가 BAD_TRANSLATION 마커를 정상 탐지.
-    assert any(f.model == "gpt" for f in result["findings"])
+    # 나머지 파이프라인은 계속 진행된다 — Claude/GPT 둘 다 BAD_TRANSLATION 마커를
+    # 정상 탐지하고 합의하므로 자동 적용된다.
+    assert any(f.model == "claude+gpt" for f in result["findings"])
 
 
 @pytest.mark.asyncio
@@ -422,11 +485,11 @@ async def test_pipeline_attaches_english_pronoun_hint_to_gender_flagged_segment(
     english_srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nShe is tired.\n", encoding="utf-8")
     provider = MockProvider()
 
-    async def _flag_gender(pairs, profile):
+    def _flag_gender(pairs, profile):
         return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
                 for p in pairs]
 
-    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_gender)
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_gender)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
@@ -449,11 +512,11 @@ async def test_pipeline_english_pronoun_hint_is_none_without_english_srt_path(tm
     srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
     provider = MockProvider()
 
-    async def _flag_gender(pairs, profile):
+    def _flag_gender(pairs, profile):
         return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
                 for p in pairs]
 
-    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_gender)
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_gender)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
@@ -476,11 +539,11 @@ async def test_pipeline_does_not_compute_pronoun_hint_for_formality_only_flags(t
     english_srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nShe is tired.\n", encoding="utf-8")
     provider = MockProvider()
 
-    async def _flag_formality(pairs, profile):
+    def _flag_formality(pairs, profile):
         return [{"id": p["id"], "gender_check_needed": False, "formality_check_needed": True}
                 for p in pairs]
 
-    monkeypatch.setattr(provider, "check_grammar_necessity", _flag_formality)
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_formality)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):

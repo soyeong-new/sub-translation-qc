@@ -26,17 +26,21 @@ class LiveModelProvider(ModelProvider):
             knowledge, format_constraint, extra_instruction,
         )
 
-    async def verify_and_refine(self, pairs: List[dict], original_target_by_id: dict,
-                                 profile: dict, knowledge: str, format_constraint: str,
+    async def verify_and_refine(self, pairs: List[dict], profile: dict,
+                                 pending_sensitive_hits: List[dict],
+                                 knowledge: str, format_constraint: str,
                                  extra_instruction: str = "") -> List[dict]:
         return await self._gpt.verify_and_refine(
-            pairs, original_target_by_id, profile, knowledge, format_constraint,
-            extra_instruction,
+            pairs, profile, pending_sensitive_hits,
+            knowledge, format_constraint, extra_instruction,
         )
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
                            extra_instruction: str = "") -> str:
         return await self._claude.shrink_line(text, max_chars, max_lines, extra_instruction)
 
-    async def check_grammar_necessity(self, pairs: List[dict], profile: dict) -> List[dict]:
-        return await self._claude.check_grammar_necessity(pairs, profile)
+    async def back_translate_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
+        return await self._claude.back_translate(texts, profile)
+
+    async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.back_translate(texts, profile)

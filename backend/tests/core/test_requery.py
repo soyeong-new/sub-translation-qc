@@ -6,7 +6,7 @@ from app.models import FindingRow, Segment
 
 def _finding(model, suggested_text="hola corregido"):
     return FindingRow(id="f1", target_version_id="tv1", segment_id="seg1",
-                       category="translation", description="근거",
+                       category="mistranslation", description="근거",
                        original_text="hola", suggested_text=suggested_text,
                        confidence=0.9, model=model, status="pending")
 
@@ -19,10 +19,10 @@ def _segment():
 class _StubProvider:
     def __init__(self):
         self.correct_primary = AsyncMock(
-            return_value=[{"segment_id": "seg1", "category": "translation",
+            return_value=[{"segment_id": "seg1", "category": "mistranslation",
                             "corrected_text": "hola más formal", "description": "재질문 반영"}])
         self.verify_and_refine = AsyncMock(
-            return_value=[{"segment_id": "seg1", "category": "translation",
+            return_value=[{"segment_id": "seg1", "category": "mistranslation",
                             "corrected_text": "hola verificado", "description": "재질문 반영"}])
         self.shrink_line = AsyncMock(return_value="hola corto")
 

@@ -16,18 +16,10 @@ from app.knowledge.loader import (
     load_profanity_dictionary,
 )
 from app.core.pretreatment import run_pretreatment
-from app.core.diffing import findings_from_corrections, apply_corrections
-from app.schemas import SegmentText
+from app.core.grammar_necessity import check_grammar_necessity
+from app.schemas import SegmentText, Finding
 
 logger = logging.getLogger(__name__)
-
-# check_grammar_necessity는 입력 줄 하나당 결과 객체 하나를 빠짐없이 반환해야 하는
-# 스키마라(correct_primary처럼 바뀐 줄만 sparse하게 돌려주는 게 아님), 에피소드
-# 전체를 한 번에 보내면 max_tokens(4096)을 넘겨 응답이 JSON 중간에서 잘리고
-# 파싱이 통째로 실패한다 — 이러면 성별/격식 체크가 에피소드 전체에서 조용히
-# 사라진다. 실제 에피소드 길이(보통 수백 줄)에서도 한 번의 호출이 넘치지 않도록
-# 배치로 나눠 보낸다.
-GRAMMAR_NECESSITY_BATCH_SIZE = 100
 
 # gpt-4o-mini-transcribe(OpenAI 오디오 API)는 25MB/약 1500초(25분) 제한이
 # 있다. 16kHz mono 16bit PCM WAV는 초당 32KB라 25MB는 약 781초(≈13분)에
@@ -87,13 +79,13 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
 
 
 async def _run_grammar_necessity_check(
-    pairs: list, provider: ModelProvider, profile: dict, english_segments: list,
+    pairs: list, profile: dict, english_segments: list,
     target_version_id: str,
 ) -> tuple[list, list]:
-    """문법 필요성 판단(줄 단위, LLM): 성별/격식 판단이 실제로 필요한 줄만
-    골라낸다. 어느 인물/관계 얘기인지는 텍스트만으로 알 수 없으므로 여기서
-    확정하려 하지 않는다 — 검수자가 영상을 보고 직접 판별한다(영어 대명사
-    힌트만 참고용으로 붙인다). 반환값은 (segment_resolutions, warnings)."""
+    """문법 필요성 판단(줄 단위, spaCy 형태소 분석): 성별/격식 판단이 실제로
+    필요한 줄만 골라낸다. 어느 인물/관계 얘기인지는 텍스트만으로 알 수 없으므로
+    여기서 확정하려 하지 않는다 — 검수자가 영상을 보고 직접 판별한다(영어
+    대명사 힌트만 참고용으로 붙인다). 반환값은 (segment_resolutions, warnings)."""
     grammar_pairs = [
         {"id": p.id, "target_text": p.target.text if p.target else ""}
         for p in pairs if p.target is not None
@@ -101,19 +93,11 @@ async def _run_grammar_necessity_check(
     segment_resolutions: list = []
     warnings: list = []
     try:
-        batches = [
-            grammar_pairs[i:i + GRAMMAR_NECESSITY_BATCH_SIZE]
-            for i in range(0, len(grammar_pairs), GRAMMAR_NECESSITY_BATCH_SIZE)
-        ]
-        # 배치들은 서로 완전히 독립적인 호출이라(각 줄을 그 줄 텍스트만 보고
-        # 판단) 동시에 돌려도 안전하다 — 이 코드베이스가 이미 correct_primary/
-        # verify_and_refine 등 독립 LLM 호출에 asyncio.gather를 쓰는 것과 동일한
-        # 패턴. 배치 중 하나라도 예외를 던지면 gather가 그대로 전파해 바깥
-        # try/except가 기존처럼 경고로 변환하고 나머지 파이프라인은 계속 진행한다.
-        batch_results = await asyncio.gather(
-            *(provider.check_grammar_necessity(batch, profile) for batch in batches)
-        )
-        grammar_flags = [flag for batch_result in batch_results for flag in batch_result]
+        # spaCy 형태소 분석은 CPU 바운드 동기 작업이라, asyncio.to_thread로
+        # 감싸지 않으면 이 코루틴이 이벤트 루프를 막는다 — extract_audio/
+        # generate_video_proxy와 동일한 이유.
+        grammar_flags = await asyncio.to_thread(
+            check_grammar_necessity, grammar_pairs, profile)
         flags_by_id = {f["id"]: f for f in grammar_flags}
         flagged_pairs = [
             p for p in pairs
@@ -142,62 +126,167 @@ async def _run_grammar_necessity_check(
     return segment_resolutions, warnings
 
 
-async def _run_claude_pass(
+def _dedupe_by_segment_id(corrections: list) -> dict:
+    """동일 segment_id에 대해 correction이 두 개 이상 오면 첫 번째만 채택한다
+    (LLM이 프롬프트 계약을 어기고 같은 세그먼트를 중복 반환할 가능성에 대비)."""
+    seen: dict = {}
+    for c in corrections:
+        seen.setdefault(c["segment_id"], c)
+    return seen
+
+
+def _reconcile_dual_verification(
+    claude_corrections: list, gpt_corrections: list,
+) -> tuple[list, list, list]:
+    """Claude/GPT가 각각 독립적으로 낸 교정 제안을 segment_id 기준으로 비교한다
+    — 문구가 아니라 "같은 줄을 둘 다 지적했는가"만 본다. 합의는 그 줄에
+    문제가 있다는 두 독립 판단의 일치이지, 정확한 문구까지 일치해야 하는 건
+    아니다(스페인어를 모르는 검수자는 문구 차이를 판단할 수 없으므로, 문구는
+    고정 규칙으로 하나를 고른다). 반환값은 (agreed, claude_only, gpt_only)."""
+    claude_by_id = _dedupe_by_segment_id(claude_corrections)
+    gpt_by_id = _dedupe_by_segment_id(gpt_corrections)
+    agreed_ids = claude_by_id.keys() & gpt_by_id.keys()
+    claude_only_ids = claude_by_id.keys() - gpt_by_id.keys()
+    gpt_only_ids = gpt_by_id.keys() - claude_by_id.keys()
+
+    # 합의된 줄은 GPT 쪽 문구를 최종으로 쓴다(고정 규칙) — 둘 다 이미
+    # 독립적으로 검증한 후보라 어느 쪽을 써도 되므로, 임의로 하나를 정해
+    # "누구 의견이 메인이냐"는 질문 자체가 매번 새로 생기지 않게 한다.
+    agreed = [gpt_by_id[sid] for sid in agreed_ids]
+    claude_only = [claude_by_id[sid] for sid in claude_only_ids]
+    gpt_only = [gpt_by_id[sid] for sid in gpt_only_ids]
+    return agreed, claude_only, gpt_only
+
+
+async def _empty_list() -> list:
+    return []
+
+
+async def _back_translate_proposals(
+    provider: ModelProvider, profile: dict,
+    agreed: list, claude_only: list, gpt_only: list, target_version_id: str,
+) -> tuple[dict, list]:
+    """제안된 문구를 반대쪽 모델이 한국어로 역번역한다(감사/참고용) — 자기가
+    쓴 문구를 자기가 역번역하면 스스로의 오류를 매끄럽게 얼버무려 가릴 위험이
+    있어(같은 모델의 왕복 번역은 오류를 숨기는 경향) 항상 교차 검증한다.
+    claude_only는 GPT가, (agreed + gpt_only는 전부 GPT 문구이므로) Claude가
+    역번역한다. 반환값은 (segment_id -> 한국어 역번역 텍스트, warnings)."""
+    warnings: list = []
+    claude_authored_texts = [
+        {"id": c["segment_id"], "text": c["corrected_text"]} for c in claude_only
+    ]
+    gpt_authored_texts = [
+        {"id": c["segment_id"], "text": c["corrected_text"]} for c in agreed + gpt_only
+    ]
+
+    async def _safe_call(coro, label):
+        try:
+            return await coro
+        except Exception as exc:
+            logger.exception(
+                "%s 실패, 역번역 없이 계속 진행 (target_version_id=%s)",
+                label, target_version_id)
+            warnings.append({"stage": label, "message": str(exc)})
+            return []
+
+    claude_authored_backtranslated, gpt_authored_backtranslated = await asyncio.gather(
+        _safe_call(provider.back_translate_with_gpt(claude_authored_texts, profile),
+                   "Claude 제안 역번역") if claude_authored_texts else _empty_list(),
+        _safe_call(provider.back_translate_with_claude(gpt_authored_texts, profile),
+                   "GPT 제안 역번역") if gpt_authored_texts else _empty_list(),
+    )
+    backtranslation_by_id = {
+        r["id"]: r["korean_text"]
+        for r in claude_authored_backtranslated + gpt_authored_backtranslated
+    }
+    return backtranslation_by_id, warnings
+
+
+def _make_dual_verification_finding(
+    target_version_id: str, pair, correction: dict,
+    status: str, model_label: str, backtranslation_by_id: dict,
+) -> Finding:
+    original_text = pair.target.text
+    corrected_text = correction["corrected_text"]
+    description = correction["description"]
+    backtranslation = backtranslation_by_id.get(correction["segment_id"])
+    if backtranslation:
+        description = f"{description} (한국어 역번역 참고: {backtranslation})"
+    return Finding(
+        id=f"finding_{correction['segment_id']}_{model_label}_{correction['category']}",
+        target_version_id=target_version_id, segment_id=correction["segment_id"],
+        category=correction["category"], description=description,
+        original_text=original_text, suggested_text=corrected_text,
+        confidence=1.0, source="llm", model=model_label,
+        status=status, final_text=corrected_text if status == "approved" else "",
+    )
+
+
+async def _run_dual_verification_pass(
     pairs: list, provider: ModelProvider, profile: dict,
     pending_sensitive_hits: list, knowledge: dict,
     format_constraint: str, target_version_id: str,
 ) -> tuple[list, list]:
-    """S2(Claude 1차 교정) 패스. 성공하면 pairs를 그 자리에서 교정 결과로
-    갱신한다(apply_corrections). 반환값은 (findings, warnings)."""
-    claude_pairs = [
+    """S2(이중 독립 검증) 패스. Claude와 GPT가 같은 원본을 동시에, 서로 뭘
+    하는지 모른 채(앵커링 편향 방지) 독립적으로 검토한다 — 스페인어를 모르는
+    검수자도 운영 가능해야 하므로, 두 모델의 일치 여부가 유일한 신뢰도
+    신호다. 같은 줄을 둘 다 지적하면(합의) 자동 적용하고, 한쪽만
+    지적하면(불일치) 적용하지 않고 원문을 유지한 채 반대쪽 모델의 역번역만
+    참고용으로 붙인다. 반환값은 (findings, warnings)."""
+    verification_pairs = [
         {"id": p.id, "korean_text": p.korean.text if p.korean else "",
          "target_text": p.target.text if p.target else ""}
         for p in pairs if p.target is not None
     ]
     warnings: list = []
-    # design §에러 처리: Claude/GPT 패스 중 하나가 실패해도 전체 분석을 실패
-    # 처리하지 않는다 — 앞단계 비용(STT 등)이 이미 들었으므로, 실패한 패스만
-    # 스킵하고 이전 단계 결과 그대로 다음으로 진행한다(부분 실패 허용).
-    try:
-        claude_corrections = await provider.correct_primary(
-            claude_pairs, profile,
-            pending_sensitive_hits, knowledge, format_constraint,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Claude 1차 교정 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
-            target_version_id)
-        claude_corrections = []
-        warnings.append({"stage": "Claude 1차 교정", "message": str(exc)})
-    findings = findings_from_corrections(target_version_id, pairs, claude_corrections, stage="claude")
-    apply_corrections(pairs, claude_corrections)
-    return findings, warnings
 
+    async def _safe_verify(coro, label):
+        try:
+            return await coro
+        except Exception as exc:
+            logger.exception(
+                "%s 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
+                label, target_version_id)
+            warnings.append({"stage": label, "message": str(exc)})
+            return []
 
-async def _run_gpt_pass(
-    pairs: list, original_target_by_id: dict, provider: ModelProvider,
-    profile: dict, knowledge: dict, format_constraint: str, target_version_id: str,
-) -> tuple[list, list]:
-    """S3(GPT 2차 검증) 패스. original_target_by_id(사전필터까지 적용된 원본
-    텍스트)를 대조 기준으로 넘긴다. 반환값은 (findings, warnings)."""
-    gpt_pairs = [
-        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
-         "current_text": p.target.text if p.target else ""}
-        for p in pairs if p.target is not None
-    ]
-    warnings: list = []
-    try:
-        gpt_corrections = await provider.verify_and_refine(
-            gpt_pairs, original_target_by_id, profile, knowledge, format_constraint,
-        )
-    except Exception as exc:
-        logger.exception(
-            "GPT 2차 검증 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
-            target_version_id)
-        gpt_corrections = []
-        warnings.append({"stage": "GPT 2차 검증", "message": str(exc)})
-    findings = findings_from_corrections(target_version_id, pairs, gpt_corrections, stage="gpt")
-    apply_corrections(pairs, gpt_corrections)
+    claude_corrections, gpt_corrections = await asyncio.gather(
+        _safe_verify(
+            provider.correct_primary(
+                verification_pairs, profile, pending_sensitive_hits,
+                knowledge, format_constraint),
+            "Claude 검증"),
+        _safe_verify(
+            provider.verify_and_refine(
+                verification_pairs, profile, pending_sensitive_hits,
+                knowledge, format_constraint),
+            "GPT 검증"),
+    )
+
+    agreed, claude_only, gpt_only = _reconcile_dual_verification(
+        claude_corrections, gpt_corrections)
+
+    backtranslation_by_id, backtranslation_warnings = await _back_translate_proposals(
+        provider, profile, agreed, claude_only, gpt_only, target_version_id)
+    warnings.extend(backtranslation_warnings)
+
+    pair_by_id = {p.id: p for p in pairs}
+    findings: list = []
+    for correction, status, model_label, applies in (
+        *((c, "approved", "claude+gpt", True) for c in agreed),
+        *((c, "pending", "claude", False) for c in claude_only),
+        *((c, "pending", "gpt", False) for c in gpt_only),
+    ):
+        pair = pair_by_id.get(correction["segment_id"])
+        if pair is None or pair.target is None:
+            continue
+        if correction["corrected_text"] == pair.target.text:
+            continue
+        findings.append(_make_dual_verification_finding(
+            target_version_id, pair, correction, status, model_label,
+            backtranslation_by_id))
+        if applies:
+            pair.target.text = correction["corrected_text"]
     return findings, warnings
 
 
@@ -227,8 +316,8 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         cached_korean_segments: Optional[list] = None,
                         cached_video_proxy_path: Optional[str] = None,
                         english_srt_path: Optional[str] = None) -> dict:
-    """design §전체 파이프라인의 오케스트레이터. S1(사전/규칙) → S2(Claude 1차)
-    → S3(GPT 2차) → S4(최종 안전망) 순서로 순차 실행하며, 각 단계의 diff가
+    """design §전체 파이프라인의 오케스트레이터. S1(사전/규칙) → S2(Claude/GPT
+    이중 독립 검증, 병렬) → S4(최종 안전망) 순서로 실행하며, 각 단계의 diff가
     findings가 된다. 오디오/영상 프록시는 STT 직후 한 번만 생성한다.
 
     원본 영상 삭제는 여기서 하지 않는다 — 이 함수가 반환한 뒤에도 아직 DB에
@@ -316,34 +405,19 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     )
     pairs = pretreatment.pairs
 
-    # GPT 2차의 "원본 대조 안전장치"용으로, 사전필터(CTA 삭제/비속어 치환 등
-    # 정책적 편집)까지 전부 적용된 뒤의 텍스트를 원본으로 기록해 둔다. 사전필터
-    # 이전 값을 쓰면 GPT가 "1차 교정자가 뭔가 잘못 고쳤나" 대조하다가 정책적으로
-    # 이미 삭제/치환된 내용을 도로 복원하도록 유도될 수 있다 — 사전필터는 제안이
-    # 아니라 정책이므로 GPT의 대조 대상이 되면 안 된다.
-    original_target_by_id = {
-        p.id: p.target.text for p in pairs if p.target is not None
-    }
-
     segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
-        pairs, provider, profile, english_segments, target_version_id,
+        pairs, profile, english_segments, target_version_id,
     )
     warnings.extend(grammar_warnings)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
-    claude_findings, claude_warnings = await _run_claude_pass(
+    dual_verification_findings, dual_verification_warnings = await _run_dual_verification_pass(
         pairs, provider, profile,
         pretreatment.pending_sensitive_hits, knowledge, format_constraint,
         target_version_id,
     )
-    warnings.extend(claude_warnings)
-
-    gpt_findings, gpt_warnings = await _run_gpt_pass(
-        pairs, original_target_by_id, provider, profile, knowledge,
-        format_constraint, target_version_id,
-    )
-    warnings.extend(gpt_warnings)
+    warnings.extend(dual_verification_warnings)
 
     final_ellipsis_violations, safety_net_findings = await _run_final_safety_net(
         pairs, provider, target_version_id,
@@ -366,6 +440,6 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         "korean_segments_raw": korean_raw,
         "warnings": warnings,
         "findings": (
-            pretreatment.findings + claude_findings + gpt_findings + safety_net_findings
+            pretreatment.findings + dual_verification_findings + safety_net_findings
         ),
     }

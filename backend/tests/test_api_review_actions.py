@@ -37,7 +37,7 @@ async def _make_finding_row(finding_id: str) -> None:
         session.add(segment)
         await session.flush()
         f = FindingRow(id=finding_id, target_version_id=tv.id, segment_id="p1",
-                       category="translation", description="근거",
+                       category="mistranslation", description="근거",
                        original_text="a", suggested_text="b", confidence=0.9)
         session.add(f)
         await session.commit()

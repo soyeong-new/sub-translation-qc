@@ -127,7 +127,7 @@ async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_
         "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION aquí....\n", encoding="utf-8")
 
     async def _gpt_introduces_ellipsis(self, pairs, *args, **kwargs):
-        return [{"segment_id": pairs[0]["id"], "category": "translation",
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
                   "corrected_text": "espera......", "description": "GPT가 늘어뜨림"}]
 
     # get_provider()가 매번 새 MockProvider 인스턴스를 만들므로, 인스턴스가

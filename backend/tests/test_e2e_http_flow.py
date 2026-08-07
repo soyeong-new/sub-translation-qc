@@ -108,16 +108,19 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             findings = r.json()
             by_category = {f["category"]: f for f in findings}
             # Fix 4: 포맷 위반이 formatting finding으로 영속화된다.
-            assert "translation" in by_category
+            assert "mistranslation" in by_category
             assert "formatting" in by_category
             # 자동보정된 온점 위반은 검수자 판단이 필요 없으므로 검수 액션 전에
-            # 이미 approved 상태여야 한다. LLM 제안인 translation은 pending.
+            # 이미 approved 상태여야 한다. mistranslation도 Claude/GPT 둘 다
+            # BAD_TRANSLATION 마커를 지적해 합의됐으므로 이미 approved다 —
+            # 스페인어를 모르는 검수자는 텍스트 품질을 판단할 수 없으므로,
+            # 합의된 교정은 사람 승인 없이 자동 적용된다(design §어떻게 사용).
             assert by_category["formatting"]["status"] == "approved"
             assert by_category["formatting"]["final_text"] == "BAD_TRANSLATION aquí..."
-            assert by_category["translation"]["status"] == "pending"
+            assert by_category["mistranslation"]["status"] == "approved"
 
-            # 6) 검수 액션 (승인 → suggested_text가 final_text가 된다)
-            translation_finding = by_category["translation"]
+            # 6) 검수 액션 (재승인해도 idempotent하게 동작해야 한다)
+            translation_finding = by_category["mistranslation"]
             r = await client.post(f"/findings/{translation_finding['id']}/review-action",
                                   json={"action": "approved", "reviewer_name": "검수자A"})
             assert r.status_code == 200

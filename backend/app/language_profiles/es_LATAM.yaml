@@ -1,22 +1,5 @@
 language: es
 variant: LATAM
-checks_enabled:
-  gender_agreement: true
-  register_consistency: true
-grammar_agreement:
-  llm_instruction: >
-    스페인어 형용사/과거분사가 인물의 확정된 성별과 일치하는지 확인하고,
-    불일치가 있으면 올바른 형태로 수정 제안을 작성하라.
-register_system:
-  levels: [tú, usted]
-  formality_mapping:
-    formal: usted
-    informal: tú
-  korean_honorific_mapping:
-    formal_endings: [습니다, 해요]
-    informal_endings: [해, 야]
-  llm_instruction: >
-    화자-청자 관계마다 tú/usted 사용이 일관되는지 확인하라.
 naturalness_check:
   llm_instruction: >
     스페인어 원어민이 어색하게 느낄 직역투 표현을 찾아 자연스러운 대안을 제안하라.

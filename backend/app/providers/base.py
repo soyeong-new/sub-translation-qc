@@ -24,24 +24,32 @@ class ModelProvider(ABC):
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "") -> List[dict]:
-        """Claude 1차: 사전에 없는 애매한 비속어/글로서리 표기를 직접 고쳐
-        다시 쓴다. 성별/격식은 화자를 특정할 근거가 없어 여기서 다루지 않는다
-        — check_grammar_necessity로 걸러 사람이 직접 확인한다. 변경이 필요한
-        세그먼트만 반환한다. 반환값은 [{"segment_id": str,
-        "category": "sensitivity"|"glossary",
+        """Claude 검증 패스: 원본(korean_text/target_text)을 처음부터 독립적으로
+        검토해 사전에 없는 애매한 비속어, 번역정확성·문화맥락·뉘앙스어조·
+        자연스러운흐름(직역투)·함축의미·로컬라이제이션 문제를 찾아 고친다.
+        GPT 검증 패스(verify_and_refine)와 동시에 같은 원본을 받아 서로
+        독립적으로 판단한다 — 어느 쪽도 상대가 뭘 했는지 모른다(파이프라인이
+        둘의 일치/불일치를 나중에 병합해 신뢰도 신호로 쓴다). 글로서리 표기
+        통일(새 인물 이름)은 긴 컨텍스트에서 신뢰도가 낮아 여기서 다루지 않는다
+        — glossary.yaml에 직접 등록하는 방식으로 대체한다. 성별/격식은 화자를
+        특정할 근거가 없어 여기서 다루지 않는다 — check_grammar_necessity로
+        걸러 사람이 직접 확인한다. 변경이 필요한 세그먼트만 반환한다. 반환값은
+        [{"segment_id": str,
+        "category": "sensitivity"|"mistranslation"|"nuance_tone"|"unnatural_style"|"locale_convention",
         "corrected_text": str, "description": str(한국어)}, ...]"""
         ...
 
     @abstractmethod
-    async def verify_and_refine(self, pairs: List[dict], original_target_by_id: dict,
-                                 profile: dict, knowledge: str, format_constraint: str,
+    async def verify_and_refine(self, pairs: List[dict], profile: dict,
+                                 pending_sensitive_hits: List[dict],
+                                 knowledge: str, format_constraint: str,
                                  extra_instruction: str = "") -> List[dict]:
-        """GPT 2차: 원문(korean_text)과 1차 결과(current_text)를 대조해
-        번역정확성·문화맥락·뉘앙스어조·화법·자연스러운흐름(직역투)·함축의미 6개
-        기준으로 검증하고, 로컬라이제이션(#8)을 처음 판단한다. 변경이 필요한
-        세그먼트만 반환한다. 반환값은 [{"segment_id": str,
-        "category": "translation"|"localization",
-        "corrected_text": str, "description": str(한국어)}, ...]"""
+        """GPT 검증 패스: correct_primary와 대칭적으로, 같은 원본을 처음부터
+        독립적으로 검토한다. Claude가 뭘 고쳤는지/안 고쳤는지 알려주지 않는다
+        — "이전 교정을 검토"하는 프레이밍은 앵커링 편향(모델이 제시된 답을
+        독립적으로 재도출하기보다 그냥 승인하는 쪽으로 기우는 현상)을 유발해
+        정확도를 낮춘다. 변경이 필요한 세그먼트만 반환한다. 반환값은
+        correct_primary와 동일한 형태."""
         ...
 
     @abstractmethod
@@ -51,13 +59,18 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
-    async def check_grammar_necessity(self, pairs: List[dict], profile: dict) -> List[dict]:
-        """대상언어 줄 하나하나가 문법적으로 성별 일치(#5,#9)나 격식(존댓말/
-        반말) 판단이 필요한 줄인지 독립적으로 판단한다. 씬이나 다른 줄과
-        무관하게 그 줄 텍스트 하나만 보고 답한다. 반환값은 입력 pairs와
-        1:1 대응하는 [{"id": str, "gender_check_needed": bool,
-        "formality_check_needed": bool}, ...] — 판단이 필요 없는 줄도
-        포함해서 전부 반환한다."""
+    async def back_translate_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
+        """Claude로 대상언어 텍스트를 한국어로 역번역한다(감사/참고용). GPT가
+        만든 텍스트만 여기로 들어온다 — 자기가 만든 텍스트를 자기가 역번역하면
+        스스로의 오류를 매끄럽게 얼버무려 가릴 위험이 있어(같은 모델의 왕복
+        번역은 오류를 숨기는 경향), 항상 반대쪽 모델이 역번역한다. 입력은
+        [{"id": str, "text": str}], 반환값은 [{"id": str, "korean_text": str}]."""
+        ...
+
+    @abstractmethod
+    async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
+        """back_translate_with_claude와 대칭. Claude가 만든 텍스트만 여기로
+        들어온다."""
         ...
 
 

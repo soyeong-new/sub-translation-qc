@@ -10,11 +10,11 @@ def _make_provider() -> LiveModelProvider:
     )
     provider._gpt.transcribe = AsyncMock(return_value=[{"start": 0.0, "end": 1.0, "text": "안녕"}])
     provider._claude.correct_primary = AsyncMock(
-        return_value=[{"segment_id": "p1", "category": "gender",
+        return_value=[{"segment_id": "p1", "category": "sensitivity",
                         "corrected_text": "está feliz", "description": "클로드 교정"}]
     )
     provider._gpt.verify_and_refine = AsyncMock(
-        return_value=[{"segment_id": "p1", "category": "translation",
+        return_value=[{"segment_id": "p1", "category": "mistranslation",
                         "corrected_text": "está muy feliz", "description": "GPT 검증"}]
     )
     provider._claude.shrink_line = AsyncMock(return_value="짧아진 문장")

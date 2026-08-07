@@ -18,38 +18,51 @@ def _make_client_with_fake_sdk(response_text) -> GptClient:
 
 
 @pytest.mark.asyncio
-async def test_verify_and_refine_sends_current_text_and_original_reference():
-    payload = {"findings": [{"segment_id": "p1", "category": "translation",
+async def test_verify_and_refine_sends_korean_and_target_text():
+    payload = {"findings": [{"segment_id": "p1", "category": "mistranslation",
                               "corrected_text": "texto final", "description": "정확성 보완"}]}
     client = _make_client_with_fake_sdk(json.dumps(payload))
     result = await client.verify_and_refine(
-        pairs=[{"id": "p1", "korean_text": "안녕", "current_text": "hola corregido"}],
-        original_target_by_id={"p1": "hola original"},
-        profile={}, knowledge="", format_constraint="줄당 50자 이내",
+        pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "hola"}],
+        profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="줄당 50자 이내",
     )
     assert result == payload["findings"]
     sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-    assert "hola corregido" in sent_user
-    assert "hola original" in sent_user
+    assert "hola" in sent_user
 
 
 @pytest.mark.asyncio
-async def test_verify_and_refine_falls_back_to_current_text_when_no_original_recorded():
-    payload = {"findings": []}
-    client = _make_client_with_fake_sdk(json.dumps(payload))
+async def test_verify_and_refine_does_not_mention_a_prior_correction_pass():
+    """앵커링 편향 방지: GPT는 Claude가 뭘 했는지 몰라야 독립적으로 판단할 수
+    있다 — 프롬프트에 "1차"/"이전 교정" 같은 언급이 없어야 한다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[{"id": "p1", "korean_text": "안녕", "current_text": "hola sin cambios"}],
-        original_target_by_id={}, profile={}, knowledge="", format_constraint="",
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
     )
-    sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-    assert sent_user.count("hola sin cambios") == 2
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "1차" not in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_includes_pending_sensitive_hits_in_prompt():
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={},
+        pending_sensitive_hits=[{"segment_id": "p1", "term": "미친"}],
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "미친" in sent_system
 
 
 @pytest.mark.asyncio
 async def test_verify_and_refine_includes_extra_instruction_in_prompt_when_given():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], original_target_by_id={}, profile={}, knowledge="", format_constraint="",
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
         extra_instruction="직역투를 더 강하게 잡아줘",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -60,7 +73,7 @@ async def test_verify_and_refine_includes_extra_instruction_in_prompt_when_given
 async def test_verify_and_refine_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
-        await client.verify_and_refine([], {}, {}, "", "")
+        await client.verify_and_refine([], {}, [], "", "")
 
 
 @pytest.mark.asyncio
@@ -68,7 +81,7 @@ async def test_verify_and_refine_raises_on_empty_choices():
     client = _make_client_with_fake_sdk("무시됨")
     client._sdk_client.chat.completions.create.return_value.choices = []
     with pytest.raises(ValueError):
-        await client.verify_and_refine([], {}, {}, "", "")
+        await client.verify_and_refine([], {}, [], "", "")
 
 
 def _make_client_with_fake_transcribe(segments):
@@ -118,9 +131,8 @@ async def test_transcribe_returns_empty_list_when_no_segments(tmp_path):
 async def test_verify_and_refine_uses_profile_language_and_variant_in_prompt():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], original_target_by_id={},
-        profile={"language": "es", "variant": "LATAM"},
-        knowledge="", format_constraint="",
+        pairs=[], profile={"language": "es", "variant": "LATAM"},
+        pending_sensitive_hits=[], knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "es(LATAM)" in sent_system
@@ -134,7 +146,7 @@ async def test_verify_and_refine_includes_naturalness_instruction_from_profile()
         "naturalness_check": {"llm_instruction": "직역투를 한국어 어순과 대조해 찾아라"},
     }
     await client.verify_and_refine(
-        pairs=[], original_target_by_id={}, profile=profile,
+        pairs=[], profile=profile, pending_sensitive_hits=[],
         knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -145,7 +157,7 @@ async def test_verify_and_refine_includes_naturalness_instruction_from_profile()
 async def test_verify_and_refine_falls_back_when_profile_empty():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], original_target_by_id={}, profile={},
+        pairs=[], profile={}, pending_sensitive_hits=[],
         knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -153,18 +165,17 @@ async def test_verify_and_refine_falls_back_when_profile_empty():
 
 
 @pytest.mark.asyncio
-async def test_verify_and_refine_handles_none_valued_register_system_section():
-    """YAML에 register_system: 처럼 섹션 헤더만 있고 본문이 없으면 PyYAML이
-    None으로 파싱한다. profile.get("register_system", {})는 키가 존재하는
-    경우(None이라도) 기본값 {}를 쓰지 않으므로 None.get(...)에서 AttributeError가
-    난다 — 이를 방지하는 회귀 테스트."""
-    payload = {"findings": [{"segment_id": "p1", "category": "translation",
-                              "corrected_text": "texto final", "description": "정확성 보완"}]}
+async def test_back_translate_returns_korean_text_per_id():
+    payload = {"results": [{"id": "p1", "korean_text": "안녕하세요"}]}
     client = _make_client_with_fake_sdk(json.dumps(payload))
-    result = await client.verify_and_refine(
-        pairs=[{"id": "p1", "korean_text": "안녕", "current_text": "hola corregido"}],
-        original_target_by_id={"p1": "hola original"},
-        profile={"language": "es", "variant": "LATAM", "register_system": None},
-        knowledge="", format_constraint="줄당 50자 이내",
+    result = await client.back_translate(
+        texts=[{"id": "p1", "text": "hola"}], profile={"language": "es", "variant": "LATAM"},
     )
-    assert result == payload["findings"]
+    assert result == payload["results"]
+
+
+@pytest.mark.asyncio
+async def test_back_translate_raises_on_malformed_json():
+    client = _make_client_with_fake_sdk("JSON 아님")
+    with pytest.raises(ValueError):
+        await client.back_translate([], {})

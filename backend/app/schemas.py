@@ -4,7 +4,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 FindingCategory = Literal[
-    "gender", "register", "translation", "localization", "sensitivity", "formatting", "glossary", "cta"
+    "mistranslation", "nuance_tone", "unnatural_style", "locale_convention",
+    "sensitivity", "formatting", "glossary", "cta",
 ]
 FindingStatus = Literal["pending", "approved", "rejected", "modified"]
 

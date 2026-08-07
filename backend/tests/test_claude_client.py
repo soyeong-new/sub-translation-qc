@@ -16,8 +16,8 @@ def _make_client_with_fake_sdk(response_text: str) -> ClaudeClient:
 
 @pytest.mark.asyncio
 async def test_correct_primary_parses_json_array_of_changed_segments():
-    payload = [{"segment_id": "p1", "category": "glossary",
-                "corrected_text": "está feliz", "description": "글로서리 표기 수정"}]
+    payload = [{"segment_id": "p1", "category": "sensitivity",
+                "corrected_text": "está feliz", "description": "비속어 교정"}]
     client = _make_client_with_fake_sdk(json.dumps(payload))
     result = await client.correct_primary(
         pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "esta feliz"}],
@@ -109,22 +109,30 @@ async def test_correct_primary_falls_back_when_profile_empty():
 
 
 @pytest.mark.asyncio
-async def test_check_grammar_necessity_returns_flags_per_segment():
-    payload = [
-        {"id": "p1", "gender_check_needed": True, "formality_check_needed": False},
-        {"id": "p2", "gender_check_needed": False, "formality_check_needed": True},
-    ]
+async def test_correct_primary_does_not_mention_a_second_pass_reviewer():
+    """이제 Claude는 비속어만이 아니라 번역 전반을 독립적으로 검증한다 —
+    "2차 검수자의 몫" 같은 스코프 제한 문구가 남아있으면 안 된다."""
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.correct_primary(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert "2차" not in sent_system
+
+
+@pytest.mark.asyncio
+async def test_back_translate_returns_korean_text_per_id():
+    payload = [{"id": "p1", "korean_text": "안녕하세요"}]
     client = _make_client_with_fake_sdk(json.dumps(payload))
-    result = await client.check_grammar_necessity(
-        pairs=[{"id": "p1", "target_text": "Estoy cansada."},
-               {"id": "p2", "target_text": "¿Ya comiste?"}],
-        profile={"language": "es", "variant": "LATAM"},
+    result = await client.back_translate(
+        texts=[{"id": "p1", "text": "hola"}], profile={"language": "es", "variant": "LATAM"},
     )
     assert result == payload
 
 
 @pytest.mark.asyncio
-async def test_check_grammar_necessity_raises_on_malformed_json():
+async def test_back_translate_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
-        await client.check_grammar_necessity(pairs=[], profile={})
+        await client.back_translate([], {})

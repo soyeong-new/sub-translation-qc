@@ -25,7 +25,7 @@ async def _make_finding(model: str) -> str:
                       korean_text="안녕", target_text="hola")
         session.add(seg); await session.flush()
         f = FindingRow(id="f1", target_version_id=tv.id, segment_id=seg.id,
-                       category="translation", description="근거",
+                       category="mistranslation", description="근거",
                        original_text="hola", suggested_text="hola corregido",
                        confidence=0.9, model=model, status="pending")
         session.add(f)
@@ -40,7 +40,7 @@ async def test_requery_claude_finding_updates_suggested_text_and_resets_to_pendi
     finding_id = await _make_finding(model="claude")
 
     with patch("app.providers.mock.MockProvider.correct_primary",
-               new=AsyncMock(return_value=[{"segment_id": "seg1", "category": "translation",
+               new=AsyncMock(return_value=[{"segment_id": "seg1", "category": "mistranslation",
                                              "corrected_text": "hola más formal",
                                              "description": "재질문 반영"}])):
         transport = ASGITransport(app=app)
