@@ -88,6 +88,156 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
     return merged
 
 
+async def _run_grammar_necessity_check(
+    pairs: list, provider: ModelProvider, profile: dict,
+    characters: list, relationships: list, english_segments: list,
+    target_version_id: str,
+) -> tuple[list, list]:
+    """문법 필요성 판단(줄 단위, LLM): 성별/격식 판단이 실제로 필요한 줄만
+    골라낸다. 걸리지 않은 줄은 이후 앵커 매칭·사람 리뷰에 전혀 들어가지 않는다.
+    반환값은 (segment_resolutions, warnings)."""
+    grammar_pairs = [
+        {"id": p.id, "target_text": p.target.text if p.target else ""}
+        for p in pairs if p.target is not None
+    ]
+    segment_resolutions: list = []
+    warnings: list = []
+    try:
+        batches = [
+            grammar_pairs[i:i + GRAMMAR_NECESSITY_BATCH_SIZE]
+            for i in range(0, len(grammar_pairs), GRAMMAR_NECESSITY_BATCH_SIZE)
+        ]
+        # 배치들은 서로 완전히 독립적인 호출이라(각 줄을 그 줄 텍스트만 보고
+        # 판단) 동시에 돌려도 안전하다 — 이 코드베이스가 이미 correct_primary/
+        # verify_and_refine 등 독립 LLM 호출에 asyncio.gather를 쓰는 것과 동일한
+        # 패턴. 배치 중 하나라도 예외를 던지면 gather가 그대로 전파해 바깥
+        # try/except가 기존처럼 경고로 변환하고 나머지 파이프라인은 계속 진행한다.
+        batch_results = await asyncio.gather(
+            *(provider.check_grammar_necessity(batch, profile) for batch in batches)
+        )
+        grammar_flags = [flag for batch_result in batch_results for flag in batch_result]
+        flags_by_id = {f["id"]: f for f in grammar_flags}
+        flagged_pairs = [
+            p for p in pairs
+            if flags_by_id.get(p.id, {}).get("gender_check_needed")
+            or flags_by_id.get(p.id, {}).get("formality_check_needed")
+        ]
+        if flagged_pairs:
+            scenes = split_into_scenes(pairs)
+            scene_by_pair_id = {}
+            for scene in scenes:
+                for scene_pair in scene:
+                    scene_by_pair_id[scene_pair.id] = scene
+            for p in flagged_pairs:
+                flags = flags_by_id[p.id]
+                scene = scene_by_pair_id.get(p.id, [p])
+                gender_candidates = find_anchor_candidates(scene, characters) if characters else []
+                formality_candidates = (
+                    find_relationship_anchor_candidates(scene, relationships) if relationships else []
+                )
+                gender_needed = bool(flags.get("gender_check_needed"))
+                english_hint = (
+                    find_pronoun_hint(p.target.start, p.target.end, english_segments)
+                    if gender_needed and english_segments and p.target is not None
+                    else None
+                )
+                segment_resolutions.append({
+                    "segment_id": p.id,
+                    "gender_check_needed": gender_needed,
+                    "formality_check_needed": bool(flags.get("formality_check_needed")),
+                    "gender_anchor_candidates": gender_candidates if gender_needed else [],
+                    "formality_anchor_candidates": (
+                        formality_candidates if flags.get("formality_check_needed") else []
+                    ),
+                    "english_pronoun_hint": english_hint,
+                })
+    except Exception as exc:
+        logger.exception(
+            "문법 필요성 판단 실패, 성별/격식 체크 생략하고 계속 진행 (target_version_id=%s)",
+            target_version_id)
+        warnings.append({"stage": "문법 필요성 판단", "message": str(exc)})
+    return segment_resolutions, warnings
+
+
+async def _run_claude_pass(
+    pairs: list, provider: ModelProvider, profile: dict, characters: list,
+    relationships: list, pending_sensitive_hits: list, knowledge: dict,
+    format_constraint: str, target_version_id: str,
+) -> tuple[list, list]:
+    """S2(Claude 1차 교정) 패스. 성공하면 pairs를 그 자리에서 교정 결과로
+    갱신한다(apply_corrections). 반환값은 (findings, warnings)."""
+    claude_pairs = [
+        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
+         "target_text": p.target.text if p.target else ""}
+        for p in pairs if p.target is not None
+    ]
+    warnings: list = []
+    # design §에러 처리: Claude/GPT 패스 중 하나가 실패해도 전체 분석을 실패
+    # 처리하지 않는다 — 앞단계 비용(STT 등)이 이미 들었으므로, 실패한 패스만
+    # 스킵하고 이전 단계 결과 그대로 다음으로 진행한다(부분 실패 허용).
+    try:
+        claude_corrections = await provider.correct_primary(
+            claude_pairs, profile, characters, relationships,
+            pending_sensitive_hits, knowledge, format_constraint,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Claude 1차 교정 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
+            target_version_id)
+        claude_corrections = []
+        warnings.append({"stage": "Claude 1차 교정", "message": str(exc)})
+    findings = findings_from_corrections(target_version_id, pairs, claude_corrections, stage="claude")
+    apply_corrections(pairs, claude_corrections)
+    return findings, warnings
+
+
+async def _run_gpt_pass(
+    pairs: list, original_target_by_id: dict, provider: ModelProvider,
+    profile: dict, knowledge: dict, format_constraint: str, target_version_id: str,
+) -> tuple[list, list]:
+    """S3(GPT 2차 검증) 패스. original_target_by_id(사전필터까지 적용된 원본
+    텍스트)를 대조 기준으로 넘긴다. 반환값은 (findings, warnings)."""
+    gpt_pairs = [
+        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
+         "current_text": p.target.text if p.target else ""}
+        for p in pairs if p.target is not None
+    ]
+    warnings: list = []
+    try:
+        gpt_corrections = await provider.verify_and_refine(
+            gpt_pairs, original_target_by_id, profile, knowledge, format_constraint,
+        )
+    except Exception as exc:
+        logger.exception(
+            "GPT 2차 검증 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
+            target_version_id)
+        gpt_corrections = []
+        warnings.append({"stage": "GPT 2차 검증", "message": str(exc)})
+    findings = findings_from_corrections(target_version_id, pairs, gpt_corrections, stage="gpt")
+    apply_corrections(pairs, gpt_corrections)
+    return findings, warnings
+
+
+async def _run_final_safety_net(
+    pairs: list, provider: ModelProvider, target_version_id: str,
+) -> tuple[list, list]:
+    """S4 최종 안전망: 모든 교정이 끝난 텍스트를 기준으로 글자수·온점을 마지막
+    으로 다시 검사한다 — GPT 패스가 문장을 늘리면서 새 위반을 만들 수 있어
+    앞에서 한 번만 걸러서는 안 된다(design §핵심 설계 포인트: "앞에서 한 번만
+    걸러선 안 됨"). 온점은 규칙 기반 자동보정이라 여기서도 LLM 없이 바로
+    재적용한다. 반환값은 (final_ellipsis_violations, safety_net_findings)."""
+    final_ellipsis_violations = check_ellipsis(pairs)
+    final_fixed_by_segment = {v.segment_id: v.fixed_text for v in final_ellipsis_violations}
+    for pair in pairs:
+        if pair.id in final_fixed_by_segment:
+            pair.target.text = final_fixed_by_segment[pair.id]
+
+    line_length_violations = check_line_length(pairs)
+    safety_net_findings = await shrink_violating_lines(
+        pairs, line_length_violations, provider, target_version_id)
+    return final_ellipsis_violations, safety_net_findings
+
+
 async def run_pipeline(video_path: str, target_srt_path: str,
                         language: str, variant: str, target_version_id: str,
                         provider: ModelProvider,
@@ -201,126 +351,30 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     characters = prior_characters if prior_characters is not None else []
     relationships = prior_relationships if prior_relationships is not None else []
 
-    # 문법 필요성 판단(줄 단위, LLM): 성별/격식 판단이 실제로 필요한 줄만
-    # 골라낸다. 걸리지 않은 줄은 이후 앵커 매칭·사람 리뷰에 전혀 들어가지 않는다.
-    grammar_pairs = [
-        {"id": p.id, "target_text": p.target.text if p.target else ""}
-        for p in pairs if p.target is not None
-    ]
-    segment_resolutions: list = []
-    try:
-        batches = [
-            grammar_pairs[i:i + GRAMMAR_NECESSITY_BATCH_SIZE]
-            for i in range(0, len(grammar_pairs), GRAMMAR_NECESSITY_BATCH_SIZE)
-        ]
-        # 배치들은 서로 완전히 독립적인 호출이라(각 줄을 그 줄 텍스트만 보고
-        # 판단) 동시에 돌려도 안전하다 — 이 코드베이스가 이미 correct_primary/
-        # verify_and_refine 등 독립 LLM 호출에 asyncio.gather를 쓰는 것과 동일한
-        # 패턴. 배치 중 하나라도 예외를 던지면 gather가 그대로 전파해 바깥
-        # try/except가 기존처럼 경고로 변환하고 나머지 파이프라인은 계속 진행한다.
-        batch_results = await asyncio.gather(
-            *(provider.check_grammar_necessity(batch, profile) for batch in batches)
-        )
-        grammar_flags = [flag for batch_result in batch_results for flag in batch_result]
-        flags_by_id = {f["id"]: f for f in grammar_flags}
-        flagged_pairs = [
-            p for p in pairs
-            if flags_by_id.get(p.id, {}).get("gender_check_needed")
-            or flags_by_id.get(p.id, {}).get("formality_check_needed")
-        ]
-        if flagged_pairs:
-            scenes = split_into_scenes(pairs)
-            scene_by_pair_id = {}
-            for scene in scenes:
-                for scene_pair in scene:
-                    scene_by_pair_id[scene_pair.id] = scene
-            for p in flagged_pairs:
-                flags = flags_by_id[p.id]
-                scene = scene_by_pair_id.get(p.id, [p])
-                gender_candidates = find_anchor_candidates(scene, characters) if characters else []
-                formality_candidates = (
-                    find_relationship_anchor_candidates(scene, relationships) if relationships else []
-                )
-                gender_needed = bool(flags.get("gender_check_needed"))
-                english_hint = (
-                    find_pronoun_hint(p.target.start, p.target.end, english_segments)
-                    if gender_needed and english_segments and p.target is not None
-                    else None
-                )
-                segment_resolutions.append({
-                    "segment_id": p.id,
-                    "gender_check_needed": gender_needed,
-                    "formality_check_needed": bool(flags.get("formality_check_needed")),
-                    "gender_anchor_candidates": gender_candidates if gender_needed else [],
-                    "formality_anchor_candidates": (
-                        formality_candidates if flags.get("formality_check_needed") else []
-                    ),
-                    "english_pronoun_hint": english_hint,
-                })
-    except Exception as exc:
-        logger.exception(
-            "문법 필요성 판단 실패, 성별/격식 체크 생략하고 계속 진행 (target_version_id=%s)",
-            target_version_id)
-        warnings.append({"stage": "문법 필요성 판단", "message": str(exc)})
+    segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
+        pairs, provider, profile, characters, relationships, english_segments,
+        target_version_id,
+    )
+    warnings.extend(grammar_warnings)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
-    claude_pairs = [
-        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
-         "target_text": p.target.text if p.target else ""}
-        for p in pairs if p.target is not None
-    ]
-    # design §에러 처리: Claude/GPT 패스 중 하나가 실패해도 전체 분석을 실패
-    # 처리하지 않는다 — 앞단계 비용(STT 등)이 이미 들었으므로, 실패한 패스만
-    # 스킵하고 이전 단계 결과 그대로 다음으로 진행한다(부분 실패 허용).
-    try:
-        claude_corrections = await provider.correct_primary(
-            claude_pairs, profile, characters, relationships,
-            pretreatment.pending_sensitive_hits, knowledge, format_constraint,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Claude 1차 교정 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
-            target_version_id)
-        claude_corrections = []
-        warnings.append({"stage": "Claude 1차 교정", "message": str(exc)})
-    claude_findings = findings_from_corrections(
-        target_version_id, pairs, claude_corrections, stage="claude")
-    apply_corrections(pairs, claude_corrections)
+    claude_findings, claude_warnings = await _run_claude_pass(
+        pairs, provider, profile, characters, relationships,
+        pretreatment.pending_sensitive_hits, knowledge, format_constraint,
+        target_version_id,
+    )
+    warnings.extend(claude_warnings)
 
-    gpt_pairs = [
-        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
-         "current_text": p.target.text if p.target else ""}
-        for p in pairs if p.target is not None
-    ]
-    try:
-        gpt_corrections = await provider.verify_and_refine(
-            gpt_pairs, original_target_by_id, profile, knowledge, format_constraint,
-        )
-    except Exception as exc:
-        logger.exception(
-            "GPT 2차 검증 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
-            target_version_id)
-        gpt_corrections = []
-        warnings.append({"stage": "GPT 2차 검증", "message": str(exc)})
-    gpt_findings = findings_from_corrections(
-        target_version_id, pairs, gpt_corrections, stage="gpt")
-    apply_corrections(pairs, gpt_corrections)
+    gpt_findings, gpt_warnings = await _run_gpt_pass(
+        pairs, original_target_by_id, provider, profile, knowledge,
+        format_constraint, target_version_id,
+    )
+    warnings.extend(gpt_warnings)
 
-    # S4 최종 안전망: 모든 교정이 끝난 텍스트를 기준으로 글자수·온점을 마지막
-    # 으로 다시 검사한다 — GPT 패스가 문장을 늘리면서 새 위반을 만들 수 있어
-    # 앞에서 한 번만 걸러서는 안 된다(design §핵심 설계 포인트: "앞에서 한 번만
-    # 걸러선 안 됨"). 온점은 규칙 기반 자동보정이라 여기서도 LLM 없이 바로
-    # 재적용한다.
-    final_ellipsis_violations = check_ellipsis(pairs)
-    final_fixed_by_segment = {v.segment_id: v.fixed_text for v in final_ellipsis_violations}
-    for pair in pairs:
-        if pair.id in final_fixed_by_segment:
-            pair.target.text = final_fixed_by_segment[pair.id]
-
-    line_length_violations = check_line_length(pairs)
-    safety_net_findings = await shrink_violating_lines(
-        pairs, line_length_violations, provider, target_version_id)
+    final_ellipsis_violations, safety_net_findings = await _run_final_safety_net(
+        pairs, provider, target_version_id,
+    )
     # line_length_violations는 여기 담아 반환하지 않는다 — shrink_violating_lines가
     # 이미 텍스트를 줄이고 그 결과를 category="formatting" Finding으로 반환했다.
     # 그런데도 여기 다시 담으면 repositories.py가 "이미 줄어든 뒤" 텍스트를
