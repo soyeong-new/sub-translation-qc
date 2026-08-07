@@ -41,7 +41,7 @@ async def test_create_title_episode_and_target_version():
 
 @pytest.mark.asyncio
 async def test_create_episode_persists_english_srt_path(monkeypatch, tmp_path):
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
     srt_en_dir = tmp_path / "srt_en"
     srt_en_dir.mkdir(parents=True)
     srt_file = srt_en_dir / "x.srt"
@@ -69,7 +69,7 @@ async def test_create_episode_rejects_english_srt_path_outside_srt_en_dir(monkey
     Segment.english_pronoun_hint로 저장되어 flagged-segments 응답을 통해
     그대로 노출되므로, MEDIA_ROOT/srt_en 밖을 가리키는 경로(절대 경로든
     ".." 트래버설이든)는 400으로 거부해야 한다."""
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
     srt_en_dir = tmp_path / "srt_en"
     srt_en_dir.mkdir(parents=True)
 

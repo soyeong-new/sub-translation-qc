@@ -20,7 +20,7 @@ async def _setup_db():
 @pytest.mark.asyncio
 async def test_attach_chart_image_starts_background_extraction(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
     chart_dir = tmp_path / "chart_image"
     chart_dir.mkdir(parents=True)
     chart_file = chart_dir / "chart.png"
@@ -39,7 +39,7 @@ async def test_attach_chart_image_starts_background_extraction(monkeypatch, tmp_
             await session.commit()
 
     transport = ASGITransport(app=app)
-    with patch("app.main.extract_chart_and_save", side_effect=_fake_extract_chart_and_save):
+    with patch("app.routers.titles.extract_chart_and_save", side_effect=_fake_extract_chart_and_save):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             r = await client.post(f"/titles/{title_id}/chart-image",
                                   json={"image_path": str(chart_file)})
@@ -58,7 +58,7 @@ async def test_attach_chart_image_starts_background_extraction(monkeypatch, tmp_
 @pytest.mark.asyncio
 async def test_attach_chart_image_returns_404_for_missing_title(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
     chart_dir = tmp_path / "chart_image"
     chart_dir.mkdir(parents=True)
     chart_file = chart_dir / "chart.png"
@@ -74,7 +74,7 @@ async def test_attach_chart_image_returns_404_for_missing_title(monkeypatch, tmp
 @pytest.mark.asyncio
 async def test_attach_chart_image_rejects_path_outside_chart_image_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
     chart_dir = tmp_path / "chart_image"
     chart_dir.mkdir(parents=True)
     # 문자열상으로는 chart_image/ 아래처럼 보이지만 ".."을 통해 실제로는
@@ -119,7 +119,7 @@ async def test_list_titles_returns_created_titles(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_title_returns_chart_status_and_image_url(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.routers.titles.MEDIA_ROOT", tmp_path)
     chart_dir = tmp_path / "chart_image"
     chart_dir.mkdir(parents=True)
     chart_file = chart_dir / "chart.png"
@@ -144,7 +144,7 @@ async def test_get_title_returns_chart_status_and_image_url(monkeypatch, tmp_pat
 @pytest.mark.asyncio
 async def test_get_title_blocks_path_traversal_in_chart_image_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
-    monkeypatch.setattr("app.main.MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr("app.routers.titles.MEDIA_ROOT", tmp_path)
     chart_dir = tmp_path / "chart_image"
     chart_dir.mkdir(parents=True)
     # 문자열상으로는 chart_image/ 접두사로 시작하지만 ".."을 통해 실제로는
