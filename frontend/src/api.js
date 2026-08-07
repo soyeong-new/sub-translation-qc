@@ -50,32 +50,16 @@ export const listSegments = (targetVersionId) =>
 export const getFlaggedSegments = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/flagged-segments`);
 
-export const resolveGender = (segmentId, { characterId = null, gender = null } = {}) =>
+export const resolveGender = (segmentId, gender) =>
   request(`/segments/${segmentId}/resolve-gender`, {
     method: "POST",
-    body: JSON.stringify({ character_id: characterId, gender }),
+    body: JSON.stringify({ gender }),
   });
 
-export const resolveFormality = (segmentId, { relationshipId = null, formalityLevel = null } = {}) =>
+export const resolveFormality = (segmentId, formalityLevel) =>
   request(`/segments/${segmentId}/resolve-formality`, {
     method: "POST",
-    body: JSON.stringify({ relationship_id: relationshipId, formality_level: formalityLevel }),
-  });
-
-export const listCharacters = (targetVersionId) =>
-  request(`/target-versions/${targetVersionId}/characters`);
-
-export const listRelationships = (targetVersionId) =>
-  request(`/target-versions/${targetVersionId}/relationships`);
-
-export const confirmGender = (characterId, gender) =>
-  request(`/characters/${characterId}/confirm-gender`, {
-    method: "POST", body: JSON.stringify({ gender }),
-  });
-
-export const confirmFormality = (relationshipId, formalityLevel) =>
-  request(`/relationships/${relationshipId}/confirm-formality`, {
-    method: "POST", body: JSON.stringify({ formality_level: formalityLevel }),
+    body: JSON.stringify({ formality_level: formalityLevel }),
   });
 
 export const correctStt = (segmentId, correctedText, reviewerName) =>
@@ -126,52 +110,9 @@ export const uploadVideo = (file, onProgress) =>
 export const uploadSrt = (file, onProgress) =>
   uploadWithProgress("/uploads/srt", file, onProgress);
 
-export const uploadChartImage = (file, onProgress) =>
-  uploadWithProgress("/uploads/chart-image", file, onProgress);
-
 export const uploadSrtEn = (file, onProgress) =>
   uploadWithProgress("/uploads/srt-en", file, onProgress);
 
 export const listTitles = () => request("/titles");
 
 export const getTitle = (titleId) => request(`/titles/${titleId}`);
-
-export const attachChartImage = (titleId, imagePath) =>
-  request(`/titles/${titleId}/chart-image`, {
-    method: "POST", body: JSON.stringify({ image_path: imagePath }),
-  });
-
-export const listTitleCharacters = (titleId) => request(`/titles/${titleId}/characters`);
-
-export const listTitleRelationships = (titleId) => request(`/titles/${titleId}/relationships`);
-
-export const createTitleCharacter = (titleId, label) =>
-  request(`/titles/${titleId}/characters`, {
-    method: "POST", body: JSON.stringify({ label }),
-  });
-
-export const updateCharacter = (characterId, fields) =>
-  request(`/characters/${characterId}`, { method: "PATCH", body: JSON.stringify(fields) });
-
-export const deleteCharacter = (characterId) =>
-  request(`/characters/${characterId}`, { method: "DELETE" });
-
-export const createTitleRelationship = (titleId, speakerLabel, addresseeLabel, relationshipType) =>
-  request(`/titles/${titleId}/relationships`, {
-    method: "POST",
-    body: JSON.stringify({
-      speaker_label: speakerLabel, addressee_label: addresseeLabel,
-      relationship_type: relationshipType,
-    }),
-  });
-
-export const updateRelationship = (relationshipId, relationshipType) =>
-  request(`/relationships/${relationshipId}`, {
-    method: "PATCH", body: JSON.stringify({ relationship_type: relationshipType }),
-  });
-
-export const deleteRelationship = (relationshipId) =>
-  request(`/relationships/${relationshipId}`, { method: "DELETE" });
-
-export const confirmChart = (titleId) =>
-  request(`/titles/${titleId}/chart/confirm`, { method: "POST" });

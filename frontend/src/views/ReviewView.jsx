@@ -5,11 +5,7 @@ import {
   getFindings,
   submitReviewAction,
   exportTargetVersion,
-  listCharacters,
-  listRelationships,
   listSegments,
-  confirmGender,
-  confirmFormality,
   correctStt,
   getTargetVersion,
   getFlaggedSegments,
@@ -84,8 +80,6 @@ const factSmallBtnClass =
   "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
   "disabled:cursor-not-allowed disabled:opacity-50 border-accent/50 bg-accent/10 text-accent-foreground " +
   "hover:bg-accent/25";
-const factConfirmedBadgeClass =
-  "inline-flex items-center rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-xs font-medium text-success";
 const factRowClass = "rounded-md border border-dashed border-accent/40 bg-accent/5 p-3";
 
 function Spinner() {
@@ -211,62 +205,6 @@ function FactSectionHeading({ id, children }) {
   );
 }
 
-function CharacterRow({ character, pending, error, canAct, onConfirm }) {
-  const busy = pending != null;
-  const disabled = busy || !canAct;
-  return (
-    <li className={factRowClass}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium text-foreground">{character.label}</span>
-        {character.confirmed_gender ? (
-          <span className={factConfirmedBadgeClass}>
-            {character.confirmed_gender === "male" ? "남성 확인됨" : "여성 확인됨"}
-          </span>
-        ) : (
-          <div className="flex gap-1.5">
-            <button disabled={disabled} onClick={() => onConfirm("male")} className={factSmallBtnClass}>
-              {pending === "male" && <Spinner />} 남성
-            </button>
-            <button disabled={disabled} onClick={() => onConfirm("female")} className={factSmallBtnClass}>
-              {pending === "female" && <Spinner />} 여성
-            </button>
-          </div>
-        )}
-      </div>
-      {error && <p className="mt-1.5 text-xs text-destructive">{error}</p>}
-    </li>
-  );
-}
-
-function RelationshipRow({ relationship, pending, error, canAct, onConfirm }) {
-  const busy = pending != null;
-  const disabled = busy || !canAct;
-  return (
-    <li className={factRowClass}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium text-foreground">
-          {relationship.speaker_label ?? "?"} → {relationship.addressee_label ?? "?"}
-        </span>
-        {relationship.confirmed_formality_level ? (
-          <span className={factConfirmedBadgeClass}>
-            {relationship.confirmed_formality_level === "formal" ? "격식체 확인됨" : "비격식체 확인됨"}
-          </span>
-        ) : (
-          <div className="flex gap-1.5">
-            <button disabled={disabled} onClick={() => onConfirm("formal")} className={factSmallBtnClass}>
-              {pending === "formal" && <Spinner />} 격식체
-            </button>
-            <button disabled={disabled} onClick={() => onConfirm("informal")} className={factSmallBtnClass}>
-              {pending === "informal" && <Spinner />} 비격식체
-            </button>
-          </div>
-        )}
-      </div>
-      {error && <p className="mt-1.5 text-xs text-destructive">{error}</p>}
-    </li>
-  );
-}
-
 function SttSegmentRow({ segment, editing, editText, pending, error, canAct, onEditTextChange, onStartEdit, onCancelEdit, onSaveEdit }) {
   const disabled = pending || !canAct;
   return (
@@ -307,17 +245,14 @@ function SttSegmentRow({ segment, editing, editText, pending, error, canAct, onE
   );
 }
 
-// "사실 확인" 사이드바: 인물 성별 확인 / 관계 격식 확인 / STT 원문 인라인 수정을 한
-// 영역에 모아 Findings(번역 승인/거부)와 명확히 구분한다. 세 섹션 모두 확인할 대상이
-// 없으면(모두 이미 확인됐거나 데이터가 없으면) 조용히 숨긴다.
+// "사실 확인" 사이드바: STT 원문 인라인 수정을 Findings(번역 승인/거부)와
+// 명확히 구분한다. 확인할 대상이 없으면(데이터가 없으면) 조용히 숨긴다.
 function FactConfirmationPanel({
   reviewerName,
-  characters, charactersError, characterPending, characterErrors, onConfirmCharacter,
-  relationships, relationshipsError, relationshipPending, relationshipErrors, onConfirmRelationship,
   segments, segmentsError, sttEditingId, sttEditText, sttPending, sttErrors,
   onSttEditTextChange, onSttStartEdit, onSttCancelEdit, onSttSaveEdit,
 }) {
-  const loading = characters === null && relationships === null && segments === null;
+  const loading = segments === null;
   const canAct = Boolean(reviewerName.trim());
 
   return (
@@ -330,7 +265,7 @@ function FactConfirmationPanel({
           사실 확인
         </span>
         <h2 id="fact-confirmation-heading" className="mt-2 text-base font-semibold text-foreground">
-          인물·관계·STT 원문
+          STT 원문
         </h2>
         <p className="mt-1 text-xs text-muted-foreground">
           번역 승인/거부가 아닌, 원본 사실 확인 영역입니다.
@@ -340,44 +275,6 @@ function FactConfirmationPanel({
       {loading && <p className="text-sm text-muted-foreground">불러오는 중...</p>}
 
       <div className="space-y-6">
-        {characters && characters.length > 0 && (
-          <section aria-labelledby="fact-characters-heading">
-            <FactSectionHeading id="fact-characters-heading">인물 성별 확인</FactSectionHeading>
-            <ul className="space-y-2">
-              {characters.map((c) => (
-                <CharacterRow
-                  key={c.id}
-                  character={c}
-                  pending={characterPending[c.id] ?? null}
-                  error={characterErrors[c.id]}
-                  canAct={canAct}
-                  onConfirm={(gender) => onConfirmCharacter(c.id, gender)}
-                />
-              ))}
-            </ul>
-          </section>
-        )}
-        {charactersError && <p className="text-xs text-destructive">{charactersError}</p>}
-
-        {relationships && relationships.length > 0 && (
-          <section aria-labelledby="fact-relationships-heading">
-            <FactSectionHeading id="fact-relationships-heading">관계 격식 확인</FactSectionHeading>
-            <ul className="space-y-2">
-              {relationships.map((r) => (
-                <RelationshipRow
-                  key={r.id}
-                  relationship={r}
-                  pending={relationshipPending[r.id] ?? null}
-                  error={relationshipErrors[r.id]}
-                  canAct={canAct}
-                  onConfirm={(level) => onConfirmRelationship(r.id, level)}
-                />
-              ))}
-            </ul>
-          </section>
-        )}
-        {relationshipsError && <p className="text-xs text-destructive">{relationshipsError}</p>}
-
         {segments && segments.length > 0 && (
           <section aria-labelledby="fact-stt-heading">
             <FactSectionHeading id="fact-stt-heading">STT 원문 인라인 수정</FactSectionHeading>
@@ -402,13 +299,9 @@ function FactConfirmationPanel({
         )}
         {segmentsError && <p className="text-xs text-destructive">{segmentsError}</p>}
 
-        {!loading &&
-          characters?.length === 0 &&
-          relationships?.length === 0 &&
-          segments?.length === 0 &&
-          !charactersError && !relationshipsError && !segmentsError && (
-            <p className="text-sm text-muted-foreground">확인할 항목이 없습니다.</p>
-          )}
+        {!loading && segments?.length === 0 && !segmentsError && (
+          <p className="text-sm text-muted-foreground">확인할 항목이 없습니다.</p>
+        )}
 
         {!reviewerName.trim() && (
           <p className="text-xs text-muted-foreground">
@@ -420,7 +313,7 @@ function FactConfirmationPanel({
   );
 }
 
-export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
+export default function ReviewView({ targetVersionId, onBack }) {
   const [findings, setFindings] = useState(null); // null = 로딩 중
   const [loadError, setLoadError] = useState(null);
   const [reviewerName, setReviewerName] = useState("");
@@ -430,7 +323,6 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
   const [editText, setEditText] = useState("");
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
   const [exportResult, setExportResult] = useState(null);
-  const [titleId, setTitleId] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
   const [videoProxyUrl, setVideoProxyUrl] = useState(null);
   const [flaggedSegments, setFlaggedSegments] = useState(null); // null = 로딩 중
@@ -438,17 +330,7 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
   const [stepperOpen, setStepperOpen] = useState(false);
 
   // "사실 확인" 사이드바 상태 — Findings(위 state들)와는 완전히 분리된 데이터
-  // 흐름을 가진다: 인물 성별 / 관계 격식 / STT 원문 세 섹션.
-  const [characters, setCharacters] = useState(null); // null = 로딩 중
-  const [charactersError, setCharactersError] = useState(null);
-  const [characterPending, setCharacterPending] = useState({}); // characterId -> gender in flight
-  const [characterErrors, setCharacterErrors] = useState({});
-
-  const [relationships, setRelationships] = useState(null);
-  const [relationshipsError, setRelationshipsError] = useState(null);
-  const [relationshipPending, setRelationshipPending] = useState({}); // relationshipId -> level in flight
-  const [relationshipErrors, setRelationshipErrors] = useState({});
-
+  // 흐름을 가진다: STT 원문 인라인 수정.
   const [segments, setSegments] = useState(null);
   const [segmentsError, setSegmentsError] = useState(null);
   const [sttEditingId, setSttEditingId] = useState(null);
@@ -478,7 +360,6 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
       .then((data) => {
         if (!cancelled) {
           setPipelineWarnings(data.warnings ?? []);
-          setTitleId(data.title_id ?? null);
           setVideoProxyUrl(data.video_proxy_url ?? null);
         }
       })
@@ -492,28 +373,8 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
 
   useEffect(() => {
     let cancelled = false;
-    setCharacters(null);
-    setCharactersError(null);
-    setRelationships(null);
-    setRelationshipsError(null);
     setSegments(null);
     setSegmentsError(null);
-
-    listCharacters(targetVersionId)
-      .then((data) => {
-        if (!cancelled) setCharacters(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setCharactersError(err.message ?? "인물 목록을 불러오지 못했습니다.");
-      });
-
-    listRelationships(targetVersionId)
-      .then((data) => {
-        if (!cancelled) setRelationships(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setRelationshipsError(err.message ?? "관계 목록을 불러오지 못했습니다.");
-      });
 
     listSegments(targetVersionId)
       .then((data) => {
@@ -582,46 +443,6 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
     );
   }
 
-  async function handleConfirmCharacter(characterId, gender) {
-    setCharacterErrors((prev) => ({ ...prev, [characterId]: null }));
-    setCharacterPending((prev) => ({ ...prev, [characterId]: gender }));
-    try {
-      await confirmGender(characterId, gender);
-      setCharacters(await listCharacters(targetVersionId));
-    } catch (err) {
-      setCharacterErrors((prev) => ({
-        ...prev,
-        [characterId]: err.message ?? "요청 중 오류가 발생했습니다.",
-      }));
-    } finally {
-      setCharacterPending((prev) => {
-        const next = { ...prev };
-        delete next[characterId];
-        return next;
-      });
-    }
-  }
-
-  async function handleConfirmRelationship(relationshipId, level) {
-    setRelationshipErrors((prev) => ({ ...prev, [relationshipId]: null }));
-    setRelationshipPending((prev) => ({ ...prev, [relationshipId]: level }));
-    try {
-      await confirmFormality(relationshipId, level);
-      setRelationships(await listRelationships(targetVersionId));
-    } catch (err) {
-      setRelationshipErrors((prev) => ({
-        ...prev,
-        [relationshipId]: err.message ?? "요청 중 오류가 발생했습니다.",
-      }));
-    } finally {
-      setRelationshipPending((prev) => {
-        const next = { ...prev };
-        delete next[relationshipId];
-        return next;
-      });
-    }
-  }
-
   function startSttEdit(segment) {
     setSttEditingId(segment.id);
     setSttEditText(segment.korean_text);
@@ -644,16 +465,16 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
     }
   }
 
-  async function handleResolveGender(segmentId, payload) {
-    const updated = await resolveGender(segmentId, payload);
+  async function handleResolveGender(segmentId, gender) {
+    const updated = await resolveGender(segmentId, gender);
     setFlaggedSegments((prev) =>
       prev ? prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)) : prev
     );
     return updated;
   }
 
-  async function handleResolveFormality(segmentId, payload) {
-    const updated = await resolveFormality(segmentId, payload);
+  async function handleResolveFormality(segmentId, formalityLevel) {
+    const updated = await resolveFormality(segmentId, formalityLevel);
     setFlaggedSegments((prev) =>
       prev ? prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)) : prev
     );
@@ -686,14 +507,6 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
               &larr; 목록으로
             </button>
             <h1 className="text-xl font-semibold text-card-foreground">리뷰 — Findings</h1>
-            {titleId && (
-              <button
-                onClick={() => onOpenChart(titleId)}
-                className="mt-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-              >
-                인물관계도 확인 →
-              </button>
-            )}
             {flaggedSegments && flaggedSegments.length > 0 && (
               <button
                 onClick={() => setStepperOpen(true)}
@@ -742,16 +555,6 @@ export default function ReviewView({ targetVersionId, onBack, onOpenChart }) {
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[320px_1fr]">
           <FactConfirmationPanel
             reviewerName={reviewerName}
-            characters={characters}
-            charactersError={charactersError}
-            characterPending={characterPending}
-            characterErrors={characterErrors}
-            onConfirmCharacter={handleConfirmCharacter}
-            relationships={relationships}
-            relationshipsError={relationshipsError}
-            relationshipPending={relationshipPending}
-            relationshipErrors={relationshipErrors}
-            onConfirmRelationship={handleConfirmRelationship}
             segments={segments}
             segmentsError={segmentsError}
             sttEditingId={sttEditingId}

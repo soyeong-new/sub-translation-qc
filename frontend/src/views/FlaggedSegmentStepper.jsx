@@ -13,8 +13,6 @@ const btnBase =
   "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
   "focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
 
-const candidateBtnClass =
-  `${btnBase} border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20`;
 const binaryBtnClass =
   `${btnBase} border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground`;
 const navBtnClass =
@@ -26,13 +24,11 @@ const closeBtnClass =
 // 컴포넌트 렌더 로직(genderResolved/formalityResolved) 모두 이 두 함수를
 // 그대로 재사용해, "확인됨"의 정의가 여러 곳에서 어긋나지 않게 한다.
 function isGenderResolved(segment) {
-  return !segment.gender_check_needed
-    || Boolean(segment.resolved_character_id) || Boolean(segment.resolved_gender_raw);
+  return !segment.gender_check_needed || Boolean(segment.resolved_gender_raw);
 }
 
 function isFormalityResolved(segment) {
-  return !segment.formality_check_needed
-    || Boolean(segment.resolved_relationship_id) || Boolean(segment.resolved_formality_raw);
+  return !segment.formality_check_needed || Boolean(segment.resolved_formality_raw);
 }
 
 // Segment의 확인 상태를 판단하는 단일 기준점. ReviewView.jsx가 진입 버튼의
@@ -104,12 +100,12 @@ export default function FlaggedSegmentStepper({
     }
   }
 
-  async function handleResolveGender(payload) {
+  async function handleResolveGender(gender) {
     if (!currentSegment) return;
     setPending(true);
     setError(null);
     try {
-      const updated = await onResolveGender(currentSegment.id, payload);
+      const updated = await onResolveGender(currentSegment.id, gender);
       if (isSegmentResolved({ ...currentSegment, ...updated })) {
         goToNextUnresolved(currentIndex);
       }
@@ -120,12 +116,12 @@ export default function FlaggedSegmentStepper({
     }
   }
 
-  async function handleResolveFormality(payload) {
+  async function handleResolveFormality(formalityLevel) {
     if (!currentSegment) return;
     setPending(true);
     setError(null);
     try {
-      const updated = await onResolveFormality(currentSegment.id, payload);
+      const updated = await onResolveFormality(currentSegment.id, formalityLevel);
       if (isSegmentResolved({ ...currentSegment, ...updated })) {
         goToNextUnresolved(currentIndex);
       }
@@ -197,25 +193,12 @@ export default function FlaggedSegmentStepper({
               <h3 id="stepper-gender-heading" className="mb-3 text-sm font-semibold text-foreground">성별</h3>
               {genderResolved ? (
                 <p className="text-sm text-success">확인됨</p>
-              ) : currentSegment.gender_anchor_candidates.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {currentSegment.gender_anchor_candidates.map((c) => (
-                    <button
-                      key={c.id}
-                      disabled={pending}
-                      onClick={() => handleResolveGender({ characterId: c.id })}
-                      className={candidateBtnClass}
-                    >
-                      {c.label} 확정
-                    </button>
-                  ))}
-                </div>
               ) : (
                 <div className="flex gap-2">
-                  <button disabled={pending} onClick={() => handleResolveGender({ gender: "male" })} className={binaryBtnClass}>
+                  <button disabled={pending} onClick={() => handleResolveGender("male")} className={binaryBtnClass}>
                     남성
                   </button>
-                  <button disabled={pending} onClick={() => handleResolveGender({ gender: "female" })} className={binaryBtnClass}>
+                  <button disabled={pending} onClick={() => handleResolveGender("female")} className={binaryBtnClass}>
                     여성
                   </button>
                 </div>
@@ -235,25 +218,12 @@ export default function FlaggedSegmentStepper({
               <h3 id="stepper-formality-heading" className="mb-3 text-sm font-semibold text-foreground">격식</h3>
               {formalityResolved ? (
                 <p className="text-sm text-success">확인됨</p>
-              ) : currentSegment.formality_anchor_candidates.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {currentSegment.formality_anchor_candidates.map((c) => (
-                    <button
-                      key={c.id}
-                      disabled={pending}
-                      onClick={() => handleResolveFormality({ relationshipId: c.id })}
-                      className={candidateBtnClass}
-                    >
-                      {c.label} 확정
-                    </button>
-                  ))}
-                </div>
               ) : (
                 <div className="flex gap-2">
-                  <button disabled={pending} onClick={() => handleResolveFormality({ formalityLevel: "formal" })} className={binaryBtnClass}>
+                  <button disabled={pending} onClick={() => handleResolveFormality("formal")} className={binaryBtnClass}>
                     존댓말
                   </button>
-                  <button disabled={pending} onClick={() => handleResolveFormality({ formalityLevel: "informal" })} className={binaryBtnClass}>
+                  <button disabled={pending} onClick={() => handleResolveFormality("informal")} className={binaryBtnClass}>
                     반말
                   </button>
                 </div>

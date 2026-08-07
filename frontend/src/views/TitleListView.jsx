@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
-  getTargetVersion, listLanguageProfiles, uploadChartImage, attachChartImage, uploadSrtEn,
+  getTargetVersion, listLanguageProfiles, uploadSrtEn,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -16,7 +16,6 @@ const STATUS_STYLES = {
 // 백엔드 허용 확장자(backend/app/core/uploads.py)와 동기화되어야 함.
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"];
 const SRT_EXTENSIONS = [".srt"];
-const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
 
 function getExtension(filename) {
   const idx = filename.lastIndexOf(".");
@@ -54,8 +53,6 @@ export default function TitleListView({ onSelect }) {
   const [type, setType] = useState("movie");
   const [videoFile, setVideoFile] = useState(null);
   const [srtFile, setSrtFile] = useState(null);
-  const [chartImageFile, setChartImageFile] = useState(null);
-  const [chartImageProgress, setChartImageProgress] = useState(null);
   const [englishSrtFile, setEnglishSrtFile] = useState(null);
   const [englishSrtProgress, setEnglishSrtProgress] = useState(null);
   const [videoProgress, setVideoProgress] = useState(null);
@@ -138,18 +135,6 @@ export default function TitleListView({ onSelect }) {
     setSrtFile(selected);
   }
 
-  function handleChartImageSelected(selected) {
-    if (!IMAGE_EXTENSIONS.includes(getExtension(selected.name))) {
-      setStatus({
-        kind: "error",
-        message: `지원하지 않는 이미지 형식입니다. (허용: ${IMAGE_EXTENSIONS.join(", ")})`,
-      });
-      return;
-    }
-    setStatus(null);
-    setChartImageFile(selected);
-  }
-
   function handleEnglishSrtSelected(selected) {
     if (!SRT_EXTENSIONS.includes(getExtension(selected.name))) {
       setStatus({
@@ -174,18 +159,7 @@ export default function TitleListView({ onSelect }) {
       ]);
       setStatus({ kind: "loading", message: "등록 중..." });
       const title = await createTitle(name, type);
-      // 인물관계도 이미지는 선택 입력이라, 있을 때만 업로드+연결한다. 실패해도
-      // 전체 등록 흐름을 막지 않는다 — 화 등록/분석은 이미지 없이도 완전히
-      // 동작하는 독립 기능이다.
-      if (chartImageFile) {
-        try {
-          const chartUpload = await uploadChartImage(chartImageFile, setChartImageProgress);
-          await attachChartImage(title.id, chartUpload.path);
-        } catch (err) {
-          console.error("인물관계도 이미지 업로드 실패:", err);
-        }
-      }
-      // 영어 SRT는 선택 입력이라(인물관계도 이미지와 동일한 원칙), 있을 때만
+      // 영어 SRT는 선택 입력이라, 있을 때만
       // 업로드한다. 실패해도 전체 등록 흐름을 막지 않는다 — 성별/격식 확인은
       // 영어 SRT 없이도 완전히 동작하는 독립 기능이고, 이건 참고 힌트일 뿐이다.
       let englishSrtPath = null;
@@ -209,7 +183,6 @@ export default function TitleListView({ onSelect }) {
     } finally {
       setVideoProgress(null);
       setSrtProgress(null);
-      setChartImageProgress(null);
       setEnglishSrtProgress(null);
     }
   }
@@ -297,16 +270,6 @@ export default function TitleListView({ onSelect }) {
             file={englishSrtFile}
             onFileSelected={handleEnglishSrtSelected}
             progress={englishSrtProgress}
-            disabled={isSubmitting}
-          />
-
-          <FileDropzone
-            id="chart-image-file"
-            label="인물관계도 이미지 (선택)"
-            accept={IMAGE_EXTENSIONS.join(",")}
-            file={chartImageFile}
-            onFileSelected={handleChartImageSelected}
-            progress={chartImageProgress}
             disabled={isSubmitting}
           />
 
