@@ -10,15 +10,7 @@ class MockProvider(ModelProvider):
     async def transcribe(self, audio_path: str) -> List[dict]:
         return [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]
 
-    async def analyze_characters(self, pairs: List[dict], profile: dict) -> dict:
-        checks = profile.get("checks_enabled", {})
-        result = {"characters": [], "relationships": []}
-        if checks.get("gender_agreement") or checks.get("register_consistency"):
-            result["characters"] = [{"label": "인물1", "gendered_segment_ids": []}]
-        return result
-
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               characters: List[dict], relationships: List[dict],
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "") -> List[dict]:

@@ -20,26 +20,15 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
-    async def analyze_characters(self, pairs: List[dict], profile: dict) -> dict:
-        """정렬된 한국어-대상언어 세그먼트 쌍 전체를 읽고 인물을 식별한다.
-
-        profile["checks_enabled"]에 따라 gender_agreement/register_consistency
-        중 활성화된 항목만 태깅한다. 반환값:
-        {"characters": [{"label": str, "gendered_segment_ids": [str]}],
-         "relationships": [{"speaker_label": str, "addressee_label": str,
-                            "formality_segment_ids": [str]}]}"""
-        ...
-
-    @abstractmethod
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               characters: List[dict], relationships: List[dict],
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "") -> List[dict]:
-        """Claude 1차: 사전에 없는 애매한 비속어/글로서리 표기/성별 일치/
-        존댓말·반말 일관성을 직접 고쳐 다시 쓴다. 변경이 필요한 세그먼트만
-        반환한다. 반환값은 [{"segment_id": str,
-        "category": "sensitivity"|"glossary"|"gender"|"register",
+        """Claude 1차: 사전에 없는 애매한 비속어/글로서리 표기를 직접 고쳐
+        다시 쓴다. 성별/격식은 화자를 특정할 근거가 없어 여기서 다루지 않는다
+        — check_grammar_necessity로 걸러 사람이 직접 확인한다. 변경이 필요한
+        세그먼트만 반환한다. 반환값은 [{"segment_id": str,
+        "category": "sensitivity"|"glossary",
         "corrected_text": str, "description": str(한국어)}, ...]"""
         ...
 

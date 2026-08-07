@@ -22,14 +22,9 @@ def validate_media_subpath(path: str, subdir: str, error_message: str) -> None:
         raise HTTPException(400, error_message)
 
 
-def validate_chart_image_path(image_path: str) -> None:
-    """image_path가 실제로 MEDIA_ROOT/chart_image 아래를 가리키는지 확인한다."""
-    validate_media_subpath(image_path, "chart_image", "유효하지 않은 이미지 경로입니다.")
-
-
 def validate_english_srt_path(english_srt_path: str) -> None:
     """english_srt_path가 실제로 MEDIA_ROOT/srt_en 아래를 가리키는지 확인한다 —
     pipeline.load_srt()가 이 경로를 열어 파싱하고, 매칭된 텍스트가
     Segment.english_pronoun_hint로 저장되어 flagged-segments 응답을 통해 그대로
-    클라이언트에 노출되므로 chart_image_path와 동일한 이유로 검증이 필요하다."""
+    클라이언트에 노출되므로 검증이 필요하다."""
     validate_media_subpath(english_srt_path, "srt_en", "유효하지 않은 영어 자막 경로입니다.")

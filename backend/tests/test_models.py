@@ -21,7 +21,7 @@ async def test_all_expected_tables_exist():
     async with engine.begin() as conn:
         tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
     expected = {
-        "titles", "episodes", "characters", "relationships", "target_versions",
+        "titles", "episodes", "target_versions",
         "segments", "findings", "stt_corrections", "learned_examples", "exports",
     }
     assert expected.issubset(set(tables))
@@ -56,51 +56,11 @@ async def test_target_versions_table_has_warnings_column():
 
 
 @pytest.mark.asyncio
-async def test_titles_table_has_chart_columns():
-    async with engine.begin() as conn:
-        columns = await conn.run_sync(
-            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("titles")]
-        )
-    assert "chart_image_path" in columns
-    assert "chart_extraction_status" in columns
-    assert "chart_extraction_error" in columns
-
-
-@pytest.mark.asyncio
-async def test_characters_table_has_chart_columns():
-    async with engine.begin() as conn:
-        columns = await conn.run_sync(
-            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("characters")]
-        )
-    assert "suggested_gender" in columns
-    assert "source" in columns
-
-
-@pytest.mark.asyncio
-async def test_relationships_table_has_relationship_type_column():
-    async with engine.begin() as conn:
-        columns = await conn.run_sync(
-            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("relationships")]
-        )
-    assert "relationship_type" in columns
-
-
-@pytest.mark.asyncio
 async def test_segments_table_has_resolution_columns():
     async with engine.begin() as conn:
         columns = await conn.run_sync(
             lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("segments")]
         )
-    for col in ("gender_check_needed", "formality_check_needed", "resolved_character_id",
-                "resolved_gender_raw", "resolved_relationship_id", "resolved_formality_raw"):
-        assert col in columns, f"{col} 컬럼이 없음"
-
-
-@pytest.mark.asyncio
-async def test_segments_table_has_anchor_candidates_columns():
-    async with engine.begin() as conn:
-        columns = await conn.run_sync(
-            lambda sync_conn: [c["name"] for c in inspect(sync_conn).get_columns("segments")]
-        )
-    for col in ("gender_anchor_candidates", "formality_anchor_candidates"):
+    for col in ("gender_check_needed", "formality_check_needed",
+                "resolved_gender_raw", "resolved_formality_raw"):
         assert col in columns, f"{col} 컬럼이 없음"

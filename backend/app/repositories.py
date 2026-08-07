@@ -1,11 +1,9 @@
-"""파이프라인 실행 결과(세그먼트/findings/인물/관계)를 DB에 영속화하는 모듈."""
+"""파이프라인 실행 결과(세그먼트/findings)를 DB에 영속화하는 모듈."""
 
-from typing import List, Optional
+from typing import List
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import (
-    Character, Episode, FindingRow, Relationship, Segment, SttCorrection, TargetVersion,
-)
+from app.models import FindingRow, Segment, SttCorrection
 from app.schemas import Finding
 
 
@@ -43,8 +41,6 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
             target_text=pair.target.text if pair.target else "",
             gender_check_needed=bool(resolution.get("gender_check_needed")),
             formality_check_needed=bool(resolution.get("formality_check_needed")),
-            gender_anchor_candidates=resolution.get("gender_anchor_candidates"),
-            formality_anchor_candidates=resolution.get("formality_anchor_candidates"),
             english_pronoun_hint=resolution.get("english_pronoun_hint"),
         ))
 
@@ -110,87 +106,12 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
             final_text=suggested_text if v.auto_fixed else "",
         ))
 
-    await _save_characters_and_relationships(session, target_version_id, result)
-
-
-async def _resolve_title_id(session: AsyncSession, target_version_id: str) -> Optional[str]:
-    """target_version_id → episode_id → title_id. 인물/관계는 target_version이
-    아니라 title 단위로 공유되므로(design §6의 전역 제약: 같은 작품의 에피소드/
-    언어 버전 전반에서 재사용) 저장 전에 title_id를 알아내야 한다."""
-    tv = await session.get(TargetVersion, target_version_id)
-    if tv is None:
-        return None
-    episode = await session.get(Episode, tv.episode_id)
-    return episode.title_id if episode is not None else None
-
-
-async def _save_characters_and_relationships(session: AsyncSession,
-                                              target_version_id: str,
-                                              result: dict) -> None:
-    """인물/관계를 title 단위로 누적 저장한다.
-
-    같은 작품의 다른 화를 분석해도 동일 인물이 중복 생성되면 안 되므로
-    (title_id, label) 기준으로 기존 행을 먼저 찾고 없을 때만 새로 만든다.
-    gender_questions/register_questions는 별도 저장이 필요 없다 —
-    "confirmed_gender IS NULL"인 Character 자체가 확인 필요 신호이며,
-    list_characters/프론트엔드(ReviewView)도 그 값의 null 여부로 판단한다."""
-    characters = result.get("characters") or []
-    relationships = result.get("relationships") or []
-    if not characters and not relationships:
-        return
-    title_id = await _resolve_title_id(session, target_version_id)
-    if title_id is None:
-        return
-
-    char_by_label: dict[str, Character] = {}
-
-    async def get_or_create_character(label: Optional[str]) -> Optional[Character]:
-        if not label:
-            return None
-        if label not in char_by_label:
-            existing = (await session.execute(
-                select(Character).where(Character.title_id == title_id,
-                                        Character.label == label)
-            )).scalars().first()
-            if existing is None:
-                existing = Character(title_id=title_id, label=label)
-                session.add(existing)
-            char_by_label[label] = existing
-        return char_by_label[label]
-
-    for c in characters:
-        await get_or_create_character(c.get("label"))
-    await session.flush()  # 관계가 참조할 characters.id를 먼저 확정한다.
-
-    for r in relationships:
-        # 인물 목록에 없는 라벨을 관계가 참조할 수도 있으므로(다른 화에서 이미
-        # 등록된 인물 등) 여기서도 get-or-create로 해석한다.
-        speaker = await get_or_create_character(r.get("speaker_label"))
-        addressee = await get_or_create_character(r.get("addressee_label"))
-        if speaker is None or addressee is None:
-            continue
-        await session.flush()
-        existing = (await session.execute(
-            select(Relationship).where(
-                Relationship.title_id == title_id,
-                Relationship.speaker_character_id == speaker.id,
-                Relationship.addressee_character_id == addressee.id,
-            )
-        )).scalars().first()
-        if existing is None:
-            session.add(Relationship(
-                title_id=title_id, speaker_character_id=speaker.id,
-                addressee_character_id=addressee.id,
-            ))
-    await session.flush()
-
 
 async def delete_target_version_results(session: AsyncSession, target_version_id: str) -> None:
     """재분석(재시도) 전에 기존 Segment/FindingRow/SttCorrection을 지운다. 이게
     없으면 save_pipeline_result가 이전 실행과 동일한 네임스페이싱된 ID로 다시
-    INSERT를 시도해 PK 충돌(IntegrityError)로 실패한다. Character/Relationship은
-    title 단위로 공유되므로 여기서 지우지 않는다 — 다른 화/버전이 참조할 수
-    있다. findings.segment_id와 stt_corrections.segment_id가 모두 segments.id를
+    INSERT를 시도해 PK 충돌(IntegrityError)로 실패한다.
+    findings.segment_id와 stt_corrections.segment_id가 모두 segments.id를
     참조하는 하드 FK(ondelete 없음)이므로, 둘 다 Segment보다 먼저 지워야 한다
     (POST /segments/{id}/correct-stt는 분석 상태와 무관하게 SttCorrection을
     만들 수 있어, 이걸 빼먹으면 findings와 동일한 FK 위반이 재현된다).
@@ -209,63 +130,6 @@ async def delete_target_version_results(session: AsyncSession, target_version_id
     await session.execute(
         delete(Segment).where(Segment.target_version_id == target_version_id)
     )
-    await session.flush()
-
-
-async def save_chart_extraction_result(session: AsyncSession, title_id: str, result: dict) -> None:
-    """인물관계도 이미지 vision 추출 결과를 title 단위로 저장한다.
-
-    _save_characters_and_relationships와 마찬가지로 (title_id, label) 기준
-    get-or-create이지만, target_version_id 없이(에피소드/파이프라인 실행 전에도)
-    title_id를 직접 받아 동작한다. confirmed_gender가 이미 있는 인물은
-    suggested_gender를 덮어쓰지 않는다 — 사람이 이미 확정한 값을 vision의
-    참고용 추정치로 되돌리면 안 되기 때문이다."""
-    characters = result.get("characters") or []
-    relationships = result.get("relationships") or []
-
-    char_by_label: dict[str, Character] = {}
-
-    async def get_or_create_character(label: Optional[str]) -> Optional[Character]:
-        if not label:
-            return None
-        if label not in char_by_label:
-            existing = (await session.execute(
-                select(Character).where(Character.title_id == title_id,
-                                        Character.label == label)
-            )).scalars().first()
-            if existing is None:
-                existing = Character(title_id=title_id, label=label, source="chart_image")
-                session.add(existing)
-            char_by_label[label] = existing
-        return char_by_label[label]
-
-    for c in characters:
-        char = await get_or_create_character(c.get("label"))
-        if char is not None and char.confirmed_gender is None:
-            char.suggested_gender = c.get("suggested_gender")
-    await session.flush()
-
-    for r in relationships:
-        speaker = await get_or_create_character(r.get("speaker_label"))
-        addressee = await get_or_create_character(r.get("addressee_label"))
-        if speaker is None or addressee is None:
-            continue
-        await session.flush()
-        existing = (await session.execute(
-            select(Relationship).where(
-                Relationship.title_id == title_id,
-                Relationship.speaker_character_id == speaker.id,
-                Relationship.addressee_character_id == addressee.id,
-            )
-        )).scalars().first()
-        if existing is None:
-            session.add(Relationship(
-                title_id=title_id, speaker_character_id=speaker.id,
-                addressee_character_id=addressee.id,
-                relationship_type=r.get("relationship_type"),
-            ))
-        elif existing.relationship_type is None:
-            existing.relationship_type = r.get("relationship_type")
     await session.flush()
 
 

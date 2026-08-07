@@ -15,8 +15,6 @@ from app.knowledge.loader import (
     load_knowledge, load_sensitive_terms, load_glossary, load_cta_patterns,
     load_profanity_dictionary,
 )
-from app.core.scene_splitting import split_into_scenes
-from app.core.anchor_matching import find_anchor_candidates, find_relationship_anchor_candidates
 from app.core.pretreatment import run_pretreatment
 from app.core.diffing import findings_from_corrections, apply_corrections
 from app.schemas import SegmentText
@@ -89,13 +87,13 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
 
 
 async def _run_grammar_necessity_check(
-    pairs: list, provider: ModelProvider, profile: dict,
-    characters: list, relationships: list, english_segments: list,
+    pairs: list, provider: ModelProvider, profile: dict, english_segments: list,
     target_version_id: str,
 ) -> tuple[list, list]:
     """문법 필요성 판단(줄 단위, LLM): 성별/격식 판단이 실제로 필요한 줄만
-    골라낸다. 걸리지 않은 줄은 이후 앵커 매칭·사람 리뷰에 전혀 들어가지 않는다.
-    반환값은 (segment_resolutions, warnings)."""
+    골라낸다. 어느 인물/관계 얘기인지는 텍스트만으로 알 수 없으므로 여기서
+    확정하려 하지 않는다 — 검수자가 영상을 보고 직접 판별한다(영어 대명사
+    힌트만 참고용으로 붙인다). 반환값은 (segment_resolutions, warnings)."""
     grammar_pairs = [
         {"id": p.id, "target_text": p.target.text if p.target else ""}
         for p in pairs if p.target is not None
@@ -122,35 +120,20 @@ async def _run_grammar_necessity_check(
             if flags_by_id.get(p.id, {}).get("gender_check_needed")
             or flags_by_id.get(p.id, {}).get("formality_check_needed")
         ]
-        if flagged_pairs:
-            scenes = split_into_scenes(pairs)
-            scene_by_pair_id = {}
-            for scene in scenes:
-                for scene_pair in scene:
-                    scene_by_pair_id[scene_pair.id] = scene
-            for p in flagged_pairs:
-                flags = flags_by_id[p.id]
-                scene = scene_by_pair_id.get(p.id, [p])
-                gender_candidates = find_anchor_candidates(scene, characters) if characters else []
-                formality_candidates = (
-                    find_relationship_anchor_candidates(scene, relationships) if relationships else []
-                )
-                gender_needed = bool(flags.get("gender_check_needed"))
-                english_hint = (
-                    find_pronoun_hint(p.target.start, p.target.end, english_segments)
-                    if gender_needed and english_segments and p.target is not None
-                    else None
-                )
-                segment_resolutions.append({
-                    "segment_id": p.id,
-                    "gender_check_needed": gender_needed,
-                    "formality_check_needed": bool(flags.get("formality_check_needed")),
-                    "gender_anchor_candidates": gender_candidates if gender_needed else [],
-                    "formality_anchor_candidates": (
-                        formality_candidates if flags.get("formality_check_needed") else []
-                    ),
-                    "english_pronoun_hint": english_hint,
-                })
+        for p in flagged_pairs:
+            flags = flags_by_id[p.id]
+            gender_needed = bool(flags.get("gender_check_needed"))
+            english_hint = (
+                find_pronoun_hint(p.target.start, p.target.end, english_segments)
+                if gender_needed and english_segments and p.target is not None
+                else None
+            )
+            segment_resolutions.append({
+                "segment_id": p.id,
+                "gender_check_needed": gender_needed,
+                "formality_check_needed": bool(flags.get("formality_check_needed")),
+                "english_pronoun_hint": english_hint,
+            })
     except Exception as exc:
         logger.exception(
             "문법 필요성 판단 실패, 성별/격식 체크 생략하고 계속 진행 (target_version_id=%s)",
@@ -160,8 +143,8 @@ async def _run_grammar_necessity_check(
 
 
 async def _run_claude_pass(
-    pairs: list, provider: ModelProvider, profile: dict, characters: list,
-    relationships: list, pending_sensitive_hits: list, knowledge: dict,
+    pairs: list, provider: ModelProvider, profile: dict,
+    pending_sensitive_hits: list, knowledge: dict,
     format_constraint: str, target_version_id: str,
 ) -> tuple[list, list]:
     """S2(Claude 1차 교정) 패스. 성공하면 pairs를 그 자리에서 교정 결과로
@@ -177,7 +160,7 @@ async def _run_claude_pass(
     # 스킵하고 이전 단계 결과 그대로 다음으로 진행한다(부분 실패 허용).
     try:
         claude_corrections = await provider.correct_primary(
-            claude_pairs, profile, characters, relationships,
+            claude_pairs, profile,
             pending_sensitive_hits, knowledge, format_constraint,
         )
     except Exception as exc:
@@ -241,8 +224,6 @@ async def _run_final_safety_net(
 async def run_pipeline(video_path: str, target_srt_path: str,
                         language: str, variant: str, target_version_id: str,
                         provider: ModelProvider,
-                        prior_characters: Optional[list] = None,
-                        prior_relationships: Optional[list] = None,
                         cached_korean_segments: Optional[list] = None,
                         cached_video_proxy_path: Optional[str] = None,
                         english_srt_path: Optional[str] = None) -> dict:
@@ -344,23 +325,15 @@ async def run_pipeline(video_path: str, target_srt_path: str,
         p.id: p.target.text for p in pairs if p.target is not None
     }
 
-    # 인물/관계 로스터는 이제 title에 이미 있는 Character/Relationship에서
-    # 그대로 받아온다(prior_characters/prior_relationships) — 매 실행마다
-    # LLM으로 처음부터 다시 추론하지 않는다. 아무것도 안 넘어오면(아직 로스터가
-    # 없는 title) 빈 목록으로 시작한다.
-    characters = prior_characters if prior_characters is not None else []
-    relationships = prior_relationships if prior_relationships is not None else []
-
     segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
-        pairs, provider, profile, characters, relationships, english_segments,
-        target_version_id,
+        pairs, provider, profile, english_segments, target_version_id,
     )
     warnings.extend(grammar_warnings)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
     claude_findings, claude_warnings = await _run_claude_pass(
-        pairs, provider, profile, characters, relationships,
+        pairs, provider, profile,
         pretreatment.pending_sensitive_hits, knowledge, format_constraint,
         target_version_id,
     )
@@ -387,8 +360,6 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     return {
         "pairs": pairs,
         "format_violations": format_violations,
-        "characters": characters,
-        "relationships": relationships,
         "segment_resolutions": segment_resolutions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,

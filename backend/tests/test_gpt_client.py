@@ -115,31 +115,6 @@ async def test_transcribe_returns_empty_list_when_no_segments(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_analyze_characters_parses_object_response():
-    payload = {"characters": [{"label": "민수", "gendered_segment_ids": ["p1"]}],
-               "relationships": []}
-    client = _make_client_with_fake_sdk(json.dumps(payload))
-    result = await client.analyze_characters(
-        [{"id": "p1", "target_text": "hola"}], {"checks_enabled": {"gender_agreement": True}})
-    assert result == payload
-
-
-@pytest.mark.asyncio
-async def test_analyze_characters_raises_when_keys_missing():
-    client = _make_client_with_fake_sdk(json.dumps({"foo": "bar"}))
-    with pytest.raises(ValueError):
-        await client.analyze_characters([], {})
-
-
-@pytest.mark.asyncio
-async def test_analyze_characters_raises_on_empty_choices():
-    client = _make_client_with_fake_sdk("무시됨")
-    client._sdk_client.chat.completions.create.return_value.choices = []
-    with pytest.raises(ValueError):
-        await client.analyze_characters([], {})
-
-
-@pytest.mark.asyncio
 async def test_verify_and_refine_uses_profile_language_and_variant_in_prompt():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(

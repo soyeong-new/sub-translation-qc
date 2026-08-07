@@ -12,7 +12,7 @@ _JSON_INSTRUCTION = (
 _PRIMARY_SCHEMA_INSTRUCTION = (
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'segment_id (문자열, 입력 pair의 "id"와 반드시 일치), '
-    'category (문자열, 반드시 "sensitivity", "glossary", "gender", "register" 중 하나), '
+    'category (문자열, 반드시 "sensitivity", "glossary" 중 하나), '
     "corrected_text (문자열, 교정된 전체 대상언어 텍스트), "
     "description (문자열, 한국어로 무엇을 왜 고쳤는지). "
     "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라."
@@ -80,31 +80,22 @@ class ClaudeClient:
             raise ValueError(f"Claude 응답이 JSON 객체가 아님: {text[:200]}") from exc
 
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               characters: List[dict], relationships: List[dict],
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "") -> List[dict]:
         language = profile.get("language") or "대상언어"
         variant = profile.get("variant")
         language_label = f"{language}({variant})" if variant else language
-        grammar_instruction = (profile.get("grammar_agreement") or {}).get("llm_instruction", "")
-        register_instruction = (profile.get("register_system") or {}).get("llm_instruction", "")
 
         system = (
             f"너는 한국어-{language_label} 자막의 1차 교정자다. 다음 항목만 직접 "
             "고쳐서 다시 써라: (1) 사전에 없는 애매한 비속어, (2) 글로서리에 없는 "
-            "새 인물 이름의 표기 통일, (3) 확정된 인물 성별에 맞는 형용사/과거분사 "
-            "일치, (4) 확정된 화자-청자 관계의 존댓말/반말 일관성. "
-            "번역 품질 전반이나 로컬라이제이션은 다루지 마라 (2차 검수자의 몫). "
+            "새 인물 이름의 표기 통일. "
+            "성별/격식 일치나 번역 품질 전반, 로컬라이제이션은 다루지 마라 "
+            "(2차 검수자의 몫). "
             f"{format_constraint} 참고 지식베이스: {knowledge}\n"
         )
-        if grammar_instruction:
-            system += f"성별 일치 지침: {grammar_instruction}\n"
-        if register_instruction:
-            system += f"격식 지침: {register_instruction}\n"
         system += (
-            f"확정된 인물 성별: {json.dumps(characters, ensure_ascii=False)}\n"
-            f"확정된 관계 격식: {json.dumps(relationships, ensure_ascii=False)}\n"
             f"사전에 없어 애매한 비속어 후보: "
             f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
             + _JSON_INSTRUCTION + "\n" + _PRIMARY_SCHEMA_INSTRUCTION

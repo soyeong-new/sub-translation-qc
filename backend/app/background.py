@@ -9,19 +9,16 @@ asyncio.TimeoutError를 "던지고" 내부 태스크를 취소하지만, wait_fo
 
 import asyncio
 import logging
-from sqlalchemy import select
 from app.db import async_session
-from app.models import TargetVersion, Episode, Title, Character, Relationship
+from app.models import TargetVersion, Episode
 from app.core.pipeline import run_pipeline
 from app.core.ingest import delete_original_video
-from app.repositories import save_pipeline_result, save_chart_extraction_result
+from app.repositories import save_pipeline_result
 from app.providers.base import get_provider
-from app.providers.chart_vision_client import get_chart_vision_client
 
 logger = logging.getLogger(__name__)
 
 ANALYSIS_TIMEOUT_SECONDS = 3600
-CHART_EXTRACTION_TIMEOUT_SECONDS = 300
 
 
 async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None:
@@ -29,35 +26,6 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
         async with async_session() as session:
             tv = await session.get(TargetVersion, target_version_id)
             episode = await session.get(Episode, tv.episode_id)
-
-            # 인물/관계 로스터는 title에 이미 저장된 Character/Relationship에서
-            # 읽어온다(에피소드 간 공유) — run_pipeline이 더 이상 스스로
-            # 추론하지 않으므로(Task 5), 여기서 넘겨주지 않으면 앵커 매칭이
-            # 항상 빈 로스터를 상대로 돌게 된다.
-            character_rows = (await session.execute(
-                select(Character).where(Character.title_id == episode.title_id)
-            )).scalars().all()
-            prior_characters = [
-                {"id": c.id, "label": c.label, "confirmed_gender": c.confirmed_gender}
-                for c in character_rows
-            ]
-            label_by_character_id = {c.id: c.label for c in character_rows}
-
-            relationship_rows = (await session.execute(
-                select(Relationship).where(Relationship.title_id == episode.title_id)
-            )).scalars().all()
-            prior_relationships = [
-                {
-                    "id": r.id,
-                    "speaker_character_id": r.speaker_character_id,
-                    "addressee_character_id": r.addressee_character_id,
-                    "speaker_label": label_by_character_id.get(r.speaker_character_id),
-                    "addressee_label": label_by_character_id.get(r.addressee_character_id),
-                    "relationship_type": r.relationship_type,
-                    "confirmed_formality_level": r.confirmed_formality_level,
-                }
-                for r in relationship_rows
-            ]
 
         provider = get_provider()
         cached_segments = (
@@ -71,8 +39,6 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
                 target_version_id=target_version_id, provider=provider,
                 cached_korean_segments=cached_segments,
                 cached_video_proxy_path=episode.video_proxy_path,
-                prior_characters=prior_characters,
-                prior_relationships=prior_relationships,
                 english_srt_path=episode.english_srt_path,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
@@ -94,7 +60,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
 
         # 원본 영상은 결과가 전부 커밋된 뒤에만 지운다. run_pipeline은 원본을
         # 지우지 않고 그대로 둔다 — video_proxy_path가 DB에 영속화되기 전에
-        # 원본부터 지워버리면, 그 사이 어딘가(analyze_characters 실패, 타임아웃,
+        # 원본부터 지워버리면, 그 사이 어딘가(GPT/Claude 호출 실패, 타임아웃,
         # 프로세스 크래시 등)에서 죽었을 때 원본도 없고 프록시 경로도 저장되지
         # 않아 생성된 프록시 파일이 고아로 남고, /run-analysis 재시도도 영영
         # 실패하게 된다(필요한 원본 영상이 이미 없으므로).
@@ -130,37 +96,3 @@ async def _mark_failed(target_version_id: str, message: str) -> None:
         logger.exception(
             "실패 상태 기록 중 추가 오류 (target_version_id=%s)", target_version_id,
         )
-
-
-async def extract_chart_and_save(title_id: str, image_path: str) -> None:
-    try:
-        vision_client = get_chart_vision_client()
-        result = await asyncio.wait_for(
-            vision_client.extract_chart(image_path),
-            timeout=CHART_EXTRACTION_TIMEOUT_SECONDS,
-        )
-        async with async_session() as session:
-            await save_chart_extraction_result(session, title_id, result)
-            title = await session.get(Title, title_id)
-            title.chart_extraction_status = "review_needed"
-            title.chart_extraction_error = None
-            await session.commit()
-    except asyncio.TimeoutError:
-        logger.warning("extract_chart_and_save 타임아웃 (title_id=%s)", title_id)
-        await _mark_chart_failed(title_id, "추출 시간 초과 (5분)")
-    except Exception as exc:
-        logger.exception("extract_chart_and_save 실패 (title_id=%s)", title_id)
-        await _mark_chart_failed(title_id, str(exc))
-
-
-async def _mark_chart_failed(title_id: str, message: str) -> None:
-    try:
-        async with async_session() as session:
-            title = await session.get(Title, title_id)
-            if title is not None:
-                title.chart_extraction_status = "failed"
-                title.chart_extraction_error = message
-                await session.commit()
-    except Exception:
-        logger.exception(
-            "인물관계도 추출 실패 상태 기록 중 추가 오류 (title_id=%s)", title_id)

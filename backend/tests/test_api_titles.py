@@ -101,6 +101,26 @@ async def test_create_episode_rejects_english_srt_path_outside_srt_en_dir(monkey
 
 
 @pytest.mark.asyncio
+async def test_list_titles_returns_created_titles():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/titles", json={"name": "T1", "type": "movie"})
+        await client.post("/titles", json={"name": "T2", "type": "series"})
+        r = await client.get("/titles")
+    assert r.status_code == 200
+    names = {t["name"] for t in r.json()}
+    assert names == {"T1", "T2"}
+
+
+@pytest.mark.asyncio
+async def test_get_title_returns_404_for_missing_title():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/titles/does-not-exist")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_create_episode_english_srt_path_defaults_to_none():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

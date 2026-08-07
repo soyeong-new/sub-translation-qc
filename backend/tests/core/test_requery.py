@@ -80,32 +80,3 @@ async def test_requery_returns_current_text_unchanged_when_provider_returns_no_r
                                     knowledge="", profile={})
     assert result == "hola corregido"
     provider.correct_primary.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_requery_finding_passes_resolved_character_gender_to_claude(monkeypatch):
-    from unittest.mock import AsyncMock
-    from app.models import FindingRow, Segment, Character
-    from app.core.requery import requery_finding
-
-    finding = FindingRow(id="f1", target_version_id="tv1", segment_id="s1",
-                         category="gender", description="d", original_text="a",
-                         suggested_text="b", confidence=1.0, model="claude", status="pending")
-    segment = Segment(id="s1", target_version_id="tv1", index=0, start=0.0, end=1.0,
-                      korean_text="안녕", target_text="hola",
-                      resolved_character_id="c1")
-    resolved_character = {"id": "c1", "label": "민지", "confirmed_gender": "female"}
-
-    provider = type("P", (), {})()
-    provider.correct_primary = AsyncMock(
-        return_value=[{"segment_id": "s1", "corrected_text": "hola corregido"}])
-
-    result = await requery_finding(
-        finding, segment, "다시 확인해줘", provider, knowledge="", profile={},
-        resolved_character=resolved_character, resolved_relationship=None,
-    )
-
-    assert result == "hola corregido"
-    call_kwargs = provider.correct_primary.call_args
-    characters_arg = call_kwargs.args[2] if len(call_kwargs.args) > 2 else call_kwargs.kwargs.get("characters")
-    assert characters_arg == [resolved_character]

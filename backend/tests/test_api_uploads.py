@@ -57,24 +57,3 @@ async def test_upload_srt_en_rejects_disallowed_extension(tmp_path, monkeypatch)
         files = {"file": ("sub.exe", b"nope", "application/octet-stream")}
         r = await client.post("/uploads/srt-en", files=files)
         assert r.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_upload_chart_image_saves_file_and_returns_path(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        files = {"file": ("chart.png", b"fake png bytes", "image/png")}
-        r = await client.post("/uploads/chart-image", files=files)
-        assert r.status_code == 200
-        assert r.json()["path"].endswith("_chart.png")
-
-
-@pytest.mark.asyncio
-async def test_upload_chart_image_rejects_disallowed_extension(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        files = {"file": ("chart.pdf", b"nope", "application/pdf")}
-        r = await client.post("/uploads/chart-image", files=files)
-        assert r.status_code == 400

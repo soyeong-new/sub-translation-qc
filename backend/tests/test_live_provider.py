@@ -9,9 +9,6 @@ def _make_provider() -> LiveModelProvider:
         gpt_api_key="o", gpt_model="om",
     )
     provider._gpt.transcribe = AsyncMock(return_value=[{"start": 0.0, "end": 1.0, "text": "안녕"}])
-    provider._gpt.analyze_characters = AsyncMock(
-        return_value={"characters": [], "relationships": []}
-    )
     provider._claude.correct_primary = AsyncMock(
         return_value=[{"segment_id": "p1", "category": "gender",
                         "corrected_text": "está feliz", "description": "클로드 교정"}]
@@ -32,16 +29,9 @@ async def test_transcribe_delegates_to_gpt():
 
 
 @pytest.mark.asyncio
-async def test_analyze_characters_delegates_to_gpt():
-    provider = _make_provider()
-    result = await provider.analyze_characters([], {})
-    assert result == {"characters": [], "relationships": []}
-
-
-@pytest.mark.asyncio
 async def test_correct_primary_delegates_to_claude():
     provider = _make_provider()
-    result = await provider.correct_primary([], {}, [], [], [], "", "")
+    result = await provider.correct_primary([], {}, [], "", "")
     assert result[0]["corrected_text"] == "está feliz"
     provider._claude.correct_primary.assert_awaited_once()
 

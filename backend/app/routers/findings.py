@@ -1,12 +1,12 @@
 """findings/segments 조회, 성별·격식 해결, 검수 액션, 재질의, STT 교정 엔드포인트."""
 
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Literal
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
-from app.models import TargetVersion, FindingRow, Character, Relationship, Segment, SttCorrection
+from app.models import TargetVersion, FindingRow, Segment, SttCorrection
 from app.core.requery import requery_finding, RequeryNotSupportedError
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
@@ -17,13 +17,11 @@ router = APIRouter()
 
 
 class ResolveGenderIn(BaseModel):
-    character_id: Optional[str] = None
-    gender: Optional[Literal["male", "female"]] = None
+    gender: Literal["male", "female"]
 
 
 class ResolveFormalityIn(BaseModel):
-    relationship_id: Optional[str] = None
-    formality_level: Optional[Literal["formal", "informal"]] = None
+    formality_level: Literal["formal", "informal"]
 
 
 class ReviewActionIn(BaseModel):
@@ -86,12 +84,8 @@ async def list_flagged_segments(target_version_id: str):
              "korean_text": s.korean_text, "target_text": s.target_text,
              "gender_check_needed": s.gender_check_needed,
              "formality_check_needed": s.formality_check_needed,
-             "resolved_character_id": s.resolved_character_id,
              "resolved_gender_raw": s.resolved_gender_raw,
-             "resolved_relationship_id": s.resolved_relationship_id,
              "resolved_formality_raw": s.resolved_formality_raw,
-             "gender_anchor_candidates": s.gender_anchor_candidates or [],
-             "formality_anchor_candidates": s.formality_anchor_candidates or [],
              "english_pronoun_hint": s.english_pronoun_hint}
             for s in rows
         ]
@@ -99,51 +93,24 @@ async def list_flagged_segments(target_version_id: str):
 
 @router.post("/segments/{segment_id}/resolve-gender")
 async def resolve_gender(segment_id: str, payload: ResolveGenderIn):
-    if bool(payload.character_id) == bool(payload.gender):
-        raise HTTPException(400, "character_id와 gender 중 정확히 하나만 지정해야 합니다.")
     async with async_session() as session:
         seg = await session.get(Segment, segment_id)
         if seg is None:
             raise HTTPException(404, "segment not found")
-        if payload.character_id:
-            # 검수 화면의 앵커 후보 버튼은 분석 시점 스냅샷이므로, 그 사이 인물이
-            # 지워졌으면 여기서 존재를 먼저 확인해 깔끔한 400으로 막아야 한다 —
-            # 그냥 저장하면 commit 시점에 처리되지 않은 IntegrityError(500)가 난다.
-            char = await session.get(Character, payload.character_id)
-            if char is None:
-                raise HTTPException(400, "존재하지 않는 인물입니다.")
-            seg.resolved_character_id = payload.character_id
-            seg.resolved_gender_raw = None
-        else:
-            seg.resolved_gender_raw = payload.gender
-            seg.resolved_character_id = None
+        seg.resolved_gender_raw = payload.gender
         await session.commit()
-        return {"id": seg.id, "resolved_character_id": seg.resolved_character_id,
-                "resolved_gender_raw": seg.resolved_gender_raw}
+        return {"id": seg.id, "resolved_gender_raw": seg.resolved_gender_raw}
 
 
 @router.post("/segments/{segment_id}/resolve-formality")
 async def resolve_formality(segment_id: str, payload: ResolveFormalityIn):
-    if bool(payload.relationship_id) == bool(payload.formality_level):
-        raise HTTPException(400, "relationship_id와 formality_level 중 정확히 하나만 지정해야 합니다.")
     async with async_session() as session:
         seg = await session.get(Segment, segment_id)
         if seg is None:
             raise HTTPException(404, "segment not found")
-        if payload.relationship_id:
-            # resolve_gender와 동일한 이유로, 저장 전에 관계가 실제로 존재하는지
-            # 먼저 확인한다.
-            rel = await session.get(Relationship, payload.relationship_id)
-            if rel is None:
-                raise HTTPException(400, "존재하지 않는 관계입니다.")
-            seg.resolved_relationship_id = payload.relationship_id
-            seg.resolved_formality_raw = None
-        else:
-            seg.resolved_formality_raw = payload.formality_level
-            seg.resolved_relationship_id = None
+        seg.resolved_formality_raw = payload.formality_level
         await session.commit()
-        return {"id": seg.id, "resolved_relationship_id": seg.resolved_relationship_id,
-                "resolved_formality_raw": seg.resolved_formality_raw}
+        return {"id": seg.id, "resolved_formality_raw": seg.resolved_formality_raw}
 
 
 @router.post("/findings/{finding_id}/review-action")
@@ -178,23 +145,9 @@ async def requery(finding_id: str, payload: RequeryIn):
         provider = get_provider()
         knowledge = load_knowledge()
 
-        resolved_character = None
-        if segment.resolved_character_id:
-            char = await session.get(Character, segment.resolved_character_id)
-            if char is not None:
-                resolved_character = {"id": char.id, "label": char.label,
-                                      "confirmed_gender": char.confirmed_gender}
-        resolved_relationship = None
-        if segment.resolved_relationship_id:
-            rel = await session.get(Relationship, segment.resolved_relationship_id)
-            if rel is not None:
-                resolved_relationship = {
-                    "id": rel.id, "confirmed_formality_level": rel.confirmed_formality_level}
-
         try:
             new_suggested_text = await requery_finding(
-                finding, segment, payload.instruction, provider, knowledge, profile,
-                resolved_character=resolved_character, resolved_relationship=resolved_relationship)
+                finding, segment, payload.instruction, provider, knowledge, profile)
         except RequeryNotSupportedError as exc:
             raise HTTPException(400, str(exc))
 

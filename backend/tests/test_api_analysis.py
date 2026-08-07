@@ -144,12 +144,11 @@ async def test_run_analysis_can_be_retried_without_integrity_error(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatch):
-    """Task 5(290b60d)로 run_pipeline이 더 이상 analyze_characters를 호출하지
-    않으므로(인물/관계 로스터는 이제 title의 기존 Character/Relationship
-    테이블에서 읽어온다 — build_registry 방식 폐지), 이 테스트가 검증하려는
-    "파이프라인 어느 단계가 실패해도 그 warning이 GET으로 노출되는가"를 계속
-    확인하려면 실제로 여전히 호출되는 단계(check_grammar_necessity, 문법
-    필요성 판단)를 실패시켜야 한다."""
+    """run_pipeline은 analyze_characters를 호출하지 않는다(인물/관계 로스터
+    자체가 폐지됨). 이 테스트가 검증하려는 "파이프라인 어느 단계가 실패해도
+    그 warning이 GET으로 노출되는가"를 계속 확인하려면 실제로 여전히
+    호출되는 단계(check_grammar_necessity, 문법 필요성 판단)를 실패시켜야
+    한다."""
     import asyncio
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")

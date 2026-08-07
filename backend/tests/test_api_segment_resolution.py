@@ -2,7 +2,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db import engine, async_session
-from app.models import Base, Title, Episode, TargetVersion, Segment, Character, Relationship
+from app.models import Base, Title, Episode, TargetVersion, Segment
 
 
 @pytest.fixture(autouse=True)
@@ -35,14 +35,8 @@ async def _make_segment(**overrides) -> tuple[str, str]:
 
 @pytest.mark.asyncio
 async def test_list_flagged_segments_returns_only_flagged_ones():
-    tv_id, flagged_id = await _make_segment(
-        gender_check_needed=True,
-        gender_anchor_candidates=[{"id": "char-1", "label": "민지"}],
-    )
+    tv_id, flagged_id = await _make_segment(gender_check_needed=True)
     async with async_session() as session:
-        title = (await session.execute(
-            __import__("sqlalchemy").select(Title)
-        )).scalars().first()
         unflagged = Segment(target_version_id=tv_id, index=1, start=2.0, end=3.0,
                             korean_text="뭐해", target_text="que haces")
         session.add(unflagged)
@@ -56,10 +50,6 @@ async def test_list_flagged_segments_returns_only_flagged_ones():
     assert len(body) == 1
     assert body[0]["id"] == flagged_id
     assert body[0]["gender_check_needed"] is True
-    # 앵커 매칭 후보가 있는 세그먼트는 그대로 내려주고, 없는(None) 세그먼트는
-    # 프런트가 다루기 쉽도록 빈 리스트로 정규화한다.
-    assert body[0]["gender_anchor_candidates"] == [{"id": "char-1", "label": "민지"}]
-    assert body[0]["formality_anchor_candidates"] == []
 
 
 @pytest.mark.asyncio
@@ -88,31 +78,7 @@ async def test_list_flagged_segments_english_pronoun_hint_defaults_to_none():
 
 
 @pytest.mark.asyncio
-async def test_resolve_gender_with_character_id_links_segment():
-    tv_id, seg_id = await _make_segment(gender_check_needed=True)
-    async with async_session() as session:
-        episode_row = (await session.execute(
-            __import__("sqlalchemy").select(Episode)
-        )).scalars().first()
-        char = Character(title_id=episode_row.title_id, label="민지", confirmed_gender="female")
-        session.add(char)
-        await session.commit()
-        char_id = char.id
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(f"/segments/{seg_id}/resolve-gender", json={"character_id": char_id})
-    assert r.status_code == 200
-    assert r.json()["resolved_character_id"] == char_id
-
-    async with async_session() as session:
-        seg = await session.get(Segment, seg_id)
-        assert seg.resolved_character_id == char_id
-        assert seg.resolved_gender_raw is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_gender_with_raw_value_does_not_link_character():
+async def test_resolve_gender_with_raw_value():
     tv_id, seg_id = await _make_segment(gender_check_needed=True)
 
     transport = ASGITransport(app=app)
@@ -124,76 +90,6 @@ async def test_resolve_gender_with_raw_value_does_not_link_character():
     async with async_session() as session:
         seg = await session.get(Segment, seg_id)
         assert seg.resolved_gender_raw == "female"
-        assert seg.resolved_character_id is None
-
-
-@pytest.mark.asyncio
-async def test_resolve_gender_rejects_both_or_neither_field():
-    tv_id, seg_id = await _make_segment(gender_check_needed=True)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(f"/segments/{seg_id}/resolve-gender", json={})
-        assert r.status_code == 400
-        r = await client.post(f"/segments/{seg_id}/resolve-gender",
-                              json={"character_id": "x", "gender": "female"})
-        assert r.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_resolve_formality_with_relationship_id_links_segment():
-    tv_id, seg_id = await _make_segment(formality_check_needed=True)
-    async with async_session() as session:
-        episode_row = (await session.execute(
-            __import__("sqlalchemy").select(Episode)
-        )).scalars().first()
-        a = Character(title_id=episode_row.title_id, label="민지")
-        b = Character(title_id=episode_row.title_id, label="서준")
-        session.add_all([a, b])
-        await session.flush()
-        rel = Relationship(title_id=episode_row.title_id, speaker_character_id=a.id,
-                           addressee_character_id=b.id, confirmed_formality_level="informal")
-        session.add(rel)
-        await session.commit()
-        rel_id = rel.id
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(f"/segments/{seg_id}/resolve-formality",
-                              json={"relationship_id": rel_id})
-    assert r.status_code == 200
-    assert r.json()["resolved_relationship_id"] == rel_id
-
-
-@pytest.mark.asyncio
-async def test_resolve_gender_with_nonexistent_character_id_returns_400():
-    """회귀(Finding 3): 검수 UI의 앵커 후보 버튼은 분석 시점 스냅샷이라, 그
-    사이 인물이 지워졌으면 존재하지 않는 character_id가 그대로 들어올 수
-    있다. 저장 전에 존재를 확인해 400으로 막아야지, commit 시점
-    IntegrityError(500)가 나면 안 된다."""
-    tv_id, seg_id = await _make_segment(gender_check_needed=True)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(f"/segments/{seg_id}/resolve-gender",
-                              json={"character_id": "does-not-exist"})
-    assert r.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_resolve_formality_with_nonexistent_relationship_id_returns_400():
-    tv_id, seg_id = await _make_segment(formality_check_needed=True)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(f"/segments/{seg_id}/resolve-formality",
-                              json={"relationship_id": "does-not-exist"})
-    assert r.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_list_flagged_segments_returns_404_for_nonexistent_target_version():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.get("/target-versions/does-not-exist/flagged-segments")
-    assert r.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -205,3 +101,15 @@ async def test_resolve_formality_with_raw_value():
                               json={"formality_level": "formal"})
     assert r.status_code == 200
     assert r.json()["resolved_formality_raw"] == "formal"
+
+    async with async_session() as session:
+        seg = await session.get(Segment, seg_id)
+        assert seg.resolved_formality_raw == "formal"
+
+
+@pytest.mark.asyncio
+async def test_list_flagged_segments_returns_404_for_nonexistent_target_version():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/target-versions/does-not-exist/flagged-segments")
+    assert r.status_code == 404

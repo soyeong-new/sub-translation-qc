@@ -104,33 +104,3 @@ class GptClient:
         return [{"start": seg.start, "end": seg.end, "text": seg.text}
                 for seg in response.segments]
 
-    async def analyze_characters(self, pairs: List[dict], profile: dict) -> dict:
-        system = (
-            "다음은 정렬된 자막 세그먼트 목록이다. 등장인물을 식별하고, "
-            f"활성화된 체크 항목({profile.get('checks_enabled', {})})에 해당하는 "
-            "세그먼트 id를 태깅하라. "
-            '반드시 {"characters": [...], "relationships": [...]} 형태의 JSON 객체만 '
-            "출력하라. characters 각 항목: "
-            '{"label": 문자열, "gendered_segment_ids": [문자열]}. relationships 각 항목: '
-            '{"speaker_label": 문자열, "addressee_label": 문자열, '
-            '"formality_segment_ids": [문자열]}.'
-        )
-        response = await self._sdk_client.chat.completions.create(
-            model=self._model,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps(pairs, ensure_ascii=False)},
-            ],
-        )
-        if not response.choices:
-            raise ValueError("GPT 인물식별 응답이 비어 있음")
-        text = response.choices[0].message.content
-        try:
-            parsed = json.loads(text)
-            if "characters" not in parsed or "relationships" not in parsed:
-                raise TypeError("characters/relationships 키가 없음")
-            return parsed
-        except (json.JSONDecodeError, TypeError) as exc:
-            preview = text[:200] if text else "<empty>"
-            raise ValueError(f"GPT 인물식별 응답이 기대한 형태가 아님: {preview}") from exc

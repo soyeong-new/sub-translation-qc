@@ -17,16 +17,12 @@ class LiveModelProvider(ModelProvider):
     async def transcribe(self, audio_path: str) -> List[dict]:
         return await self._gpt.transcribe(audio_path)
 
-    async def analyze_characters(self, pairs: List[dict], profile: dict) -> dict:
-        return await self._gpt.analyze_characters(pairs, profile)
-
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               characters: List[dict], relationships: List[dict],
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "") -> List[dict]:
         return await self._claude.correct_primary(
-            pairs, profile, characters, relationships, pending_sensitive_hits,
+            pairs, profile, pending_sensitive_hits,
             knowledge, format_constraint, extra_instruction,
         )
 

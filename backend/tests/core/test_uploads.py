@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 from app.core.uploads import (
-    build_upload_destination, save_upload, UnsupportedFileType, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS,
+    build_upload_destination, save_upload, UnsupportedFileType, VIDEO_EXTENSIONS,
 )
 
 
@@ -37,15 +37,3 @@ async def test_save_upload_streams_all_chunks_to_disk(tmp_path, monkeypatch):
     path = await save_upload("srt", "test.srt", fake_read, {".srt"})
     assert Path(path).read_bytes() == b"hello world"
     assert Path(path).parent == tmp_path / "srt"
-
-
-def test_build_upload_destination_accepts_chart_image_extensions(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    dest = build_upload_destination("chart_image", "chart.png", IMAGE_EXTENSIONS)
-    assert dest.parent == tmp_path / "chart_image"
-
-
-def test_build_upload_destination_rejects_non_image_extension_for_chart(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    with pytest.raises(UnsupportedFileType):
-        build_upload_destination("chart_image", "chart.pdf", IMAGE_EXTENSIONS)
