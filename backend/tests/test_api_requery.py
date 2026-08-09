@@ -34,12 +34,14 @@ async def _make_finding(model: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_requery_claude_finding_updates_suggested_text_and_resets_to_pending(monkeypatch):
+async def test_requery_finding_updates_suggested_text_and_resets_to_pending(monkeypatch):
+    """finding.model이 claude든 gpt든 claude+gpt든, 재질문은 GPT
+    (verify_and_refine) 단일 모델만 쓴다."""
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     finding_id = await _make_finding(model="claude")
 
-    with patch("app.providers.mock.MockProvider.correct_primary",
+    with patch("app.providers.mock.MockProvider.verify_and_refine",
                new=AsyncMock(return_value=[{"segment_id": "seg1", "category": "mistranslation",
                                              "corrected_text": "hola más formal",
                                              "description": "재질문 반영"}])):

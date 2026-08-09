@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   getFindings,
   submitReviewAction,
+  requeryFinding,
   exportTargetVersion,
   listSegments,
   correctStt,
@@ -12,24 +13,31 @@ import {
   resolveGender,
   resolveFormality,
 } from "../api.js";
+
+// 규칙 기반(사전필터) finding만 재질문 대상이 아니다 — LLM/안전망은 전부 가능
+// (backend/app/core/requery.py의 _LLM_REQUERYABLE_MODELS + "안전망"과 대칭).
+const NOT_REQUERYABLE_MODELS = ["사전필터"];
+function isRequeryable(finding) {
+  return Boolean(finding.model) && !NOT_REQUERYABLE_MODELS.includes(finding.model);
+}
 import FlaggedSegmentStepper, { isSegmentResolved } from "./FlaggedSegmentStepper.jsx";
 
-// 카테고리 라벨/색상: Task 21 Step 0에서 확정한 6종 팔레트를 그대로 재사용한다
-// (frontend/tailwind.config.js의 theme.extend.colors.finding.*). 새 색상을 만들지 않는다.
+// 카테고리 라벨/색상: frontend/tailwind.config.js의 theme.extend.colors.finding.*
+// 6종 팔레트를 그대로 재사용한다. 새 색상을 만들지 않는다.
 const CATEGORY_LABELS = {
-  gender: "성별",
-  register: "격식체",
-  translation: "번역",
-  localization: "로컬라이제이션",
+  mistranslation: "오역",
+  nuance_tone: "뉘앙스·어조",
+  unnatural_style: "직역투",
+  locale_convention: "로컬라이제이션",
   sensitivity: "민감어",
   formatting: "포맷팅",
 };
 
 const CATEGORY_BADGE_CLASS = {
-  gender: "bg-finding-gender-bg text-finding-gender-text border-finding-gender-border",
-  register: "bg-finding-register-bg text-finding-register-text border-finding-register-border",
-  translation: "bg-finding-translation-bg text-finding-translation-text border-finding-translation-border",
-  localization: "bg-finding-localization-bg text-finding-localization-text border-finding-localization-border",
+  mistranslation: "bg-finding-mistranslation-bg text-finding-mistranslation-text border-finding-mistranslation-border",
+  nuance_tone: "bg-finding-nuance-tone-bg text-finding-nuance-tone-text border-finding-nuance-tone-border",
+  unnatural_style: "bg-finding-unnatural-style-bg text-finding-unnatural-style-text border-finding-unnatural-style-border",
+  locale_convention: "bg-finding-locale-convention-bg text-finding-locale-convention-text border-finding-locale-convention-border",
   sensitivity: "bg-finding-sensitivity-bg text-finding-sensitivity-text border-finding-sensitivity-border",
   formatting: "bg-finding-formatting-bg text-finding-formatting-text border-finding-formatting-border",
 };
@@ -102,7 +110,10 @@ function Field({ id, label, children }) {
   );
 }
 
-function FindingCard({ finding, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit }) {
+function FindingCard({
+  finding, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
+  requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
+}) {
   const busy = pending != null;
   const canAct = Boolean(reviewerName.trim()) && !busy;
   const categoryClass = CATEGORY_BADGE_CLASS[finding.category] || FALLBACK_BADGE_CLASS;
@@ -159,6 +170,11 @@ function FindingCard({ finding, reviewerName, pending, error, editing, editText,
         <button disabled={!canAct} onClick={onStartEdit} className={modifyBtnClass}>
           수정
         </button>
+        {isRequeryable(finding) && (
+          <button disabled={!canAct} onClick={onStartRequery} className={ghostBtnClass}>
+            다시 질문
+          </button>
+        )}
         {error && (
           <span role="status" aria-live="polite" className="text-xs text-destructive">
             {error}
@@ -188,6 +204,35 @@ function FindingCard({ finding, reviewerName, pending, error, editing, editText,
               저장
             </button>
             <button disabled={busy} onClick={onCancelEdit} className={ghostBtnClass}>
+              취소
+            </button>
+          </div>
+        </div>
+      )}
+
+      {requerying && (
+        <div className="mt-3 space-y-2 rounded-md border border-border bg-background p-3">
+          <Field id={`requery-${finding.id}`} label="AI에게 다시 지시할 내용">
+            <textarea
+              id={`requery-${finding.id}`}
+              value={requeryText}
+              onChange={(e) => onRequeryTextChange(e.target.value)}
+              rows={2}
+              disabled={requeryPending}
+              placeholder="예: 더 자연스러운 표현으로, 직역투를 줄여서"
+              className={inputClass}
+            />
+          </Field>
+          <div className="flex gap-2">
+            <button
+              disabled={!canAct || !requeryText.trim() || requeryPending}
+              onClick={onSubmitRequery}
+              className={`${primaryBtnClass} px-3 py-1.5`}
+            >
+              {requeryPending && <Spinner />}
+              재질문
+            </button>
+            <button disabled={requeryPending} onClick={onCancelRequery} className={ghostBtnClass}>
               취소
             </button>
           </div>
@@ -321,6 +366,9 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [findingErrors, setFindingErrors] = useState({});
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
+  const [requeryingId, setRequeryingId] = useState(null);
+  const [requeryText, setRequeryText] = useState("");
+  const [requeryPendingId, setRequeryPendingId] = useState(null);
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
   const [exportResult, setExportResult] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
@@ -441,6 +489,22 @@ export default function ReviewView({ targetVersionId, onBack }) {
         ? finding.final_text
         : finding.suggested_text
     );
+  }
+
+  async function handleRequery(findingId) {
+    setRequeryPendingId(findingId);
+    try {
+      await requeryFinding(findingId, requeryText, reviewerName);
+      setFindings(await getFindings(targetVersionId));
+      setRequeryingId((cur) => (cur === findingId ? null : cur));
+    } catch (err) {
+      setFindingErrors((prev) => ({
+        ...prev,
+        [findingId]: err.message ?? "재질문 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setRequeryPendingId(null);
+    }
   }
 
   function startSttEdit(segment) {
@@ -602,6 +666,16 @@ export default function ReviewView({ targetVersionId, onBack }) {
                       onStartEdit={() => startEdit(f)}
                       onCancelEdit={() => setEditingId(null)}
                       onSaveEdit={() => handleAction(f.id, "modified", editText)}
+                      requerying={requeryingId === f.id}
+                      requeryText={requeryText}
+                      requeryPending={requeryPendingId === f.id}
+                      onRequeryTextChange={setRequeryText}
+                      onStartRequery={() => {
+                        setRequeryingId(f.id);
+                        setRequeryText("");
+                      }}
+                      onCancelRequery={() => setRequeryingId(null)}
+                      onSubmitRequery={() => handleRequery(f.id)}
                     />
                   ))}
                 </ul>

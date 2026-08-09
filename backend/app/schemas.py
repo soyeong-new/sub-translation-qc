@@ -20,22 +20,6 @@ class AlignedPair(BaseModel):
     id: str
     korean: Optional[SegmentText] = None
     target: Optional[SegmentText] = None
-    alignment_confidence: float = 1.0
-
-
-class Character(BaseModel):
-    id: str
-    title_id: str
-    label: str
-    confirmed_gender: Optional[Literal["male", "female"]] = None
-
-
-class Relationship(BaseModel):
-    id: str
-    title_id: str
-    speaker_character_id: str
-    addressee_character_id: str
-    confirmed_formality_level: Optional[Literal["formal", "informal"]] = None
 
 
 class Finding(BaseModel):

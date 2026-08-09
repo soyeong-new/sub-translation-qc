@@ -30,6 +30,21 @@ _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
     "korean_text (문자열, 자연스러운 한국어 역번역)."
 )
 
+_EQUIVALENCE_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "equivalent (불리언, text_a와 text_b가 같은 문제를 같은 방식으로 고친 "
+    "것이면 true, 단어 선택이 달라도 무방하다 — 실질적으로 다른 내용·뉘앙스·"
+    "해결책이면 false)."
+)
+
+
+def _language_label(profile: dict) -> str:
+    language = profile.get("language") or "대상언어"
+    variant = profile.get("variant")
+    return f"{language}({variant})" if variant else language
+
 
 class GptClient:
     def __init__(self, api_key: str, model: str, transcribe_model: str = "whisper-1"):
@@ -37,7 +52,7 @@ class GptClient:
         self._transcribe_model = transcribe_model
         self._sdk_client = AsyncOpenAI(api_key=api_key)
 
-    async def _call(self, system: str, user: str) -> List[dict]:
+    async def _call(self, system: str, user: str, key: str = "findings", label: str = "") -> List[dict]:
         response = await self._sdk_client.chat.completions.create(
             model=self._model,
             response_format={"type": "json_object"},
@@ -51,13 +66,14 @@ class GptClient:
         text = response.choices[0].message.content
         try:
             parsed = json.loads(text)
-            findings = parsed["findings"]
-            if not isinstance(findings, list):
-                raise TypeError("findings가 리스트가 아님")
-            return findings
+            items = parsed[key]
+            if not isinstance(items, list):
+                raise TypeError(f"{key}가 리스트가 아님")
+            return items
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             preview = text[:200] if text else "<empty>"
-            raise ValueError(f"GPT 응답이 기대한 JSON 형태가 아님: {preview}") from exc
+            prefix = f"GPT {label} 응답" if label else "GPT 응답"
+            raise ValueError(f"{prefix}이 기대한 JSON 형태가 아님: {preview}") from exc
 
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
@@ -68,9 +84,7 @@ class GptClient:
         — 이전 교정 여부를 알려주면 앵커링 편향으로 독립적 재판단보다 그냥
         승인하는 쪽으로 기울어 정확도가 떨어진다(파이프라인이 두 모델의
         일치/불일치를 이후 단계에서 병합해 신뢰도 신호로 쓴다)."""
-        language = profile.get("language") or "대상언어"
-        variant = profile.get("variant")
-        language_label = f"{language}({variant})" if variant else language
+        language_label = _language_label(profile)
         naturalness_instruction = (profile.get("naturalness_check") or {}).get("llm_instruction", "")
 
         system = (
@@ -97,9 +111,7 @@ class GptClient:
         return await self._call(system, user)
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
-        language = profile.get("language") or "대상언어"
-        variant = profile.get("variant")
-        language_label = f"{language}({variant})" if variant else language
+        language_label = _language_label(profile)
         system = (
             f"다음은 {language_label} 텍스트 목록이다. 각 항목을 자연스러운 "
             "한국어로 역번역하라 — 스페인어를 모르는 검수자가 원래 의미를 "
@@ -107,26 +119,18 @@ class GptClient:
             "전달하는 것을 우선하라.\n" + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        response = await self._sdk_client.chat.completions.create(
-            model=self._model,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+        return await self._call(system, user, key="results", label="역번역")
+
+    async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 한국어 원문(korean_text)과, 그걸 {language_label}로 교정한 "
+            "두 후보 문구(text_a, text_b) 목록이다. 각 항목마다 text_a와 "
+            "text_b가 같은 문제를 같은 방식으로 고친 것인지 판단하라.\n"
+            + _EQUIVALENCE_SCHEMA_INSTRUCTION
         )
-        if not response.choices:
-            raise ValueError("GPT 응답이 비어 있음")
-        text = response.choices[0].message.content
-        try:
-            parsed = json.loads(text)
-            results = parsed["results"]
-            if not isinstance(results, list):
-                raise TypeError("results가 리스트가 아님")
-            return results
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            preview = text[:200] if text else "<empty>"
-            raise ValueError(f"GPT 역번역 응답이 기대한 JSON 형태가 아님: {preview}") from exc
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="동등성 확인")
 
     async def transcribe(self, audio_path: str) -> List[dict]:
         """audio_path 하나의 STT 결과를 세그먼트 리스트로 반환한다. 호출자

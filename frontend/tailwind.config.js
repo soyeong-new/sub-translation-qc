@@ -46,25 +46,26 @@ export default {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
-        // Finding 카테고리별 배지 색상 (gender/register/translation/localization/sensitivity/formatting)
-        // — 각 카테고리는 서로 다른 hue를 사용해 배지만 보고도 구분 가능하도록 설계.
+        // Finding 카테고리별 배지 색상 (mistranslation/nuance-tone/unnatural-style/
+        // locale-convention/sensitivity/formatting) — 각 카테고리는 서로 다른
+        // hue를 사용해 배지만 보고도 구분 가능하도록 설계.
         finding: {
-          gender: {
+          "nuance-tone": {
             bg: "#ede9fe",
             text: "#6d28d9",
             border: "#ddd6fe",
           },
-          register: {
+          "unnatural-style": {
             bg: "#dbeafe",
             text: "#1d4ed8",
             border: "#bfdbfe",
           },
-          translation: {
+          mistranslation: {
             bg: "#fef3c7",
             text: "#92400e",
             border: "#fde68a",
           },
-          localization: {
+          "locale-convention": {
             bg: "#ccfbf1",
             text: "#0f766e",
             border: "#99f6e4",

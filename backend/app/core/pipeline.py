@@ -138,28 +138,85 @@ def _dedupe_by_segment_id(corrections: list) -> dict:
 def _reconcile_dual_verification(
     claude_corrections: list, gpt_corrections: list,
 ) -> tuple[list, list, list]:
-    """Claude/GPT가 각각 독립적으로 낸 교정 제안을 segment_id 기준으로 비교한다
-    — 문구가 아니라 "같은 줄을 둘 다 지적했는가"만 본다. 합의는 그 줄에
-    문제가 있다는 두 독립 판단의 일치이지, 정확한 문구까지 일치해야 하는 건
-    아니다(스페인어를 모르는 검수자는 문구 차이를 판단할 수 없으므로, 문구는
-    고정 규칙으로 하나를 고른다). 반환값은 (agreed, claude_only, gpt_only)."""
+    """Claude/GPT가 각각 독립적으로 낸 교정 제안을 segment_id 기준으로 비교한다.
+    같은 줄을 둘 다 지적한 경우는 아직 "합의 후보"일 뿐이다 — 문구가 다를 수
+    있어(두 LLM이 토씨까지 똑같이 쓸 확률은 낮음), segment_id만으로 합의를
+    확정하면 안 된다. 실제 합의 여부는 _check_equivalence가 두 문구의 의미가
+    같은지 교차 확인한 뒤에 정해진다. 반환값은
+    (candidate_pairs, claude_only, gpt_only) — candidate_pairs는
+    (claude_correction, gpt_correction) 튜플 리스트."""
     claude_by_id = _dedupe_by_segment_id(claude_corrections)
     gpt_by_id = _dedupe_by_segment_id(gpt_corrections)
-    agreed_ids = claude_by_id.keys() & gpt_by_id.keys()
+    candidate_ids = claude_by_id.keys() & gpt_by_id.keys()
     claude_only_ids = claude_by_id.keys() - gpt_by_id.keys()
     gpt_only_ids = gpt_by_id.keys() - claude_by_id.keys()
 
-    # 합의된 줄은 GPT 쪽 문구를 최종으로 쓴다(고정 규칙) — 둘 다 이미
-    # 독립적으로 검증한 후보라 어느 쪽을 써도 되므로, 임의로 하나를 정해
-    # "누구 의견이 메인이냐"는 질문 자체가 매번 새로 생기지 않게 한다.
-    agreed = [gpt_by_id[sid] for sid in agreed_ids]
+    candidate_pairs = [(claude_by_id[sid], gpt_by_id[sid]) for sid in candidate_ids]
     claude_only = [claude_by_id[sid] for sid in claude_only_ids]
     gpt_only = [gpt_by_id[sid] for sid in gpt_only_ids]
-    return agreed, claude_only, gpt_only
+    return candidate_pairs, claude_only, gpt_only
 
 
 async def _empty_list() -> list:
     return []
+
+
+async def _safe_call(coro, label: str, note: str, target_version_id: str, warnings: list) -> list:
+    """실패해도 파이프라인 전체를 죽이지 않고 빈 결과로 대체한다 — 호출부가
+    warnings 리스트에 사유를 남겨 검수자에게 알린다."""
+    try:
+        return await coro
+    except Exception as exc:
+        logger.exception(
+            "%s 실패, %s (target_version_id=%s)", label, note, target_version_id)
+        warnings.append({"stage": label, "message": str(exc)})
+        return []
+
+
+async def _check_equivalence(
+    candidate_pairs: list, korean_text_by_id: dict,
+    provider: ModelProvider, profile: dict, target_version_id: str,
+) -> tuple[list, list, list, list]:
+    """합의 후보(같은 줄을 둘 다 지적했지만 문구는 다를 수 있음)가 실제로 같은
+    뜻인지 Claude/GPT 양쪽에 교차로 물어 확인한다 — 병합 판정을 한쪽 모델에만
+    맡기면 "합의"라는 신뢰 신호 자체가 다시 단일 모델 신뢰 문제로 돌아가므로,
+    둘 다 "같다"고 해야만 진짜 합의로 확정한다(호출 실패도 안전하게 불일치로
+    처리). 반환값은 (true_agreed, disputed_claude, disputed_gpt, warnings)."""
+    warnings: list = []
+    if not candidate_pairs:
+        return [], [], [], warnings
+
+    items = [
+        {"id": c["segment_id"], "korean_text": korean_text_by_id.get(c["segment_id"], ""),
+         "text_a": c["corrected_text"], "text_b": g["corrected_text"]}
+        for c, g in candidate_pairs
+    ]
+
+    claude_verdicts, gpt_verdicts = await asyncio.gather(
+        _safe_call(provider.check_equivalence_with_claude(items, profile),
+                   "합의 동등성 확인(Claude)", "해당 후보들은 불일치로 안전하게 처리",
+                   target_version_id, warnings),
+        _safe_call(provider.check_equivalence_with_gpt(items, profile),
+                   "합의 동등성 확인(GPT)", "해당 후보들은 불일치로 안전하게 처리",
+                   target_version_id, warnings),
+    )
+    claude_verdict_by_id = {v["id"]: v["equivalent"] for v in claude_verdicts}
+    gpt_verdict_by_id = {v["id"]: v["equivalent"] for v in gpt_verdicts}
+
+    true_agreed: list = []
+    disputed_claude: list = []
+    disputed_gpt: list = []
+    for claude_correction, gpt_correction in candidate_pairs:
+        sid = claude_correction["segment_id"]
+        both_confirm = (
+            claude_verdict_by_id.get(sid, False) and gpt_verdict_by_id.get(sid, False)
+        )
+        if both_confirm:
+            true_agreed.append(gpt_correction)
+        else:
+            disputed_claude.append(claude_correction)
+            disputed_gpt.append(gpt_correction)
+    return true_agreed, disputed_claude, disputed_gpt, warnings
 
 
 async def _back_translate_proposals(
@@ -179,21 +236,13 @@ async def _back_translate_proposals(
         {"id": c["segment_id"], "text": c["corrected_text"]} for c in agreed + gpt_only
     ]
 
-    async def _safe_call(coro, label):
-        try:
-            return await coro
-        except Exception as exc:
-            logger.exception(
-                "%s 실패, 역번역 없이 계속 진행 (target_version_id=%s)",
-                label, target_version_id)
-            warnings.append({"stage": label, "message": str(exc)})
-            return []
-
     claude_authored_backtranslated, gpt_authored_backtranslated = await asyncio.gather(
         _safe_call(provider.back_translate_with_gpt(claude_authored_texts, profile),
-                   "Claude 제안 역번역") if claude_authored_texts else _empty_list(),
+                   "Claude 제안 역번역", "역번역 없이 계속 진행", target_version_id, warnings)
+        if claude_authored_texts else _empty_list(),
         _safe_call(provider.back_translate_with_claude(gpt_authored_texts, profile),
-                   "GPT 제안 역번역") if gpt_authored_texts else _empty_list(),
+                   "GPT 제안 역번역", "역번역 없이 계속 진행", target_version_id, warnings)
+        if gpt_authored_texts else _empty_list(),
     )
     backtranslation_by_id = {
         r["id"]: r["korean_text"]
@@ -230,52 +279,52 @@ async def _run_dual_verification_pass(
     """S2(이중 독립 검증) 패스. Claude와 GPT가 같은 원본을 동시에, 서로 뭘
     하는지 모른 채(앵커링 편향 방지) 독립적으로 검토한다 — 스페인어를 모르는
     검수자도 운영 가능해야 하므로, 두 모델의 일치 여부가 유일한 신뢰도
-    신호다. 같은 줄을 둘 다 지적하면(합의) 자동 적용하고, 한쪽만
-    지적하면(불일치) 적용하지 않고 원문을 유지한 채 반대쪽 모델의 역번역만
-    참고용으로 붙인다. 반환값은 (findings, warnings)."""
+    신호다. 같은 줄을 둘 다 지적하면 합의 후보가 되고, 문구가 같은 뜻인지
+    다시 양쪽에 교차 확인해 진짜 합의로 확정된 것만 자동 적용한다. 한쪽만
+    지적했거나(불일치) 교차 확인에서 의견이 갈리면 적용하지 않고 원문을
+    유지한 채 반대쪽 모델의 역번역만 참고용으로 붙인다. 반환값은
+    (findings, warnings)."""
     verification_pairs = [
         {"id": p.id, "korean_text": p.korean.text if p.korean else "",
          "target_text": p.target.text if p.target else ""}
         for p in pairs if p.target is not None
     ]
+    korean_text_by_id = {vp["id"]: vp["korean_text"] for vp in verification_pairs}
     warnings: list = []
 
-    async def _safe_verify(coro, label):
-        try:
-            return await coro
-        except Exception as exc:
-            logger.exception(
-                "%s 실패, 해당 패스를 스킵하고 계속 진행 (target_version_id=%s)",
-                label, target_version_id)
-            warnings.append({"stage": label, "message": str(exc)})
-            return []
-
     claude_corrections, gpt_corrections = await asyncio.gather(
-        _safe_verify(
+        _safe_call(
             provider.correct_primary(
                 verification_pairs, profile, pending_sensitive_hits,
                 knowledge, format_constraint),
-            "Claude 검증"),
-        _safe_verify(
+            "Claude 검증", "해당 패스를 스킵하고 계속 진행", target_version_id, warnings),
+        _safe_call(
             provider.verify_and_refine(
                 verification_pairs, profile, pending_sensitive_hits,
                 knowledge, format_constraint),
-            "GPT 검증"),
+            "GPT 검증", "해당 패스를 스킵하고 계속 진행", target_version_id, warnings),
     )
 
-    agreed, claude_only, gpt_only = _reconcile_dual_verification(
+    candidate_pairs, claude_only, gpt_only = _reconcile_dual_verification(
         claude_corrections, gpt_corrections)
 
+    true_agreed, disputed_claude, disputed_gpt, equivalence_warnings = await _check_equivalence(
+        candidate_pairs, korean_text_by_id, provider, profile, target_version_id)
+    warnings.extend(equivalence_warnings)
+
+    all_claude_only = claude_only + disputed_claude
+    all_gpt_only = gpt_only + disputed_gpt
+
     backtranslation_by_id, backtranslation_warnings = await _back_translate_proposals(
-        provider, profile, agreed, claude_only, gpt_only, target_version_id)
+        provider, profile, true_agreed, all_claude_only, all_gpt_only, target_version_id)
     warnings.extend(backtranslation_warnings)
 
     pair_by_id = {p.id: p for p in pairs}
     findings: list = []
     for correction, status, model_label, applies in (
-        *((c, "approved", "claude+gpt", True) for c in agreed),
-        *((c, "pending", "claude", False) for c in claude_only),
-        *((c, "pending", "gpt", False) for c in gpt_only),
+        *((c, "approved", "claude+gpt", True) for c in true_agreed),
+        *((c, "pending", "claude", False) for c in all_claude_only),
+        *((c, "pending", "gpt", False) for c in all_gpt_only),
     ):
         pair = pair_by_id.get(correction["segment_id"])
         if pair is None or pair.target is None:

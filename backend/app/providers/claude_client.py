@@ -36,6 +36,20 @@ _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
     "반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
 )
 
+_EQUIVALENCE_SCHEMA_INSTRUCTION = (
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "equivalent (불리언, text_a와 text_b가 같은 문제를 같은 방식으로 고친 "
+    "것이면 true, 단어 선택이 달라도 무방하다 — 실질적으로 다른 내용·뉘앙스·"
+    "해결책이면 false). 반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
+)
+
+def _language_label(profile: dict) -> str:
+    language = profile.get("language") or "대상언어"
+    variant = profile.get("variant")
+    return f"{language}({variant})" if variant else language
+
+
 class ClaudeClient:
     def __init__(self, api_key: str, model: str):
         self._model = model
@@ -83,9 +97,7 @@ class ClaudeClient:
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "") -> List[dict]:
-        language = profile.get("language") or "대상언어"
-        variant = profile.get("variant")
-        language_label = f"{language}({variant})" if variant else language
+        language_label = _language_label(profile)
 
         system = (
             f"너는 한국어-{language_label} 자막의 검증자다. korean_text(원문)와 "
@@ -121,9 +133,7 @@ class ClaudeClient:
         return result["shrunk_text"]
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
-        language = profile.get("language") or "대상언어"
-        variant = profile.get("variant")
-        language_label = f"{language}({variant})" if variant else language
+        language_label = _language_label(profile)
         system = (
             f"다음은 {language_label} 텍스트 목록이다. 각 항목을 자연스러운 "
             "한국어로 역번역하라 — 스페인어를 모르는 검수자가 원래 의미를 "
@@ -131,4 +141,15 @@ class ClaudeClient:
             "전달하는 것을 우선하라.\n" + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
+        return await self._call_array(system, user)
+
+    async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 한국어 원문(korean_text)과, 그걸 {language_label}로 교정한 "
+            "두 후보 문구(text_a, text_b) 목록이다. 각 항목마다 text_a와 "
+            "text_b가 같은 문제를 같은 방식으로 고친 것인지 판단하라.\n"
+            + _EQUIVALENCE_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
         return await self._call_array(system, user)

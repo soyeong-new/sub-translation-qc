@@ -44,6 +44,12 @@ export const submitReviewAction = (findingId, action, reviewerName, finalText = 
     body: JSON.stringify({ action, reviewer_name: reviewerName, final_text: finalText }),
   });
 
+export const requeryFinding = (findingId, instruction, reviewerName) =>
+  request(`/findings/${findingId}/requery`, {
+    method: "POST",
+    body: JSON.stringify({ instruction, reviewer_name: reviewerName }),
+  });
+
 export const listSegments = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/segments`);
 

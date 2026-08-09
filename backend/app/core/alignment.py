@@ -32,15 +32,10 @@ def align(korean_segments: List[SegmentText],
             used_targets.add(best_idx)
             pairs.append(AlignedPair(
                 id=f"pair_{i+1}", korean=k, target=target_segments[best_idx],
-                alignment_confidence=best_score,
             ))
         else:
-            pairs.append(AlignedPair(
-                id=f"pair_{i+1}", korean=k, target=None, alignment_confidence=0.0,
-            ))
+            pairs.append(AlignedPair(id=f"pair_{i+1}", korean=k, target=None))
     for j, t in enumerate(target_segments):
         if j not in used_targets:
-            pairs.append(AlignedPair(
-                id=f"pair_target_{j+1}", korean=None, target=t, alignment_confidence=0.0,
-            ))
+            pairs.append(AlignedPair(id=f"pair_target_{j+1}", korean=None, target=t))
     return pairs

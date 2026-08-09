@@ -73,6 +73,24 @@ class ModelProvider(ABC):
         들어온다."""
         ...
 
+    @abstractmethod
+    async def check_equivalence_with_claude(self, items: List[dict], profile: dict) -> List[dict]:
+        """같은 줄을 Claude/GPT 둘 다 지적했지만 문구가 다를 때, text_a/text_b가
+        같은 문제를 같은 방식으로 고친 것인지 Claude에게 판정하게 한다. 문구
+        일치가 아니라 의미 동등성만 본다(단어 선택이 달라도 같은 해결책이면
+        true). GPT의 판정(check_equivalence_with_gpt)과 독립적으로 물어보고,
+        파이프라인은 둘 다 true여야만 진짜 합의로 확정한다 — 병합 판단
+        하나만 단일 모델에 맡기면 "합의"라는 신뢰 신호 자체가 다시 단일
+        모델 신뢰 문제로 돌아가기 때문이다. 입력은
+        [{"id","korean_text","text_a","text_b"}], 반환값은
+        [{"id","equivalent": bool}]."""
+        ...
+
+    @abstractmethod
+    async def check_equivalence_with_gpt(self, items: List[dict], profile: dict) -> List[dict]:
+        """check_equivalence_with_claude와 대칭."""
+        ...
+
 
 def get_provider() -> ModelProvider:
     name = os.getenv("QC_PROVIDER", "live")

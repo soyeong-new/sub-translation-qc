@@ -44,3 +44,9 @@ class LiveModelProvider(ModelProvider):
 
     async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.back_translate(texts, profile)
+
+    async def check_equivalence_with_claude(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._claude.check_equivalence(items, profile)
+
+    async def check_equivalence_with_gpt(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.check_equivalence(items, profile)

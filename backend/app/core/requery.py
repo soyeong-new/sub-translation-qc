@@ -4,6 +4,8 @@ from app.models import FindingRow, Segment
 from app.providers.base import ModelProvider
 from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES
 
+_LLM_REQUERYABLE_MODELS = ("claude", "gpt", "claude+gpt")
+
 
 class RequeryNotSupportedError(ValueError):
     pass
@@ -11,23 +13,18 @@ class RequeryNotSupportedError(ValueError):
 
 async def requery_finding(finding: FindingRow, segment: Segment, instruction: str,
                            provider: ModelProvider, knowledge: str, profile: dict) -> str:
-    """finding.model(생성 단계)에 맞는 프로바이더 메서드를 그 세그먼트 하나만
-    대상으로 다시 호출하고, 새 suggested_text를 반환한다. 규칙 기반(사전필터/
-    null)은 재질문 대상이 아니다 — LLM에게 물어볼 대상이 없으므로 검수자가
-    직접 "수정"을 쓰는 게 맞다."""
+    """finding을 만든 모델이 무엇이었든(claude/gpt/claude+gpt) GPT 하나로만
+    단일 재검증한다 — 검수자가 이미 지시사항으로 방향을 정한 상태라, 원래의
+    이중 독립검증(합의 필요)만큼 신중할 필요가 없다. 규칙 기반(사전필터/
+    안전망 제외)은 재질문 대상이 아니다 — LLM에게 물어볼 대상이 없으므로
+    검수자가 직접 "수정"을 쓰는 게 맞다."""
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
     current_text = finding.final_text or finding.suggested_text or segment.target_text
 
-    if finding.model == "claude":
-        results = await provider.correct_primary(
-            [{"id": segment.id, "korean_text": segment.korean_text, "target_text": current_text}],
-            profile, [], knowledge, format_constraint,
-            extra_instruction=instruction,
-        )
-    elif finding.model == "gpt":
+    if finding.model in _LLM_REQUERYABLE_MODELS:
         results = await provider.verify_and_refine(
-            [{"id": segment.id, "korean_text": segment.korean_text, "current_text": current_text}],
-            {}, profile, knowledge, format_constraint, extra_instruction=instruction,
+            [{"id": segment.id, "korean_text": segment.korean_text, "target_text": current_text}],
+            profile, [], knowledge, format_constraint, extra_instruction=instruction,
         )
     elif finding.model == "안전망":
         return await provider.shrink_line(

@@ -126,14 +126,17 @@ async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_
     srt_path.write_text(
         "1\n00:00:00,000 --> 00:00:02,000\nBAD_TRANSLATION aquí....\n", encoding="utf-8")
 
-    async def _gpt_introduces_ellipsis(self, pairs, *args, **kwargs):
+    async def _introduces_ellipsis(self, pairs, *args, **kwargs):
         return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
                   "corrected_text": "espera......", "description": "GPT가 늘어뜨림"}]
 
     # get_provider()가 매번 새 MockProvider 인스턴스를 만들므로, 인스턴스가
     # 아니라 클래스에 패치해야 analyze_and_save 내부에서 실제로 쓰이는 provider
-    # 에도 적용된다.
-    monkeypatch.setattr(MockProvider, "verify_and_refine", _gpt_introduces_ellipsis)
+    # 에도 적용된다. Claude/GPT 둘 다 같은 문구를 내야 MockProvider의 기본
+    # 동등성 판정(text_a == text_b)이 true가 되어 진짜 합의로 확정되고
+    # 실제로 적용된다.
+    monkeypatch.setattr(MockProvider, "correct_primary", _introduces_ellipsis)
+    monkeypatch.setattr(MockProvider, "verify_and_refine", _introduces_ellipsis)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \

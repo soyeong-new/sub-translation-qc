@@ -9,7 +9,6 @@ def test_align_matches_overlapping_segments():
     assert len(pairs) == 1
     assert pairs[0].korean.text == "안녕"
     assert pairs[0].target.text == "Hola"
-    assert pairs[0].alignment_confidence > 0.5
 
 
 def test_align_produces_unmatched_pair_when_no_overlap():

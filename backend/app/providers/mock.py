@@ -22,6 +22,11 @@ def _detect_corrections(pairs: List[dict], pending_sensitive_hits: List[dict]) -
     return corrections
 
 
+def _check_equivalence(items: List[dict]) -> List[dict]:
+    """check_equivalence_with_claude/_with_gpt가 공유하는 결정론적 테스트 규칙."""
+    return [{"id": i["id"], "equivalent": i["text_a"] == i["text_b"]} for i in items]
+
+
 class MockProvider(ModelProvider):
     """결정론적 테스트 더블. 운영 경로에서는 base.get_provider()가 선택을 차단한다."""
 
@@ -49,3 +54,9 @@ class MockProvider(ModelProvider):
 
     async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
         return [{"id": t["id"], "korean_text": f"[역번역:{t['text']}]"} for t in texts]
+
+    async def check_equivalence_with_claude(self, items: List[dict], profile: dict) -> List[dict]:
+        return _check_equivalence(items)
+
+    async def check_equivalence_with_gpt(self, items: List[dict], profile: dict) -> List[dict]:
+        return _check_equivalence(items)

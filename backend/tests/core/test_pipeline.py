@@ -68,10 +68,12 @@ async def test_pipeline_runs_claude_and_gpt_on_the_same_original_text(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_pipeline_auto_applies_when_claude_and_gpt_agree(tmp_path, monkeypatch):
-    """같은 줄을 Claude/GPT 둘 다 지적하면(합의) 사람 승인 없이 자동
-    적용된다 — 스페인어를 모르는 검수자는 텍스트 품질을 판단할 수 없으므로,
-    합의가 유일한 신뢰도 신호다. 문구는 고정 규칙으로 GPT 쪽을 쓴다."""
+async def test_pipeline_auto_applies_when_claude_and_gpt_agree_and_confirm_equivalence(
+        tmp_path, monkeypatch):
+    """같은 줄을 Claude/GPT 둘 다 지적했고(합의 후보), 문구가 달라도 둘 다
+    "같은 뜻"이라고 교차 확인해주면(진짜 합의) 사람 승인 없이 자동 적용된다
+    — 스페인어를 모르는 검수자는 텍스트 품질을 판단할 수 없으므로, 이 교차
+    확인이 유일한 신뢰도 신호다. 문구는 고정 규칙으로 GPT 쪽을 쓴다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     provider = MockProvider()
@@ -84,8 +86,13 @@ async def test_pipeline_auto_applies_when_claude_and_gpt_agree(tmp_path, monkeyp
         return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
                   "corrected_text": "texto de gpt", "description": "지피티 제안"}]
 
+    async def _confirms_equivalent(items, profile):
+        return [{"id": i["id"], "equivalent": True} for i in items]
+
     monkeypatch.setattr(provider, "correct_primary", _claude_flags)
     monkeypatch.setattr(provider, "verify_and_refine", _gpt_flags)
+    monkeypatch.setattr(provider, "check_equivalence_with_claude", _confirms_equivalent)
+    monkeypatch.setattr(provider, "check_equivalence_with_gpt", _confirms_equivalent)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
@@ -99,9 +106,56 @@ async def test_pipeline_auto_applies_when_claude_and_gpt_agree(tmp_path, monkeyp
     finding = next(f for f in result["findings"] if f.model == "claude+gpt")
     assert finding.status == "approved"
     assert finding.suggested_text == "texto de gpt"
-    assert finding.final_text == "texto de gpt"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_creates_two_pending_findings_when_equivalence_check_disagrees(
+        tmp_path, monkeypatch):
+    """합의 후보였지만(둘 다 같은 줄 지적) 문구가 실질적으로 다르다고 어느
+    한쪽이라도 판정하면 진짜 합의가 아니다 — 자동 적용하지 않고 Claude/GPT
+    제안을 각각 별도의 pending Finding으로 남긴다(기존 "한쪽만 지적" 처리와
+    동일)."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _claude_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de claude", "description": "클로드 제안"}]
+
+    async def _gpt_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de gpt", "description": "지피티 제안"}]
+
+    async def _claude_says_different(items, profile):
+        return [{"id": i["id"], "equivalent": False} for i in items]
+
+    async def _gpt_says_equivalent(items, profile):
+        return [{"id": i["id"], "equivalent": True} for i in items]
+
+    monkeypatch.setattr(provider, "correct_primary", _claude_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _gpt_flags)
+    # 하나라도 "다르다"고 하면 불일치로 처리돼야 함을 확인하기 위해 일부러
+    # 두 판정을 다르게 둔다.
+    monkeypatch.setattr(provider, "check_equivalence_with_claude", _claude_says_different)
+    monkeypatch.setattr(provider, "check_equivalence_with_gpt", _gpt_says_equivalent)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    assert not any(f.model == "claude+gpt" for f in result["findings"])
+    claude_finding = next(f for f in result["findings"] if f.model == "claude")
+    gpt_finding = next(f for f in result["findings"] if f.model == "gpt")
+    assert claude_finding.status == "pending" and claude_finding.suggested_text == "texto de claude"
+    assert gpt_finding.status == "pending" and gpt_finding.suggested_text == "texto de gpt"
     final_pair = next(p for p in result["pairs"] if p.target is not None)
-    assert final_pair.target.text == "texto de gpt"
+    assert final_pair.target.text == "BAD_TRANSLATION aquí..."
 
 
 @pytest.mark.asyncio
@@ -237,11 +291,14 @@ async def test_pipeline_rechecks_ellipsis_after_gpt_pass(tmp_path, monkeypatch):
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     provider = MockProvider()
 
-    async def _gpt_introduces_ellipsis(pairs, *args, **kwargs):
+    async def _introduces_ellipsis(pairs, *args, **kwargs):
         return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
                   "corrected_text": "espera......", "description": "GPT가 늘어뜨림"}]
 
-    monkeypatch.setattr(provider, "verify_and_refine", _gpt_introduces_ellipsis)
+    # Claude/GPT 둘 다 같은 문구를 내야 MockProvider의 기본 동등성 판정
+    # (text_a == text_b)이 true가 되어 진짜 합의로 확정되고 실제로 적용된다.
+    monkeypatch.setattr(provider, "correct_primary", _introduces_ellipsis)
+    monkeypatch.setattr(provider, "verify_and_refine", _introduces_ellipsis)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
