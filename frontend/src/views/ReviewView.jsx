@@ -1,6 +1,6 @@
 // findings 승인/거부/수정, 인물/관계 확인, STT 수정, export를 담당하는 검수 화면.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getFindings,
   submitReviewAction,
@@ -112,16 +112,30 @@ function Field({ id, label, children }) {
 }
 
 function FindingCard({
-  finding, koreanText, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
+  finding, segment, isPreviewing, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
   requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
 }) {
+  const koreanText = segment?.korean_text;
   const busy = pending != null;
   const canAct = Boolean(reviewerName.trim()) && !busy;
   const categoryClass = CATEGORY_BADGE_CLASS[finding.category] || FALLBACK_BADGE_CLASS;
   const statusClass = STATUS_BADGE_CLASS[finding.status] || FALLBACK_BADGE_CLASS;
 
+  // 카드를 클릭하면 그 구간을 미리보기 재생한다 — 단, 버튼/입력 요소를 누른
+  // 클릭은 승인/거부/수정 등 원래 동작을 가려서는 안 되므로 걸러낸다.
+  function handleCardClick(e) {
+    if (!segment || !onPreview) return;
+    if (e.target.closest("button, textarea, input, a, select")) return;
+    onPreview(segment);
+  }
+
   return (
-    <li className="rounded-lg border border-border bg-card p-4 shadow-sm">
+    <li
+      onClick={handleCardClick}
+      className={`rounded-lg border bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
+        isPreviewing ? "border-primary ring-1 ring-primary" : "border-border"
+      }`}
+    >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${categoryClass}`}>
           {CATEGORY_LABELS[finding.category] || finding.category}
@@ -147,6 +161,9 @@ function FindingCard({
             STT 한국어 원문 (참고용)
           </p>
           <p className="whitespace-pre-wrap text-sm text-foreground">{koreanText}</p>
+          {segment && (
+            <p className="mt-1 text-xs text-muted-foreground">카드를 클릭하면 이 구간이 재생됩니다.</p>
+          )}
         </div>
       )}
 
@@ -386,6 +403,8 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [exportResult, setExportResult] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
   const [videoProxyUrl, setVideoProxyUrl] = useState(null);
+  const [previewSegment, setPreviewSegment] = useState(null);
+  const previewVideoRef = useRef(null);
   const [flaggedSegments, setFlaggedSegments] = useState(null); // null = 로딩 중
   const [flaggedSegmentsError, setFlaggedSegmentsError] = useState(null);
   const [stepperOpen, setStepperOpen] = useState(false);
@@ -465,6 +484,28 @@ export default function ReviewView({ targetVersionId, onBack }) {
       cancelled = true;
     };
   }, [targetVersionId]);
+
+  // finding 카드를 클릭하면 그 구간으로 이동해 자동재생하고, 구간 끝에서
+  // 멈춘다 — FlaggedSegmentStepper와 같은 <video> 재사용 패턴(리로드 없이
+  // currentTime만 이동)이지만, 저기는 반복재생이고 여기는 끝에서 정지한다.
+  useEffect(() => {
+    const video = previewVideoRef.current;
+    if (!video || !previewSegment) return undefined;
+    function handleTimeUpdate() {
+      if (video.currentTime >= previewSegment.end) {
+        video.pause();
+      }
+    }
+    video.currentTime = previewSegment.start;
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {
+        // 자동재생이 브라우저 정책으로 거부될 수 있다 — controls로 직접 재생 가능.
+      });
+    }
+    video.addEventListener("timeupdate", handleTimeUpdate);
+    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
+  }, [previewSegment?.id, previewSegment?.start, previewSegment?.end]);
 
   async function handleAction(findingId, action, finalText = "") {
     setFindingErrors((prev) => ({ ...prev, [findingId]: null }));
@@ -571,10 +612,11 @@ export default function ReviewView({ targetVersionId, onBack }) {
 
   const isExporting = exportStatus.kind === "loading";
   const formatWarnings = exportResult?.format_warnings ?? [];
-  // Finding 카드에 STT 한국어 원문을 참고용으로 보여주기 위한 조회용 — 이미
-  // STT 사이드바에서 받아온 segments를 그대로 재사용한다(추가 API 호출 없음).
-  const koreanTextBySegmentId = segments
-    ? Object.fromEntries(segments.map((s) => [s.id, s.korean_text]))
+  // Finding 카드에 STT 한국어 원문 + 그 구간 영상을 참고용으로 보여주기 위한
+  // 조회용 — 이미 STT 사이드바에서 받아온 segments를 그대로 재사용한다
+  // (추가 API 호출 없음).
+  const segmentsById = segments
+    ? Object.fromEntries(segments.map((s) => [s.id, s]))
     : {};
 
   return (
@@ -655,6 +697,21 @@ export default function ReviewView({ targetVersionId, onBack }) {
                 Findings {findings ? `(${findings.length})` : ""}
               </h2>
 
+              {videoProxyUrl && (
+                <div className="sticky top-6 z-10 mb-4 rounded-lg border border-border bg-card p-3 shadow-sm">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    {previewSegment ? "구간 미리보기" : "finding 카드를 클릭하면 그 구간이 재생됩니다"}
+                  </p>
+                  <video
+                    ref={previewVideoRef}
+                    src={videoProxyUrl}
+                    controls
+                    playsInline
+                    className="w-full max-w-sm rounded-md border border-border bg-black"
+                  />
+                </div>
+              )}
+
               {findings === null && !loadError && (
                 <p className="text-sm text-muted-foreground">불러오는 중...</p>
               )}
@@ -673,7 +730,9 @@ export default function ReviewView({ targetVersionId, onBack }) {
                     <FindingCard
                       key={f.id}
                       finding={f}
-                      koreanText={koreanTextBySegmentId[f.segment_id]}
+                      segment={segmentsById[f.segment_id]}
+                      isPreviewing={previewSegment?.id === f.segment_id}
+                      onPreview={setPreviewSegment}
                       reviewerName={reviewerName}
                       pending={pendingActions[f.id] ?? null}
                       error={findingErrors[f.id]}
