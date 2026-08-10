@@ -1,5 +1,6 @@
 """findings/segments 조회, 성별·격식 해결, 검수 액션, 재질의, STT 교정 엔드포인트."""
 
+import uuid
 from datetime import datetime, timezone
 from typing import Literal
 from pydantic import BaseModel
@@ -7,7 +8,9 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
 from app.models import TargetVersion, FindingRow, Segment, SttCorrection
-from app.core.requery import requery_finding, RequeryNotSupportedError
+from app.core.requery import (
+    requery_finding, reverify_segment_after_stt_correction, RequeryNotSupportedError,
+)
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
@@ -160,9 +163,10 @@ async def requery(finding_id: str, payload: RequeryIn):
 
 @router.post("/segments/{segment_id}/correct-stt")
 async def correct_stt(segment_id: str, payload: CorrectSttIn):
-    """STT 오타를 수정하면 해당 구간만 재분석 대상으로 표시한다 (design §7).
-    재분석 자체(translation_review 재호출)는 별도 배치/트리거로 수행하며 이
-    엔드포인트는 텍스트 교정과 감사 기록만 담당한다."""
+    """STT 오타를 수정하면, 새 원문 기준으로 그 줄의 번역이 여전히 맞는지
+    GPT 하나로만 가볍게 재검증한다(design §STT 재검증은 가볍게 — 이중
+    독립검증까지는 안 함). 문제가 있으면 pending finding을 새로 만들어
+    검수자가 리뷰 화면에서 승인/거절/수정하게 한다."""
     async with async_session() as session:
         seg = await session.get(Segment, segment_id)
         if seg is None:
@@ -172,5 +176,29 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
             corrected_text=payload.corrected_text, reviewer_name=payload.reviewer_name,
         ))
         seg.korean_text = payload.corrected_text
+
+        tv = await session.get(TargetVersion, seg.target_version_id)
+        profile = load_profile(tv.target_language, tv.variant) if tv else {}
+        provider = get_provider()
+        knowledge = load_knowledge()
+        correction = await reverify_segment_after_stt_correction(seg, provider, knowledge, profile)
+
+        new_finding = None
+        if correction and correction["corrected_text"] != seg.target_text:
+            # uuid를 쓴다 — 같은 세그먼트를 여러 번 고칠 수 있어(segment_id,
+            # category) 조합이 겹칠 수 있고, 그러면 두 번째 저장에서 PK 충돌로
+            # 재검증 결과가 통째로 유실된다.
+            finding = FindingRow(
+                id=f"{segment_id}_stt_recheck_{uuid.uuid4()}",
+                target_version_id=seg.target_version_id, segment_id=segment_id,
+                category=correction["category"],
+                description=f"[STT 수정 후 재검증] {correction['description']}",
+                original_text=seg.target_text, suggested_text=correction["corrected_text"],
+                confidence=1.0, source="llm", model="gpt", status="pending",
+            )
+            session.add(finding)
+            new_finding = {"id": finding.id, "category": finding.category,
+                           "suggested_text": finding.suggested_text}
+
         await session.commit()
-        return {"id": seg.id, "korean_text": seg.korean_text}
+        return {"id": seg.id, "korean_text": seg.korean_text, "new_finding": new_finding}

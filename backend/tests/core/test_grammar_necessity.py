@@ -7,9 +7,8 @@ PROFILE = {"language": "es", "variant": "LATAM"}
 def test_flags_gender_for_gendered_predicate_adjective():
     result = check_grammar_necessity(
         [{"id": "p1", "target_text": "Estoy muy cansada hoy."}], PROFILE)
-    assert result == [
-        {"id": "p1", "gender_check_needed": True, "formality_check_needed": True}
-    ]
+    assert result[0]["gender_check_needed"] is True
+    assert result[0]["formality_check_needed"] is True
 
 
 def test_does_not_flag_gender_for_invariant_adjective():
@@ -55,3 +54,51 @@ def test_raises_for_unsupported_language():
     with pytest.raises(ValueError):
         check_grammar_necessity(
             [{"id": "p1", "target_text": "hello"}], {"language": "fr"})
+
+
+def test_resolves_formality_as_formal_from_korean_honorific_ending():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "¿Puede venir aquí?",
+          "korean_text": "언제부터 계신 거예요?"}], PROFILE)
+    assert result[0]["resolved_formality"] == "formal"
+
+
+def test_resolves_formality_as_informal_from_korean_casual_ending():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "¿Puedes venir?",
+          "korean_text": "그거 알아?"}], PROFILE)
+    assert result[0]["resolved_formality"] == "informal"
+
+
+def test_formality_stays_unresolved_when_korean_ending_is_ambiguous():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "¿Puedes venir?", "korean_text": "음"}], PROFILE)
+    assert result[0]["resolved_formality"] is None
+
+
+def test_resolves_gender_from_korean_kinship_term():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Está cansado.",
+          "korean_text": "오빠 언제부터 계신 거예요?"}], PROFILE)
+    assert result[0]["resolved_gender_from_korean"] == "male"
+
+
+def test_gender_stays_unresolved_when_korean_terms_conflict():
+    """호칭이 둘 다 나와 상충하면(예: 오빠와 언니가 같이 언급) 어느 쪽을
+    가리키는지 알 수 없으므로 자동 판정하지 않는다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Está cansado.",
+          "korean_text": "오빠랑 언니 같이 왔어?"}], PROFILE)
+    assert result[0]["resolved_gender_from_korean"] is None
+
+
+def test_grammatical_person_detects_first_second_third():
+    first = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Estoy cansado."}], PROFILE)
+    second = check_grammar_necessity(
+        [{"id": "p1", "target_text": "¿Estás cansado?"}], PROFILE)
+    third = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Está cansado."}], PROFILE)
+    assert first[0]["grammatical_person"] == "1"
+    assert second[0]["grammatical_person"] == "2"
+    assert third[0]["grammatical_person"] == "3"

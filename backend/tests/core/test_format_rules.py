@@ -1,5 +1,5 @@
 from app.schemas import AlignedPair, SegmentText
-from app.core.format_rules import check_line_length, check_ellipsis, fix_ellipsis
+from app.core.format_rules import check_line_length, check_ellipsis, fix_ellipsis, rewrap_line
 
 
 def _pair(pid, text):
@@ -59,3 +59,28 @@ def test_check_line_length_captures_current_text_as_original_text():
     long_line = "a" * 51
     violations = check_line_length([_pair("p1", long_line)])
     assert violations[0].original_text == long_line
+
+
+def test_rewrap_line_fits_content_that_only_needs_rebreaking():
+    text = " ".join(["word"] * 20)  # 99자, 한 줄에 몰려있음 — 100자(50x2) 안에는 들어감
+    result = rewrap_line(text)
+    assert result is not None
+    lines = result.split("\n")
+    assert len(lines) <= 2
+    assert all(len(ln) <= 50 for ln in lines)
+
+
+def test_rewrap_line_returns_none_when_content_too_long_even_optimally_wrapped():
+    text = " ".join(["word"] * 40)  # 199자 — 아무리 잘 나눠도 2줄x50자 안에 안 들어감
+    assert rewrap_line(text) is None
+
+
+def test_rewrap_line_returns_none_for_single_unbreakable_word():
+    assert rewrap_line("가" * 60) is None
+
+
+def test_rewrap_line_normalizes_existing_bad_linebreaks():
+    text = "línea muy larga que\nno respeta el límite de caracteres por línea aquí"
+    result = rewrap_line(text)
+    assert result is not None
+    assert all(len(ln) <= 50 for ln in result.split("\n"))

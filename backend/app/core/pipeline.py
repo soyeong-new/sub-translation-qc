@@ -83,11 +83,13 @@ async def _run_grammar_necessity_check(
     target_version_id: str,
 ) -> tuple[list, list]:
     """문법 필요성 판단(줄 단위, spaCy 형태소 분석): 성별/격식 판단이 실제로
-    필요한 줄만 골라낸다. 어느 인물/관계 얘기인지는 텍스트만으로 알 수 없으므로
-    여기서 확정하려 하지 않는다 — 검수자가 영상을 보고 직접 판별한다(영어
-    대명사 힌트만 참고용으로 붙인다). 반환값은 (segment_resolutions, warnings)."""
+    필요한 줄만 골라낸다. 값 자체는 한국어 원문(어미/호칭)으로 먼저 자동
+    판정을 시도하고 — 안 되면 영어 SRT 대명사 힌트로, 그래도 안 되면 사람에게
+    묻는다(design §정말 판단하기 어려운 것만 질문). 반환값은
+    (segment_resolutions, warnings)."""
     grammar_pairs = [
-        {"id": p.id, "target_text": p.target.text if p.target else ""}
+        {"id": p.id, "target_text": p.target.text if p.target else "",
+         "korean_text": p.korean.text if p.korean else ""}
         for p in pairs if p.target is not None
     ]
     segment_resolutions: list = []
@@ -107,16 +109,30 @@ async def _run_grammar_necessity_check(
         for p in flagged_pairs:
             flags = flags_by_id[p.id]
             gender_needed = bool(flags.get("gender_check_needed"))
-            english_hint = (
-                find_pronoun_hint(p.target.start, p.target.end, english_segments)
-                if gender_needed and english_segments and p.target is not None
-                else None
-            )
+            resolved_gender = flags.get("resolved_gender_from_korean")
+            # 인칭/영어 힌트를 하나로 묶어 기존 english_pronoun_hint 컬럼(JSON) 그대로
+            # 재사용한다 — 새 DB 컬럼 없이 "이건 몇 인칭 얘기인지" 힌트까지 얹는다.
+            # 아무 정보도 없으면(인칭도 못 뽑고 영어 힌트도 없으면) None 그대로 둔다 —
+            # 빈 껍데기 dict를 굳이 보여줄 이유가 없다.
+            grammatical_person = flags.get("grammatical_person")
+            gender_hint = {"grammatical_person": grammatical_person} if grammatical_person else None
+            # 한국어 호칭/대명사로 못 정했을 때만 영어 SRT 폴백을 계산한다 —
+            # 한국어로 이미 확정됐으면 계산할 이유가 없다.
+            if gender_needed and resolved_gender is None and english_segments and p.target is not None:
+                english_hint = find_pronoun_hint(p.target.start, p.target.end, english_segments)
+                if english_hint:
+                    gender_hint = {**(gender_hint or {}), **english_hint}
+                    if english_hint["he_count"] > 0 and english_hint["she_count"] == 0:
+                        resolved_gender = "male"
+                    elif english_hint["she_count"] > 0 and english_hint["he_count"] == 0:
+                        resolved_gender = "female"
             segment_resolutions.append({
                 "segment_id": p.id,
                 "gender_check_needed": gender_needed,
                 "formality_check_needed": bool(flags.get("formality_check_needed")),
-                "english_pronoun_hint": english_hint,
+                "resolved_gender": resolved_gender,
+                "resolved_formality": flags.get("resolved_formality"),
+                "english_pronoun_hint": gender_hint,
             })
     except Exception as exc:
         logger.exception(
@@ -271,10 +287,95 @@ def _make_dual_verification_finding(
     )
 
 
+# 영화 전체 pair를 한 콜에 몰아넣으면 Claude/GPT 응답이 토큰 한도에서 잘려
+# JSON 파싱이 통째로 실패하고(그 콜에 담긴 구간 전체가 무효 처리됨), 항목이
+# 많을수록 모델이 segment_id를 엉뚱한 줄에 붙이는 오귀속도 늘어난다. 1차
+# 방어선은 _split_into_scenes의 LLM 씬 분할(문맥 경계에서 자름)이고, 이
+# 함수는 그게 실패했을 때의 전체 폴백이자 씬이 너무 클 때의 2차 안전장치다
+# — 대사 사이 타임코드 공백(장면 전환 등 자연스러운 끊김)에서만 자르고,
+# 공백 없이 대화가 계속 이어지면 최대 크기에서 강제로 자른다.
+CHUNK_MIN_SIZE = 20
+CHUNK_MAX_SIZE = 35
+CHUNK_GAP_SECONDS = 1.5
+
+
+def _chunk_pairs_by_gap(pairs: list) -> list[list]:
+    chunks: list[list] = []
+    current: list = []
+    for i, p in enumerate(pairs):
+        current.append(p)
+        at_max = len(current) >= CHUNK_MAX_SIZE
+        gap_ok = False
+        if not at_max and len(current) >= CHUNK_MIN_SIZE and i + 1 < len(pairs):
+            gap_ok = pairs[i + 1].target.start - p.target.end >= CHUNK_GAP_SECONDS
+        if at_max or gap_ok:
+            chunks.append(current)
+            current = []
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _validate_scene_boundaries(scenes: list, filtered_pairs: list) -> Optional[list[list]]:
+    """scenes(start_id/end_id 목록)가 filtered_pairs를 처음부터 끝까지
+    순서대로 빠짐없이 겹치지 않게 커버하는지 확인한다. 하나라도 어긋나면
+    (없는 id, 순서 뒤바뀜, 빈틈, 중복 등) None을 반환해 호출자가 전체를
+    타임코드 공백 청킹으로 폴백하게 한다 — 일부만 살리는 부분 폴백은
+    경계 접합부 처리가 그 자체로 새 버그 소스가 돼 하지 않는다."""
+    id_to_index = {p.id: i for i, p in enumerate(filtered_pairs)}
+    chunks: list[list] = []
+    expected_start = 0
+    for scene in scenes:
+        start_idx = id_to_index.get(scene.get("start_id"))
+        end_idx = id_to_index.get(scene.get("end_id"))
+        if start_idx is None or end_idx is None:
+            return None
+        if start_idx != expected_start or end_idx < start_idx:
+            return None
+        chunks.append(filtered_pairs[start_idx:end_idx + 1])
+        expected_start = end_idx + 1
+    if expected_start != len(filtered_pairs):
+        return None
+    return chunks
+
+
+async def _split_into_scenes(
+    provider: ModelProvider, profile: dict, filtered_pairs: list,
+    target_version_id: str, warnings: list,
+) -> list[list]:
+    """씬 분할 LLM 콜(GPT, json_schema 강제)로 pairs를 화제/화자/시공간/톤
+    전환 기준의 문맥 단위로 나눈다. 응답이 filtered_pairs를 빠짐없이·
+    순서대로·안 겹치게 커버하지 못하면(파싱 실패 포함) 1회 재시도하고,
+    그래도 실패하면 타임코드 공백 청킹으로 전체 폴백한다. 성공한 씬도
+    CHUNK_MAX_SIZE를 넘으면 그 안에서 다시 타임코드 공백으로 쪼갠다 —
+    토큰 한도 안전장치는 씬 분할 성공 여부와 무관하게 항상 적용된다."""
+    if not filtered_pairs:
+        return []
+    scene_items = [
+        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
+         "target_text": p.target.text, "start": p.target.start, "end": p.target.end}
+        for p in filtered_pairs
+    ]
+    for _attempt in range(2):
+        try:
+            scenes = await provider.split_scenes(scene_items, profile)
+            chunks = _validate_scene_boundaries(scenes, filtered_pairs)
+        except Exception:
+            chunks = None
+        if chunks is not None:
+            return [sub for chunk in chunks for sub in _chunk_pairs_by_gap(chunk)]
+    warnings.append({
+        "stage": "씬 분할",
+        "message": "씬 분할 실패, 타임코드 공백 기준 청킹으로 대체",
+    })
+    return _chunk_pairs_by_gap(filtered_pairs)
+
+
 async def _run_dual_verification_pass(
     pairs: list, provider: ModelProvider, profile: dict,
     pending_sensitive_hits: list, knowledge: dict,
     format_constraint: str, target_version_id: str,
+    resolved_registers: Optional[dict] = None,
 ) -> tuple[list, list]:
     """S2(이중 독립 검증) 패스. Claude와 GPT가 같은 원본을 동시에, 서로 뭘
     하는지 모른 채(앵커링 편향 방지) 독립적으로 검토한다 — 스페인어를 모르는
@@ -282,28 +383,50 @@ async def _run_dual_verification_pass(
     신호다. 같은 줄을 둘 다 지적하면 합의 후보가 되고, 문구가 같은 뜻인지
     다시 양쪽에 교차 확인해 진짜 합의로 확정된 것만 자동 적용한다. 한쪽만
     지적했거나(불일치) 교차 확인에서 의견이 갈리면 적용하지 않고 원문을
-    유지한 채 반대쪽 모델의 역번역만 참고용으로 붙인다. 반환값은
-    (findings, warnings)."""
-    verification_pairs = [
-        {"id": p.id, "korean_text": p.korean.text if p.korean else "",
-         "target_text": p.target.text if p.target else ""}
-        for p in pairs if p.target is not None
-    ]
-    korean_text_by_id = {vp["id"]: vp["korean_text"] for vp in verification_pairs}
+    유지한 채 반대쪽 모델의 역번역만 참고용으로 붙인다.
+
+    resolved_registers는 문법 필요성 판단 단계에서 이미 확정된 성별/격식
+    ({segment_id: {"gender":.., "formality":..}})이다 — 확정된 줄은 그 값을
+    Claude/GPT에게 같이 알려줘서, 제안하는 교정문이 문법적으로 그 성별/격식과
+    어긋나지 않게 한다. 확정 안 된 줄은 여전히 아무 정보도 안 준다(추측
+    금지, 기존과 동일). 반환값은 (findings, warnings)."""
+    resolved_registers = resolved_registers or {}
+    filtered_pairs = [p for p in pairs if p.target is not None]
+
+    def _to_dict(p) -> dict:
+        pair_dict = {"id": p.id, "korean_text": p.korean.text if p.korean else "",
+                     "target_text": p.target.text}
+        register = resolved_registers.get(p.id)
+        if register:
+            if register.get("gender"):
+                pair_dict["resolved_gender"] = register["gender"]
+            if register.get("formality"):
+                pair_dict["resolved_formality"] = register["formality"]
+        return pair_dict
+
+    korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in filtered_pairs}
     warnings: list = []
 
-    claude_corrections, gpt_corrections = await asyncio.gather(
-        _safe_call(
-            provider.correct_primary(
-                verification_pairs, profile, pending_sensitive_hits,
-                knowledge, format_constraint),
-            "Claude 검증", "해당 패스를 스킵하고 계속 진행", target_version_id, warnings),
-        _safe_call(
-            provider.verify_and_refine(
-                verification_pairs, profile, pending_sensitive_hits,
-                knowledge, format_constraint),
-            "GPT 검증", "해당 패스를 스킵하고 계속 진행", target_version_id, warnings),
-    )
+    async def _verify_chunk(chunk: list) -> tuple[list, list]:
+        chunk_dicts = [_to_dict(p) for p in chunk]
+        return await asyncio.gather(
+            _safe_call(
+                provider.correct_primary(
+                    chunk_dicts, profile, pending_sensitive_hits,
+                    knowledge, format_constraint),
+                "Claude 검증", "해당 구간을 스킵하고 계속 진행", target_version_id, warnings),
+            _safe_call(
+                provider.verify_and_refine(
+                    chunk_dicts, profile, pending_sensitive_hits,
+                    knowledge, format_constraint),
+                "GPT 검증", "해당 구간을 스킵하고 계속 진행", target_version_id, warnings),
+        )
+
+    scene_chunks = await _split_into_scenes(
+        provider, profile, filtered_pairs, target_version_id, warnings)
+    chunk_results = await asyncio.gather(*[_verify_chunk(chunk) for chunk in scene_chunks])
+    claude_corrections = [c for claude_chunk, _ in chunk_results for c in claude_chunk]
+    gpt_corrections = [c for _, gpt_chunk in chunk_results for c in gpt_chunk]
 
     candidate_pairs, claude_only, gpt_only = _reconcile_dual_verification(
         claude_corrections, gpt_corrections)
@@ -459,12 +582,22 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     )
     warnings.extend(grammar_warnings)
 
+    # 문법 필요성 판단이 한국어 원문/영어 SRT로 이미 확정한 성별/격식을
+    # AI 검증 단계에 넘긴다 — 그래야 교정 제안이 그 성별/격식과 문법적으로
+    # 어긋나지 않는다(design §관계에 맞는 문장을 추천). 확정 안 된 줄은
+    # 여기 아예 안 들어가므로 AI는 여전히 아무것도 추측하지 않는다.
+    resolved_registers = {
+        r["segment_id"]: {"gender": r.get("resolved_gender"), "formality": r.get("resolved_formality")}
+        for r in segment_resolutions
+        if r.get("resolved_gender") or r.get("resolved_formality")
+    }
+
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
     dual_verification_findings, dual_verification_warnings = await _run_dual_verification_pass(
         pairs, provider, profile,
         pretreatment.pending_sensitive_hits, knowledge, format_constraint,
-        target_version_id,
+        target_version_id, resolved_registers,
     )
     warnings.extend(dual_verification_warnings)
 

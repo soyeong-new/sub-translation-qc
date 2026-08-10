@@ -60,3 +60,12 @@ class MockProvider(ModelProvider):
 
     async def check_equivalence_with_gpt(self, items: List[dict], profile: dict) -> List[dict]:
         return _check_equivalence(items)
+
+    async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
+        """결정론적 기본값: 전체를 씬 하나로 반환한다. 실제 씬 분할 로직은
+        테스트 대상이 아니라 GptClient 쪽에서 별도로 검증한다 — 여기서는
+        파이프라인이 씬 경계를 "정상적으로 받았을 때" 그대로 신뢰하고
+        넘어가는지만 확인하면 된다."""
+        if not pairs:
+            return []
+        return [{"start_id": pairs[0]["id"], "end_id": pairs[-1]["id"], "summary": "테스트용 단일 씬"}]

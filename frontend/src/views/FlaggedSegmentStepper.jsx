@@ -20,6 +20,10 @@ const navBtnClass =
 const closeBtnClass =
   `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
 
+// 성별 표시가 문장 속 누구를 가리키는지(1인칭=화자 자신/2인칭=대화 상대/
+// 3인칭=제3자) — spaCy 인칭 태그를 그대로 안내 문구로 옮긴 것.
+const PERSON_LABELS = { "1": "화자 자신", "2": "대화 상대", "3": "제3자(다른 인물)" };
+
 // 성별/격식 각각의 확인 상태를 판단하는 단일 기준점. isSegmentResolved와
 // 컴포넌트 렌더 로직(genderResolved/formalityResolved) 모두 이 두 함수를
 // 그대로 재사용해, "확인됨"의 정의가 여러 곳에서 어긋나지 않게 한다.
@@ -203,11 +207,21 @@ export default function FlaggedSegmentStepper({
                   </button>
                 </div>
               )}
-              {hint && (
+              {hint && (hint.grammatical_person || hint.text) && (
                 <p className="mt-3 text-xs text-muted-foreground">
-                  영어 자막 힌트: he {hint.he_count} · she {hint.she_count}
-                  <br />
-                  &ldquo;{hint.text}&rdquo;
+                  {hint.grammatical_person && (
+                    <>
+                      {PERSON_LABELS[hint.grammatical_person] ?? "누구 얘기인지 불명확"}을 가리키는 표현입니다.
+                      <br />
+                    </>
+                  )}
+                  {hint.text && (
+                    <>
+                      영어 자막 힌트: he {hint.he_count} · she {hint.she_count}
+                      <br />
+                      &ldquo;{hint.text}&rdquo;
+                    </>
+                  )}
                 </p>
               )}
             </section>

@@ -50,3 +50,6 @@ class LiveModelProvider(ModelProvider):
 
     async def check_equivalence_with_gpt(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.check_equivalence(items, profile)
+
+    async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.split_scenes(pairs, profile)

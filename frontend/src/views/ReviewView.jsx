@@ -14,9 +14,10 @@ import {
   resolveFormality,
 } from "../api.js";
 
-// 규칙 기반(사전필터) finding만 재질문 대상이 아니다 — LLM/안전망은 전부 가능
-// (backend/app/core/requery.py의 _LLM_REQUERYABLE_MODELS + "안전망"과 대칭).
-const NOT_REQUERYABLE_MODELS = ["사전필터"];
+// 규칙 기반(사전필터, 자동재배치) finding만 재질문 대상이 아니다 — LLM/안전망은
+// 전부 가능 (backend/app/core/requery.py의 _LLM_REQUERYABLE_MODELS + "안전망"과
+// 대칭). 자동재배치는 줄바꿈만 기계적으로 바꾼 것이라 다시 물어볼 "판단"이 없다.
+const NOT_REQUERYABLE_MODELS = ["사전필터", "자동재배치"];
 function isRequeryable(finding) {
   return Boolean(finding.model) && !NOT_REQUERYABLE_MODELS.includes(finding.model);
 }
@@ -111,7 +112,7 @@ function Field({ id, label, children }) {
 }
 
 function FindingCard({
-  finding, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
+  finding, koreanText, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
   requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
 }) {
   const busy = pending != null;
@@ -136,6 +137,18 @@ function FindingCard({
       </div>
 
       <p className="mb-3 text-sm text-foreground">{finding.description}</p>
+
+      {/* STT 한국어 원문 — 오역처럼 보이는 finding이 사실은 STT가 잘못 알아들은
+          결과일 수 있다. 검수자가 별도 STT 사이드바를 뒤지지 않고 그 자리에서
+          바로 "번역이 틀렸나, STT가 틀렸나"를 가늠할 수 있게 참고용으로 붙인다. */}
+      {koreanText && (
+        <div className="mb-3 rounded-md border border-dashed border-accent/40 bg-accent/5 p-3">
+          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
+            STT 한국어 원문 (참고용)
+          </p>
+          <p className="whitespace-pre-wrap text-sm text-foreground">{koreanText}</p>
+        </div>
+      )}
 
       {/* 원본/제안 대비: 데스크톱에서 나란히(2열), 좁은 화면에서는 세로로 쌓임 */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -558,6 +571,11 @@ export default function ReviewView({ targetVersionId, onBack }) {
 
   const isExporting = exportStatus.kind === "loading";
   const formatWarnings = exportResult?.format_warnings ?? [];
+  // Finding 카드에 STT 한국어 원문을 참고용으로 보여주기 위한 조회용 — 이미
+  // STT 사이드바에서 받아온 segments를 그대로 재사용한다(추가 API 호출 없음).
+  const koreanTextBySegmentId = segments
+    ? Object.fromEntries(segments.map((s) => [s.id, s.korean_text]))
+    : {};
 
   return (
     <div className="min-h-screen bg-background">
@@ -655,6 +673,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
                     <FindingCard
                       key={f.id}
                       finding={f}
+                      koreanText={koreanTextBySegmentId[f.segment_id]}
                       reviewerName={reviewerName}
                       pending={pendingActions[f.id] ?? null}
                       error={findingErrors[f.id]}

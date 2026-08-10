@@ -41,6 +41,12 @@ async def save_pipeline_result(session: AsyncSession, target_version_id: str,
             target_text=pair.target.text if pair.target else "",
             gender_check_needed=bool(resolution.get("gender_check_needed")),
             formality_check_needed=bool(resolution.get("formality_check_needed")),
+            # 한국어 원문(어미/호칭)이나 영어 SRT로 이미 자동 판정된 값 —
+            # 검수자가 스테퍼에서 또 묻지 않아도 되게 미리 채운다(design
+            # §정말 판단하기 어려운 것만 질문). 자동 판정 못 했으면 None
+            # 그대로라 지금까지처럼 사람이 확인해야 한다.
+            resolved_gender_raw=resolution.get("resolved_gender"),
+            resolved_formality_raw=resolution.get("resolved_formality"),
             english_pronoun_hint=resolution.get("english_pronoun_hint"),
         ))
 

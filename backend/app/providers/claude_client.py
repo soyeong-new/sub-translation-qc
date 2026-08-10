@@ -1,8 +1,20 @@
 """Claude API로 1차 교정(rewrite)과 안전망 축약을 수행하는 얇은 SDK 래퍼."""
 
 import json
+import re
 from typing import List
 from anthropic import AsyncAnthropic
+
+_CODE_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
+
+
+def _strip_code_fence(text: str) -> str:
+    """"반드시 JSON만 출력하라"고 지시해도 Claude는 종종 ```json ... ```
+    코드펜스로 감싸서 응답한다. json.loads가 그대로 실패하지 않도록 벗겨낸다."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = _CODE_FENCE_RE.sub("", stripped)
+    return stripped.strip()
 
 _JSON_INSTRUCTION = (
     "반드시 JSON 배열만 출력하라. 다른 설명 텍스트를 붙이지 마라. "
@@ -70,7 +82,7 @@ class ClaudeClient:
         )
         text = self._extract_text(response)
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(_strip_code_fence(text))
             if not isinstance(parsed, list):
                 # Claude가 GPT식으로 {"findings": [...]}처럼 최상위를 객체로
                 # 감싸서 응답할 가능성에 대비한다.
@@ -86,7 +98,7 @@ class ClaudeClient:
         )
         text = self._extract_text(response)
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(_strip_code_fence(text))
             if not isinstance(parsed, dict):
                 raise TypeError("응답이 JSON 객체가 아님")
             return parsed
@@ -106,8 +118,15 @@ class ClaudeClient:
             "자연스러운흐름(직역 지양, 한국어 어순을 그대로 따라간 부분을 찾아 "
             "고칠 것), 함축의미, 로컬라이제이션(그 나라 문화에 맞는 표현인지). "
             "성별/격식(존댓말·반말)은 화자를 특정할 근거가 없어 다루지 마라 — "
-            "검수자가 영상을 보고 직접 확인한다. 새 인물 이름의 표기 통일도 "
-            "다루지 마라(별도 사전으로 관리). "
+            "검수자가 영상을 보고 직접 확인한다. 단, 입력 pair에 "
+            "resolved_gender(male/female) 또는 resolved_formality(formal/"
+            "informal)가 이미 주어져 있으면 예외다 — 그건 이미 확정된 값이니, "
+            "네가 제안하는 "
+            "corrected_text가 그 성별/격식과 문법적으로 반드시 일치하게 하라 "
+            "(예: resolved_gender가 female이면 성별 표시 형용사/분사는 여성형). "
+            "resolved_gender/resolved_formality가 없는 pair는 그대로 다루지 "
+            "마라 — 추측 금지. 새 인물 이름의 표기 통일도 다루지 마라(별도 "
+            "사전으로 관리). "
             f"{format_constraint} 참고 지식베이스: {knowledge}\n"
         )
         system += (

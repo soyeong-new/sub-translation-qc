@@ -91,6 +91,23 @@ class ModelProvider(ABC):
         """check_equivalence_with_claude와 대칭."""
         ...
 
+    @abstractmethod
+    async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
+        """자막 전체(시간순 pairs)를 화제 전환·화자 구성 변화·시공간 이동·
+        분위기 반전 기준으로 씬 단위로 나눈다. correct_primary/verify_and_refine
+        에 pairs를 영화 전체 통째로 넘기면 응답이 토큰 한도에서 잘려 파싱이
+        통째로 실패하거나, 항목이 많을수록 모델이 segment_id를 엉뚱한 줄에
+        붙이는 오귀속이 늘어난다 — 씬 단위로 나눠 호출하면 두 문제 다
+        줄어들고, 대화가 이어지는 도중에 끊기지도 않는다(순수 개수/시간
+        기준 청킹과 달리 문맥 경계에서 자른다).
+
+        입력 pairs는 [{"id","korean_text","target_text","start","end"}, ...].
+        반환값은 [{"start_id","end_id","summary"}, ...] — 호출자가 pairs를
+        처음부터 끝까지 순서대로 빠짐없이 겹치지 않게 커버하는지 검증하며,
+        하나라도 어긋나면(파싱 실패 포함) 타임코드 공백 기준 청킹으로
+        폴백한다."""
+        ...
+
 
 def get_provider() -> ModelProvider:
     name = os.getenv("QC_PROVIDER", "live")

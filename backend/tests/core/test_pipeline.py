@@ -614,6 +614,57 @@ async def test_pipeline_does_not_compute_pronoun_hint_for_formality_only_flags(t
 
 
 @pytest.mark.asyncio
+async def test_pipeline_auto_resolves_formality_from_korean_ending_without_stepper(tmp_path):
+    """한국어 어미로 격식이 자동 판정되면 segment_resolutions에
+    resolved_formality가 바로 채워져야 한다 — 검수자가 스테퍼에서 또 물을
+    필요가 없다(design §정말 판단하기 어려운 것만 질문)."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n¿Puede venir?\n", encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1",
+            provider=MockProvider(),
+        )
+
+    resolution = result["segment_resolutions"][0]
+    assert resolution["formality_check_needed"] is True
+    assert resolution["resolved_formality"] == "formal"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_passes_resolved_registers_to_dual_verification(tmp_path, monkeypatch):
+    """한국어/영어로 미리 확정된 성별·격식은 Claude/GPT 검증 단계의 pairs에
+    resolved_gender/resolved_formality로 같이 전달돼야, 두 모델이 문법적으로
+    일치하는 교정을 제안할 수 있다(design §관계에 맞는 문장을 추천)."""
+    srt_path = tmp_path / "target.srt"
+    # MockProvider의 STT는 "안녕하세요"(존댓말 어미)를 반환한다.
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nEstoy cansada.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    captured = {}
+
+    async def _capture_correct_primary(pairs, *args, **kwargs):
+        captured["pairs"] = pairs
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _capture_correct_primary)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        )
+
+    assert captured["pairs"][0]["resolved_formality"] == "formal"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_transcribes_in_chunks_and_merges_with_correct_offsets(tmp_path, monkeypatch):
     """STT 오디오가 여러 조각으로 나뉘면, 각 조각을 병렬로 transcribe하고
     조각 인덱스 * chunk_seconds만큼 타임코드를 보정해서 순서대로 이어붙여야
@@ -818,3 +869,166 @@ async def test_pipeline_cleans_up_chunk_files_but_not_original_when_no_split_nee
     # 경로를 조각 정리 명목으로 지우려 하지 않는지다. fake_wav 경로가 두 번
     # 이상 unlink 호출에 나타나면 안 된다.
     assert unlinked_paths.count(fake_wav) <= 1
+
+
+# 영화 전체 pair를 Claude/GPT 검증 콜 하나에 몰아넣으면 응답이 토큰 한도에서
+# 잘려 파싱이 통째로 실패하거나(그 구간 전체 무효 처리), 모델이 segment_id를
+# 엉뚱한 줄에 붙이는 오귀속이 늘어난다("원본"에 다른 타임코드의 문장이 붙는
+# 버그로 실제 재현됨). 아래 테스트들은 그 회귀를 막는다: 씬 단위로 쪼개
+# 호출하고, 씬 분할이 실패해도 타임코드 공백 기준으로 안전하게 폴백하는지
+# 확인한다.
+from app.core.ingest import build_srt
+from app.core.pipeline import (
+    CHUNK_GAP_SECONDS, CHUNK_MAX_SIZE, CHUNK_MIN_SIZE,
+    _chunk_pairs_by_gap, _validate_scene_boundaries,
+)
+from app.schemas import AlignedPair, SegmentText
+
+
+def _pair(id_: str, start: float, end: float) -> AlignedPair:
+    return AlignedPair(
+        id=id_, korean=SegmentText(start=start, end=end, text="k"),
+        target=SegmentText(start=start, end=end, text="t"),
+    )
+
+
+def test_chunk_pairs_by_gap_keeps_one_chunk_when_below_min_size():
+    pairs = [_pair(f"p{i}", i * 10.0, i * 10.0 + 1.0) for i in range(5)]
+    assert _chunk_pairs_by_gap(pairs) == [pairs]
+
+
+def test_chunk_pairs_by_gap_cuts_only_at_gap_after_min_size():
+    pairs = []
+    t = 0.0
+    for i in range(CHUNK_MIN_SIZE):
+        pairs.append(_pair(f"p{i}", t, t + 1.0))
+        t += 1.1
+    t += CHUNK_GAP_SECONDS
+    for i in range(5):
+        pairs.append(_pair(f"q{i}", t, t + 1.0))
+        t += 1.1
+
+    chunks = _chunk_pairs_by_gap(pairs)
+
+    assert len(chunks) == 2
+    assert len(chunks[0]) == CHUNK_MIN_SIZE
+    assert len(chunks[1]) == 5
+
+
+def test_chunk_pairs_by_gap_forces_cut_at_max_size_without_gap():
+    pairs = []
+    t = 0.0
+    for i in range(CHUNK_MAX_SIZE + 5):
+        pairs.append(_pair(f"p{i}", t, t + 1.0))
+        t += 1.05  # 간격이 항상 CHUNK_GAP_SECONDS 미만이라 자연 절단점이 없음
+
+    chunks = _chunk_pairs_by_gap(pairs)
+
+    assert len(chunks[0]) == CHUNK_MAX_SIZE
+    assert sum(len(c) for c in chunks) == len(pairs)
+
+
+def test_validate_scene_boundaries_accepts_full_ordered_cover():
+    pairs = [_pair(f"p{i}", float(i), i + 1.0) for i in range(5)]
+    scenes = [{"start_id": "p0", "end_id": "p2"}, {"start_id": "p3", "end_id": "p4"}]
+
+    chunks = _validate_scene_boundaries(scenes, pairs)
+
+    assert [p.id for p in chunks[0]] == ["p0", "p1", "p2"]
+    assert [p.id for p in chunks[1]] == ["p3", "p4"]
+
+
+def test_validate_scene_boundaries_rejects_gap_between_scenes():
+    pairs = [_pair(f"p{i}", float(i), i + 1.0) for i in range(5)]
+    scenes = [{"start_id": "p0", "end_id": "p1"}, {"start_id": "p3", "end_id": "p4"}]  # p2 누락
+
+    assert _validate_scene_boundaries(scenes, pairs) is None
+
+
+def test_validate_scene_boundaries_rejects_unknown_id():
+    pairs = [_pair(f"p{i}", float(i), i + 1.0) for i in range(2)]
+    scenes = [{"start_id": "p0", "end_id": "nope"}]
+
+    assert _validate_scene_boundaries(scenes, pairs) is None
+
+
+@pytest.mark.asyncio
+async def test_dual_verification_falls_back_to_gap_chunking_when_scene_split_fails(tmp_path, monkeypatch):
+    """씬 분할 콜이 실패하면(재시도까지 실패) 영화 전체를 한 콜로 보내는 게
+    아니라 타임코드 공백 기준으로 쪼갠 청크마다 correct_primary를 따로
+    호출해야 한다."""
+    n_first = CHUNK_MIN_SIZE + 3
+    n_second = 4
+    entries = []
+    t = 0.0
+    for i in range(n_first):
+        entries.append({"start": t, "end": t + 1.0, "text": f"line {i}"})
+        t += 1.1
+    t += CHUNK_GAP_SECONDS
+    for i in range(n_second):
+        entries.append({"start": t, "end": t + 1.0, "text": f"line {n_first + i}"})
+        t += 1.1
+
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(build_srt(entries), encoding="utf-8")
+    korean_segments = [{"start": e["start"], "end": e["end"], "text": f"한국어 {i}"}
+                        for i, e in enumerate(entries)]
+
+    provider = MockProvider()
+
+    async def _fail_split(pairs, profile):
+        raise ValueError("씬 분할 실패 시뮬레이션")
+    monkeypatch.setattr(provider, "split_scenes", _fail_split)
+
+    calls = []
+    original_correct_primary = provider.correct_primary
+
+    async def _capture(pairs, *args, **kwargs):
+        calls.append(pairs)
+        return await original_correct_primary(pairs, *args, **kwargs)
+    monkeypatch.setattr(provider, "correct_primary", _capture)
+
+    result = await run_pipeline(
+        video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+        language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        cached_korean_segments=korean_segments, cached_video_proxy_path="/fake/proxy.mp4",
+    )
+
+    assert len(calls) == 2
+    assert len(calls[0]) == n_first
+    assert len(calls[1]) == n_second
+    assert any(w["stage"] == "씬 분할" for w in result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_dual_verification_uses_valid_scene_boundaries_from_provider(tmp_path, monkeypatch):
+    """씬 분할 콜이 유효한 경계를 돌려주면, 그 경계를 그대로 청크로 써서
+    correct_primary를 씬별로 호출해야 한다."""
+    entries = [{"start": i * 2.0, "end": i * 2.0 + 1.0, "text": f"line {i}"} for i in range(6)]
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(build_srt(entries), encoding="utf-8")
+    korean_segments = [{"start": e["start"], "end": e["end"], "text": f"한국어 {i}"}
+                        for i, e in enumerate(entries)]
+
+    provider = MockProvider()
+
+    async def _split(pairs, profile):
+        return [{"start_id": "pair_1", "end_id": "pair_3", "summary": "a"},
+                {"start_id": "pair_4", "end_id": "pair_6", "summary": "b"}]
+    monkeypatch.setattr(provider, "split_scenes", _split)
+
+    calls = []
+    original_correct_primary = provider.correct_primary
+
+    async def _capture(pairs, *args, **kwargs):
+        calls.append([p["id"] for p in pairs])
+        return await original_correct_primary(pairs, *args, **kwargs)
+    monkeypatch.setattr(provider, "correct_primary", _capture)
+
+    await run_pipeline(
+        video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+        language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+        cached_korean_segments=korean_segments, cached_video_proxy_path="/fake/proxy.mp4",
+    )
+
+    assert calls == [["pair_1", "pair_2", "pair_3"], ["pair_4", "pair_5", "pair_6"]]
