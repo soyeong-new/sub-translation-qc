@@ -63,6 +63,50 @@ async def test_create_episode_persists_english_srt_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_create_episode_persists_korean_srt_path(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
+    srt_ko_dir = tmp_path / "srt_ko"
+    srt_ko_dir.mkdir(parents=True)
+    srt_file = srt_ko_dir / "ko.srt"
+    srt_file.write_text("1\n00:00:00,000 --> 00:00:01,000\n안녕\n", encoding="utf-8")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+        episode_res = await client.post(
+            f"/titles/{title_id}/episodes",
+            json={"video_path": "/x.mp4", "korean_srt_path": str(srt_file)},
+        )
+    assert episode_res.status_code == 200
+    from app.models import Episode
+    async with async_session() as session:
+        episode = await session.get(Episode, episode_res.json()["id"])
+        assert episode.korean_srt_path == str(srt_file)
+
+
+@pytest.mark.asyncio
+async def test_create_episode_rejects_korean_srt_path_outside_srt_ko_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
+    (tmp_path / "srt_ko").mkdir(parents=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+        r = await client.post(
+            f"/titles/{title_id}/episodes",
+            json={"video_path": "/x.mp4", "korean_srt_path": "/etc/passwd"},
+        )
+        assert r.status_code == 400
+
+    from app.models import Episode
+    async with async_session() as session:
+        result = await session.execute(select(Episode).where(Episode.title_id == title_id))
+        assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_create_episode_rejects_english_srt_path_outside_srt_en_dir(monkeypatch, tmp_path):
     """Finding #1 회귀: english_srt_path는 클라이언트가 넘긴 임의 경로다.
     pipeline.load_srt()가 이 경로를 열어 파싱한 텍스트가
