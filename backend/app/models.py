@@ -37,6 +37,11 @@ class Episode(Base):
     # Episode 레벨인 이유는 한국어 영상/대상언어 SRT와 동일 — 같은 화를 여러
     # target_version(언어)으로 분석해도 참고할 영어 대사는 하나로 공유된다.
     english_srt_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # 사용자가 이미 갖고 있는 한국어 SRT(선택) — 있으면 STT를 건너뛰고
+    # 이 파일을 한국어 대사 소스로 쓴다(design 2026-08-11-korean-srt-input-design.md).
+    # Episode 레벨인 이유는 video_path/english_srt_path와 동일 — 같은 화를
+    # 여러 target_version(언어)으로 분석해도 한국어 원문은 하나로 공유된다.
+    korean_srt_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
 class TargetVersion(Base):
