@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
-  listLanguageProfiles, uploadSrtEn, pollTargetVersionStatus,
+  listLanguageProfiles, uploadSrtEn, uploadSrtKo, pollTargetVersionStatus,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 import TitleArchiveList from "./TitleArchiveList.jsx";
@@ -56,6 +56,8 @@ export default function TitleListView({ onSelect }) {
   const [srtFile, setSrtFile] = useState(null);
   const [englishSrtFile, setEnglishSrtFile] = useState(null);
   const [englishSrtProgress, setEnglishSrtProgress] = useState(null);
+  const [koreanSrtFile, setKoreanSrtFile] = useState(null);
+  const [koreanSrtProgress, setKoreanSrtProgress] = useState(null);
   const [videoProgress, setVideoProgress] = useState(null);
   const [srtProgress, setSrtProgress] = useState(null);
   const [status, setStatus] = useState(null); // { kind: "loading" | "success" | "error", message: string }
@@ -130,6 +132,18 @@ export default function TitleListView({ onSelect }) {
     setEnglishSrtFile(selected);
   }
 
+  function handleKoreanSrtSelected(selected) {
+    if (!SRT_EXTENSIONS.includes(getExtension(selected.name))) {
+      setStatus({
+        kind: "error",
+        message: `지원하지 않는 자막 파일 형식입니다. (허용: ${SRT_EXTENSIONS.join(", ")})`,
+      });
+      return;
+    }
+    setStatus(null);
+    setKoreanSrtFile(selected);
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
     setVideoProgress(0);
@@ -154,7 +168,17 @@ export default function TitleListView({ onSelect }) {
           console.error("영어 SRT 업로드 실패:", err);
         }
       }
-      const episode = await createEpisode(title.id, null, videoUpload.path, englishSrtPath);
+      // 한국어 SRT는 선택 입력이지만, 있으면 STT를 건너뛰겠다는 의도이므로
+      // (영어 SRT와 달리) 업로드 실패를 조용히 무시하지 않고 등록 자체를 막는다.
+      let koreanSrtPath = null;
+      if (koreanSrtFile) {
+        setStatus({ kind: "loading", message: "한국어 SRT 업로드 중..." });
+        const koreanSrtUpload = await uploadSrtKo(koreanSrtFile, setKoreanSrtProgress);
+        koreanSrtPath = koreanSrtUpload.path;
+      }
+      const episode = await createEpisode(
+        title.id, null, videoUpload.path, englishSrtPath, koreanSrtPath,
+      );
       const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
       setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
       await runAnalysis(tv.id, srtUpload.path);
@@ -167,6 +191,7 @@ export default function TitleListView({ onSelect }) {
       setVideoProgress(null);
       setSrtProgress(null);
       setEnglishSrtProgress(null);
+      setKoreanSrtProgress(null);
     }
   }
 
@@ -253,6 +278,16 @@ export default function TitleListView({ onSelect }) {
             file={englishSrtFile}
             onFileSelected={handleEnglishSrtSelected}
             progress={englishSrtProgress}
+            disabled={isSubmitting}
+          />
+
+          <FileDropzone
+            id="korean-srt-file"
+            label="한국어 SRT 자막 (선택, 있으면 STT 대신 이 파일을 사용합니다)"
+            accept={SRT_EXTENSIONS.join(",")}
+            file={koreanSrtFile}
+            onFileSelected={handleKoreanSrtSelected}
+            progress={koreanSrtProgress}
             disabled={isSubmitting}
           />
 
