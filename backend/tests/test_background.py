@@ -342,6 +342,38 @@ async def test_analyze_and_save_ignores_stale_stt_cache_missing_granularity_tag(
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_uses_episode_korean_srt_path_and_skips_transcribe(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n안녕\n", encoding="utf-8",
+    )
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        episode.korean_srt_path = str(ko_srt_path)
+        await session.commit()
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    mock_extract.assert_not_called()
+    async with async_session() as session:
+        segs = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id)
+        )).scalars().all()
+        assert any(s.korean_text == "안녕" for s in segs)
+
+
+@pytest.mark.asyncio
 async def test_analyze_and_save_persists_detected_video_offset(tmp_path, monkeypatch):
     """회귀: 영상을 잘라 올려 STT-SRT 사이 상수 오프셋이 감지되면, 그 값이
     TargetVersion.video_offset_seconds에 저장돼야 한다 — 프론트가 영상
