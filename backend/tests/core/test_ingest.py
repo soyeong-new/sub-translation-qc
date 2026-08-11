@@ -169,3 +169,57 @@ def test_split_audio_into_chunks_splits_long_audio_and_calls_ffmpeg_segment_muxe
     assert "-c" in args and args[args.index("-c") + 1] == "copy"
     assert "-reset_timestamps" in args and args[args.index("-reset_timestamps") + 1] == "1"
     assert str(tmp_path / "chunks" / "long_chunk%03d.wav") in args
+
+
+from app.core.ingest import korean_words_from_srt
+
+
+def test_korean_words_from_srt_drops_effect_and_song_lines(tmp_path):
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n[사람들이 노래를 따라 부른다]\n\n"
+        "2\n00:00:02,000 --> 00:00:04,000\n♪노래는이렇게\n\n"
+        "3\n00:00:04,000 --> 00:00:06,000\n안녕 오랜만이야\n",
+        encoding="utf-8",
+    )
+    words = korean_words_from_srt(str(srt_path))
+    texts = [w["text"] for w in words]
+    assert "안녕" in texts and "오랜만이야" in texts
+    assert not any("노래" in t or "[" in t or "♪" in t for t in texts)
+
+
+def test_korean_words_from_srt_strips_speaker_prefix_and_discards_name(tmp_path):
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n(순모) 너무 걱정하지 마세요\n",
+        encoding="utf-8",
+    )
+    words = korean_words_from_srt(str(srt_path))
+    texts = [w["text"] for w in words]
+    assert texts == ["너무", "걱정하지", "마세요"]
+    assert not any("순모" in t for t in texts)
+
+
+def test_korean_words_from_srt_drops_cue_that_is_entirely_parenthetical(tmp_path):
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n(문 여는 소리)\n",
+        encoding="utf-8",
+    )
+    assert korean_words_from_srt(str(srt_path)) == []
+
+
+def test_korean_words_from_srt_interpolates_timecodes_proportional_to_char_length(tmp_path):
+    srt_path = tmp_path / "ko.srt"
+    # "안녕"(2자) + "오랜만이야"(5자) + "잘"(1자) + "지냈어?"(4자) = 12자, 4초 구간
+    srt_path.write_text(
+        "1\n00:00:10,000 --> 00:00:14,000\n안녕 오랜만이야 잘 지냈어?\n",
+        encoding="utf-8",
+    )
+    words = korean_words_from_srt(str(srt_path))
+    assert [w["text"] for w in words] == ["안녕", "오랜만이야", "잘", "지냈어?"]
+    assert words[0]["start"] == pytest.approx(10.0)
+    assert words[0]["end"] == pytest.approx(10.0 + 4.0 * 2 / 12)
+    assert words[1]["start"] == pytest.approx(10.0 + 4.0 * 2 / 12)
+    assert words[1]["end"] == pytest.approx(10.0 + 4.0 * 7 / 12)
+    assert words[-1]["end"] == pytest.approx(14.0)

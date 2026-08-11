@@ -102,8 +102,8 @@ def delete_original_video(video_path: str) -> None:
 
 def split_audio_into_chunks(wav_path: str, chunk_seconds: float = 600.0,
                              out_dir: Optional[str] = None) -> List[str]:
-    """STT API의 파일 크기/길이 제한 안에 들어오도록 긴 오디오를 여러 조각으로 나눈다. 
-    16kHz mono 16bit PCM WAV는 초당 32KB라, 25MB는 약 781초(≈13분)에 해당한다 
+    """STT API의 파일 크기/길이 제한 안에 들어오도록 긴 오디오를 여러 조각으로 나눈다.
+    16kHz mono 16bit PCM WAV는 초당 32KB라, 25MB는 약 781초(≈13분)에 해당한다
     — chunk_seconds 기본값(600초=10분)은 이보다 여유 있게 낮췄다.
 
     길이를 읽을 수 없거나(파일이 없거나 유효한 WAV가 아니거나) 이미
@@ -140,3 +140,58 @@ def split_audio_into_chunks(wav_path: str, chunk_seconds: float = 600.0,
             partial.unlink(missing_ok=True)
         raise
     return [str(out_dir_p / f"{stem}_chunk{i:03d}.wav") for i in range(num_chunks)]
+
+
+_EFFECT_LINE_RE = re.compile(r"^\[.*\]$")
+_PAREN_PREFIX_RE = re.compile(r"^\([^)]*\)\s*")
+
+
+def _clean_korean_cue_text(text: str) -> str:
+    """사용자 제공 한국어 SRT에는 효과음/노래(`[...]`, `♪...`)와 화자
+    표기(`(이름) 대사`)가 섞여 있다 — STT는 만들어내지 않는 노이즈라 그대로
+    두면 대사가 아닌 텍스트가 한국어 원문에 섞인다. 화자 이름은 추출해
+    쓰지 않고 버린다(design §범위 밖 — 과거 인물 로스터 제거 이력과 같은
+    이유로, 화자를 안다고 그 줄의 문법적 성별 지시 대상까지 아는 건
+    아니라서)."""
+    kept_lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("♪") or _EFFECT_LINE_RE.match(line):
+            continue
+        line = _PAREN_PREFIX_RE.sub("", line).strip()
+        if not line:
+            continue
+        kept_lines.append(line)
+    return " ".join(kept_lines)
+
+
+def _words_with_interpolated_timecodes(text: str, start: float, end: float) -> List[dict]:
+    """SRT 큐는 문장 전체의 시작/끝만 알려주고 단어별 실제 발화 시각은
+    모른다 — 글자 수가 발화 시간과 대략 비례한다고 보고(균등 분할보다
+    나은 근사, design §2), 큐의 [start,end] 구간을 단어별 글자 수 비율로
+    나눠 STT 단어 타임코드를 흉내 낸다."""
+    words = text.split()
+    if not words:
+        return []
+    total_chars = sum(len(w) for w in words)
+    duration = end - start
+    result = []
+    cursor = start
+    for word in words:
+        word_end = cursor + duration * (len(word) / total_chars)
+        result.append({"start": cursor, "end": word_end, "text": word})
+        cursor = word_end
+    return result
+
+
+def korean_words_from_srt(path: str) -> List[dict]:
+    """사용자가 이미 갖고 있는 한국어 SRT를 STT 없이 한국어 대사 소스로
+    쓴다(design 2026-08-11-korean-srt-input-design.md). align()이 문장이
+    아니라 단어 단위 타임코드를 기대하므로(§2), 정제 후 단어로 쪼개
+    글자 수 비례로 타임코드를 보간한다. 반환 모양이 STT transcribe()와
+    동일해 이후 align()/detect_global_offset()을 무수정으로 재사용한다."""
+    words: List[dict] = []
+    for cue in load_srt(path):
+        text = _clean_korean_cue_text(cue.text)
+        words.extend(_words_with_interpolated_timecodes(text, cue.start, cue.end))
+    return words
