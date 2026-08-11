@@ -589,6 +589,32 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
 
 
 @pytest.mark.asyncio
+async def test_pipeline_uses_korean_srt_and_skips_transcribe(tmp_path):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n안녕하세요\n", encoding="utf-8",
+    )
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4") as mock_proxy:
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+            korean_srt_path=str(ko_srt_path),
+        )
+
+    mock_extract.assert_not_called()
+    mock_proxy.assert_called_once_with("/fake/video.mp4")
+    korean_pair = next(p for p in result["pairs"] if p.korean is not None)
+    assert korean_pair.korean.text == "안녕하세요"
+    assert result["video_proxy_path"] == "/fake/proxy.mp4"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_auto_corrects_constant_offset_between_stt_and_srt(tmp_path):
     """회귀: 영상 앞부분을 잘라 올려(리캡/인트로 제거 등) 한국어 STT
     타임코드 전체가 대상언어 SRT보다 상수만큼 앞서 있어도, 파이프라인이

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 from app.providers.base import ModelProvider
-from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
+from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks, korean_words_from_srt
 from app.core.pronoun_hints import find_pronoun_hint
 from app.core.alignment import align, detect_global_offset
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
@@ -795,6 +795,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                                cached_korean_segments: Optional[list] = None,
                                cached_video_proxy_path: Optional[str] = None,
                                english_srt_path: Optional[str] = None,
+                               korean_srt_path: Optional[str] = None,
                                suggested_not_applicable_lemmas: frozenset = frozenset()) -> dict:
     """S1(STT/정렬/사전·규칙 처리/문법 필요성 판단)만 실행한다. 성별/격식
     확인이 필요한 줄이 있으면 AI 검증(S2)은 여기서 시작하지 않는다 — 사람이
@@ -827,6 +828,13 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         # 불가능해질 수 있다는 점에서도 중요하다.
         korean_raw = cached_korean_segments
         video_proxy_path = cached_video_proxy_path
+    elif korean_srt_path:
+        # 사용자가 이미 한국어 SRT를 갖고 있으면 STT(오디오 추출 포함)를
+        # 건너뛴다 — 비용/시간과 오인식 위험을 없앤다(design
+        # 2026-08-11-korean-srt-input-design.md). 영상 프록시는 STT와
+        # 무관하게 검수 화면 재생에 필요하므로 그대로 만든다.
+        korean_raw = korean_words_from_srt(korean_srt_path)
+        video_proxy_path = await asyncio.to_thread(generate_video_proxy, video_path)
     else:
         # extract_audio는 subprocess.run(check=True)로 ffmpeg을 동기 호출하는,
         # 잠재적으로 몇 분씩 걸리는 CPU 바운드 작업이다. asyncio.to_thread로 감싸지
@@ -1027,7 +1035,8 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         provider: ModelProvider,
                         cached_korean_segments: Optional[list] = None,
                         cached_video_proxy_path: Optional[str] = None,
-                        english_srt_path: Optional[str] = None) -> dict:
+                        english_srt_path: Optional[str] = None,
+                        korean_srt_path: Optional[str] = None) -> dict:
     """phase1 + phase2를 곧장 이어서 실행하는 편의 래퍼 — 성별/격식 확인이
     필요한 줄이 있어도 기다리지 않고 바로 phase2까지 실행한다. 실제 운영
     경로(background.py)는 이 함수를 쓰지 않는다 — registers_need_confirmation
@@ -1037,7 +1046,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     knowledge = load_knowledge()
     phase1 = await run_pipeline_phase1(
         video_path, target_srt_path, language, variant, target_version_id, provider,
-        cached_korean_segments, cached_video_proxy_path, english_srt_path,
+        cached_korean_segments, cached_video_proxy_path, english_srt_path, korean_srt_path,
     )
     resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
     phase2 = await run_pipeline_phase2(
