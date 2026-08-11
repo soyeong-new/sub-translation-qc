@@ -31,3 +31,12 @@ async def upload_srt_en(file: UploadFile = File(...)):
     except UnsupportedFileType as exc:
         raise HTTPException(400, str(exc))
     return {"path": path}
+
+
+@router.post("/uploads/srt-ko")
+async def upload_srt_ko(file: UploadFile = File(...)):
+    try:
+        path = await save_upload("srt_ko", file.filename, file.read, SRT_EXTENSIONS)
+    except UnsupportedFileType as exc:
+        raise HTTPException(400, str(exc))
+    return {"path": path}
