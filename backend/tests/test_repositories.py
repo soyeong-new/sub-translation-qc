@@ -4,7 +4,10 @@ import pytest
 from sqlalchemy import select
 from app.db import async_session, engine
 from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection
-from app.repositories import save_pipeline_result, get_findings, delete_target_version_results
+from app.repositories import (
+    save_pipeline_result, get_findings, delete_target_version_results,
+    get_suggested_not_applicable_lemmas, record_gender_word_resolution,
+)
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
 
 
@@ -464,3 +467,97 @@ async def test_save_pipeline_result_persists_english_pronoun_hint():
         assert seg.english_pronoun_hint == {
             "text": "She looks tired.", "he_count": 0, "she_count": 1,
         }
+
+
+@pytest.mark.asyncio
+async def test_get_suggested_not_applicable_lemmas_only_when_never_assigned_real_gender():
+    """회귀(핵심 설계): 어떤 단어(기본형)가 "해당 없음"으로만 판정됐고 한
+    번도 실제 성별로 판정된 적 없어야만 추천 대상이다 — 단 한 번이라도
+    실제 성별로 판정된 적 있으면(문맥에 따라 사람을 가리킬 수 있다는
+    증거, 예: "grande") 절대 추천하지 않는다."""
+    async with async_session() as session:
+        await record_gender_word_resolution(session, "es", ["caro"], "not_applicable")
+        await record_gender_word_resolution(session, "es", ["grande"], "not_applicable")
+        await record_gender_word_resolution(session, "es", ["grande"], "male")
+        await session.commit()
+
+    async with async_session() as session:
+        lemmas = await get_suggested_not_applicable_lemmas(session, "es")
+    assert "caro" in lemmas
+    assert "grande" not in lemmas  # 한 번이라도 실제 성별로 판정된 적 있으면 제외
+
+
+@pytest.mark.asyncio
+async def test_get_suggested_not_applicable_lemmas_scoped_by_language():
+    async with async_session() as session:
+        await record_gender_word_resolution(session, "es", ["caro"], "not_applicable")
+        await session.commit()
+
+    async with async_session() as session:
+        assert "caro" not in await get_suggested_not_applicable_lemmas(session, "fr")
+
+
+@pytest.mark.asyncio
+async def test_get_findings_order_stays_stable_after_update():
+    """회귀: ORDER BY 없이는 UPDATE(승인/거부/수정/재질문) 후 SELECT 순서가
+    바뀔 수 있어, 검수자가 방금 수정한 카드가 목록에서 다른 자리로 옮겨가
+    "없어진 것처럼" 보이는 문제가 있었다 — 순서가 항상 고정돼야 한다."""
+    async with async_session() as session:
+        title = Title(name="Movie Order", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+        session.add(Segment(id="seg_b", target_version_id=tv.id, index=0, start=0.0, end=1.0))
+        session.add(Segment(id="seg_a", target_version_id=tv.id, index=1, start=1.0, end=2.0))
+        await session.flush()
+        session.add(FindingRow(
+            id="f_b", target_version_id=tv.id, segment_id="seg_b", category="mistranslation",
+            description="d", original_text="a", suggested_text="b", confidence=1.0))
+        session.add(FindingRow(
+            id="f_a", target_version_id=tv.id, segment_id="seg_a", category="mistranslation",
+            description="d", original_text="a", suggested_text="b", confidence=1.0))
+        await session.commit()
+        tv_id = tv.id
+
+    async with async_session() as session:
+        before = [f.id for f in await get_findings(session, tv_id)]
+
+    async with async_session() as session:
+        finding = await session.get(FindingRow, "f_b")
+        finding.status = "modified"
+        finding.final_text = "수정됨"
+        await session.commit()
+
+    async with async_session() as session:
+        after = [f.id for f in await get_findings(session, tv_id)]
+
+    assert before == after
+
+
+@pytest.mark.asyncio
+async def test_get_findings_orders_by_video_position_not_segment_id_string():
+    """회귀: segment_id 문자열로 정렬하면 "pair_10"이 "pair_2"보다 앞에 오는
+    등 실제 영상 순서와 어긋난다 — Segment.index(영상 안에서의 진짜 순번)로
+    정렬해야 한다."""
+    async with async_session() as session:
+        title = Title(name="Movie Order2", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        tv = await _make_target_version(session, title)
+        # segment_id 문자열로 정렬하면 pair_10이 pair_2보다 앞에 오지만,
+        # 영상 순서(index)로는 pair_2(index=1)가 pair_10(index=9)보다 앞이다.
+        session.add(Segment(id="pair_10", target_version_id=tv.id, index=9, start=90.0, end=91.0))
+        session.add(Segment(id="pair_2", target_version_id=tv.id, index=1, start=10.0, end=11.0))
+        await session.flush()
+        session.add(FindingRow(
+            id="f_10", target_version_id=tv.id, segment_id="pair_10", category="mistranslation",
+            description="d", original_text="a", suggested_text="b", confidence=1.0))
+        session.add(FindingRow(
+            id="f_2", target_version_id=tv.id, segment_id="pair_2", category="mistranslation",
+            description="d", original_text="a", suggested_text="b", confidence=1.0))
+        await session.commit()
+        tv_id = tv.id
+
+    async with async_session() as session:
+        ordered = [f.id for f in await get_findings(session, tv_id)]
+    assert ordered == ["f_2", "f_10"]

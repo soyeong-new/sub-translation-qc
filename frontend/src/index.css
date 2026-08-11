@@ -4,52 +4,55 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    /* Granola.ai(lapa.ninja/post/granola-2) 무드 이식: 크림 배경 #FCFCF8,
+       근-블랙 텍스트 #1E1E1E, 시그니처 라임 accent #D1E043. 실제 사이트 HTML에서
+       추출한 hex를 HSL로 변환한 값. finding 배지 색상은 기능적 의미가 있어 그대로 둠. */
+    --background: 60 40% 98%;
+    --foreground: 0 0% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
-    --primary: 221 83% 53%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 210 40% 94%;
-    --accent-foreground: 222 47% 11%;
+    --card-foreground: 0 0% 12%;
+    --primary: 0 0% 12%;
+    --primary-foreground: 60 40% 98%;
+    --secondary: 60 15% 95%;
+    --secondary-foreground: 0 0% 12%;
+    --muted: 60 10% 94%;
+    --muted-foreground: 60 3% 40%;
+    --accent: 66 55% 90%;
+    --accent-foreground: 0 0% 12%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 210 40% 98%;
     --success: 142 71% 35%;
     --success-foreground: 210 40% 98%;
     --warning: 38 92% 50%;
     --warning-foreground: 26 34% 15%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 221 83% 53%;
-    --radius: 0.5rem;
+    --border: 0 0% 87%;
+    --input: 0 0% 87%;
+    --ring: 66 72% 45%;
+    --radius: 0.625rem;
   }
 
   .dark {
-    --background: 222 47% 8%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 10%;
-    --card-foreground: 210 40% 98%;
-    --primary: 217 91% 60%;
-    --primary-foreground: 222 47% 11%;
-    --secondary: 217 33% 18%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 18%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 20%;
-    --accent-foreground: 210 40% 98%;
+    --background: 60 4% 10%;
+    --foreground: 60 9% 95%;
+    --card: 60 4% 13%;
+    --card-foreground: 60 9% 95%;
+    --primary: 66 72% 57%;
+    --primary-foreground: 0 0% 12%;
+    --secondary: 60 4% 18%;
+    --secondary-foreground: 60 9% 95%;
+    --muted: 60 4% 18%;
+    --muted-foreground: 60 5% 65%;
+    --accent: 60 4% 22%;
+    --accent-foreground: 60 9% 95%;
     --destructive: 0 63% 45%;
     --destructive-foreground: 210 40% 98%;
     --success: 142 60% 45%;
     --success-foreground: 222 47% 11%;
     --warning: 38 85% 55%;
     --warning-foreground: 26 34% 10%;
-    --border: 217 33% 20%;
-    --input: 217 33% 20%;
-    --ring: 217 91% 60%;
+    --border: 60 4% 22%;
+    --input: 60 4% 22%;
+    --ring: 66 72% 57%;
   }
 
   * {

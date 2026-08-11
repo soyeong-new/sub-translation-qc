@@ -3,7 +3,7 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select
 from app.main import app
 from app.db import engine, async_session
-from app.models import Base
+from app.models import Base, Title
 
 
 @pytest.fixture(autouse=True)
@@ -112,11 +112,77 @@ async def test_list_titles_returns_created_titles():
     assert names == {"T1", "T2"}
 
 
+
 @pytest.mark.asyncio
-async def test_get_title_returns_404_for_missing_title():
+async def test_list_titles_includes_nested_episodes_and_target_versions():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.get("/titles/does-not-exist")
+        title_res = await client.post("/titles", json={"name": "T", "type": "movie"})
+        title_id = title_res.json()["id"]
+        episode_res = await client.post(
+            f"/titles/{title_id}/episodes", json={"video_path": "/x.mp4"})
+        episode_id = episode_res.json()["id"]
+        tv_res = await client.post(
+            f"/episodes/{episode_id}/target-versions",
+            json={"target_language": "es", "variant": "LATAM"})
+        tv_id = tv_res.json()["id"]
+
+        r = await client.get("/titles")
+    title = next(t for t in r.json() if t["id"] == title_id)
+    assert len(title["episodes"]) == 1
+    assert title["episodes"][0]["id"] == episode_id
+    tvs = title["episodes"][0]["target_versions"]
+    assert len(tvs) == 1
+    assert tvs[0]["id"] == tv_id
+    assert tvs[0]["status"] == "analyzing"
+    assert tvs[0]["target_language"] == "es"
+
+
+@pytest.mark.asyncio
+async def test_delete_title_removes_title_and_children(tmp_path):
+    from app.models import Episode, TargetVersion, Segment, FindingRow
+
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"fake")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "movie"})
+        title_id = title_res.json()["id"]
+        episode_res = await client.post(
+            f"/titles/{title_id}/episodes", json={"video_path": str(video_path)})
+        episode_id = episode_res.json()["id"]
+        tv_res = await client.post(
+            f"/episodes/{episode_id}/target-versions",
+            json={"target_language": "es", "variant": "LATAM"})
+        tv_id = tv_res.json()["id"]
+
+    async with async_session() as session:
+        session.add(Segment(id="seg1", target_version_id=tv_id, index=0, start=0.0, end=1.0))
+        await session.flush()
+        session.add(FindingRow(
+            id="f1", target_version_id=tv_id, segment_id="seg1", category="mistranslation",
+            description="d", original_text="a", suggested_text="b", confidence=1.0))
+        await session.commit()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete(f"/titles/{title_id}")
+    assert r.status_code == 200
+
+    assert not video_path.exists()
+    async with async_session() as session:
+        assert await session.get(Title, title_id) is None
+        assert await session.get(Episode, episode_id) is None
+        assert await session.get(TargetVersion, tv_id) is None
+        assert await session.get(Segment, "seg1") is None
+        assert await session.get(FindingRow, "f1") is None
+
+
+@pytest.mark.asyncio
+async def test_delete_title_returns_404_for_missing_title():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete("/titles/does-not-exist")
     assert r.status_code == 404
 
 

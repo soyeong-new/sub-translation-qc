@@ -102,10 +102,9 @@ def delete_original_video(video_path: str) -> None:
 
 def split_audio_into_chunks(wav_path: str, chunk_seconds: float = 600.0,
                              out_dir: Optional[str] = None) -> List[str]:
-    """STT API의 파일 크기/길이 제한(gpt-4o-mini-transcribe 기준 25MB/약 25분)
-    안에 들어오도록 긴 오디오를 여러 조각으로 나눈다. 16kHz mono 16bit PCM
-    WAV는 초당 32KB라, 25MB는 약 781초(≈13분)에 해당한다 — chunk_seconds
-    기본값(600초=10분)은 이보다 여유 있게 낮췄다.
+    """STT API의 파일 크기/길이 제한 안에 들어오도록 긴 오디오를 여러 조각으로 나눈다. 
+    16kHz mono 16bit PCM WAV는 초당 32KB라, 25MB는 약 781초(≈13분)에 해당한다 
+    — chunk_seconds 기본값(600초=10분)은 이보다 여유 있게 낮췄다.
 
     길이를 읽을 수 없거나(파일이 없거나 유효한 WAV가 아니거나) 이미
     chunk_seconds보다 짧으면 원본 경로를 그대로 담은 리스트를 반환한다 —

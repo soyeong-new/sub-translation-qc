@@ -69,3 +69,10 @@ class MockProvider(ModelProvider):
         if not pairs:
             return []
         return [{"start_id": pairs[0]["id"], "end_id": pairs[-1]["id"], "summary": "테스트용 단일 씬"}]
+
+    async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
+        return [{"id": i["id"], "meaning": f"[뜻:{i['word']}]"} for i in items]
+
+    async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
+        return [{"id": i["id"], "corrected_text": f"[{i['formality']}] {i['target_text']}"}
+                for i in items]

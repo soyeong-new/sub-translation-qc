@@ -4,11 +4,14 @@ import asyncio
 from pathlib import Path
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
+from sqlalchemy import select
 from app.db import async_session
-from app.models import Episode, TargetVersion
+from app.models import Episode, TargetVersion, Segment
 from app.core.uploads import MEDIA_ROOT
 from app.repositories import delete_target_version_results
-from app.background import analyze_and_save
+from app.background import analyze_and_save, _run_phase2_and_save
+from app.providers.base import get_provider
+from app.core.pipeline import gender_groups_all_resolved
 
 router = APIRouter()
 
@@ -48,11 +51,11 @@ async def get_target_version(target_version_id: str):
         )
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
                 "video_proxy_url": video_proxy_url, "warnings": tv.warnings or [],
+                "video_offset_seconds": tv.video_offset_seconds or 0.0,
                 "title_id": episode.title_id if episode else None}
 
 
-@router.post("/target-versions/{target_version_id}/run-analysis")
-async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: Request):
+async def _start_analysis(target_version_id: str, target_srt_path: str, request: Request) -> dict:
     async with async_session() as session:
         tv = await session.get(TargetVersion, target_version_id)
         if tv is None:
@@ -68,9 +71,73 @@ async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: 
         tv.status = "analyzing"
         tv.error_message = None
         tv.warnings = None
+        tv.target_srt_path = target_srt_path
         await session.commit()
 
-    task = asyncio.create_task(analyze_and_save(target_version_id, payload.target_srt_path))
+    task = asyncio.create_task(analyze_and_save(target_version_id, target_srt_path))
     request.app.state.background_tasks.add(task)
     task.add_done_callback(request.app.state.background_tasks.discard)
     return {"status": "analyzing"}
+
+
+@router.post("/target-versions/{target_version_id}/run-analysis")
+async def run_analysis(target_version_id: str, payload: RunAnalysisIn, request: Request):
+    return await _start_analysis(target_version_id, payload.target_srt_path, request)
+
+
+@router.post("/target-versions/{target_version_id}/rerun")
+async def rerun_analysis(target_version_id: str, request: Request):
+    """"새로고침" 재분석 — 파일을 다시 업로드하지 않고, 최초 run-analysis 때
+    저장해둔 target_srt_path로 처음부터 다시 돈다(STT 캐시는 episode 단위로
+    남아있으면 재사용되지만, granularity가 안 맞으면 자동으로 새로 돈다)."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        if not tv.target_srt_path:
+            raise HTTPException(400, "재분석할 SRT 경로가 없습니다 — run-analysis를 먼저 실행해야 합니다")
+        target_srt_path = tv.target_srt_path
+    return await _start_analysis(target_version_id, target_srt_path, request)
+
+
+@router.post("/target-versions/{target_version_id}/confirm-registers")
+async def confirm_registers(target_version_id: str, request: Request):
+    """성별/격식 확인 페이지에서 사람이 답을 다 마친 뒤 호출한다 — 확인이
+    끝나지 않은 줄이 남아 있으면 거부하고(추측으로 AI 검증을 시작하면 안
+    되므로), 다 끝났으면 S2(AI 검증)를 새 백그라운드 태스크로 시작한다."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        if tv.status != "awaiting_confirmation":
+            raise HTTPException(400, f"확인 대기 상태가 아닙니다 (현재 status={tv.status})")
+        # 성별은 한 줄에 인물이 둘 이상이면(resolved_gender_groups_raw) 그룹별로
+        # 다 답해야 확인된 것이다 — resolved_gender_raw만 보는 단순 SQL NULL
+        # 체크로는 이 경우를 표현할 수 없어(그 줄은 resolved_gender_raw를 아예
+        # 쓰지 않음) 후보를 가져와 파이썬에서 gender_groups_all_resolved로
+        # 판단한다.
+        candidates = (await session.execute(
+            select(Segment).where(
+                Segment.target_version_id == target_version_id,
+                (Segment.gender_check_needed == True) | (Segment.formality_check_needed == True),  # noqa: E712
+            )
+        )).scalars().all()
+        unresolved = any(
+            (
+                seg.gender_check_needed
+                and not seg.resolved_gender_raw
+                and not gender_groups_all_resolved(seg.resolved_gender_groups_raw)
+            )
+            or (seg.formality_check_needed and not seg.resolved_formality_raw)
+            for seg in candidates
+        )
+        if unresolved:
+            raise HTTPException(400, "아직 확인되지 않은 줄이 있습니다")
+        tv.status = "verifying"
+        await session.commit()
+
+    provider = get_provider()
+    task = asyncio.create_task(_run_phase2_and_save(target_version_id, provider))
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
+    return {"status": "verifying"}

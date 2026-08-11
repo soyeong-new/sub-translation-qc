@@ -38,6 +38,51 @@ async def _make_target_version(status="analyzing") -> str:
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_stops_at_awaiting_confirmation_without_running_ai_verification(
+        tmp_path, monkeypatch):
+    """design §AI 검증은 확정된 값을 받고 시작해야 함: 성별/격식 확인이 필요한
+    줄이 남아 있으면 analyze_and_save는 거기서 멈추고 S2(Claude/GPT 이중 검증)를
+    아예 실행하지 않아야 한다 — 실행해버리면 그 줄은 성별/격식을 추측 없이
+    검증한 게 된다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    def _fake_grammar_necessity(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False,
+                  "resolved_formality": None, "resolved_gender_from_korean": None,
+                  "grammatical_person": None} for p in pairs]
+
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _fake_grammar_necessity)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video") as mock_delete:
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "awaiting_confirmation"
+
+        segs = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id)
+        )).scalars().all()
+        assert any(s.gender_check_needed and s.resolved_gender_raw is None for s in segs)
+
+        # S2가 아예 안 돌았어야 한다 — claude/gpt/claude+gpt/안전망이 만드는
+        # finding이 하나도 없어야 한다(사전필터 finding은 있을 수 있음).
+        findings = (await session.execute(
+            select(FindingRow).where(FindingRow.target_version_id == tv_id)
+        )).scalars().all()
+        assert all(f.model not in ("claude", "gpt", "claude+gpt", "안전망") for f in findings)
+
+    # 원본 영상은 S1이 끝난 시점에 지운다 — 확인 대기 여부와 무관하다.
+    mock_delete.assert_called_once_with("/x.mp4")
+
+
+@pytest.mark.asyncio
 async def test_analyze_and_save_sets_status_review_on_success(tmp_path, monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
@@ -61,14 +106,14 @@ async def test_analyze_and_save_sets_status_review_on_success(tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_analyze_and_save_does_not_delete_original_video_when_pipeline_fails(
         tmp_path, monkeypatch):
-    """C2 회귀: run_pipeline이 실패하면(예: 타임아웃, 예외) 원본 영상이 지워지면
+    """C2 회귀: run_pipeline_phase1이 실패하면(예: 타임아웃, 예외) 원본 영상이 지워지면
     안 된다 — 지워버리면 프록시 경로도 저장되지 않았는데 원본까지 없어서
     /run-analysis 재시도가 영영 실패하게 된다."""
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     tv_id = await _make_target_version()
 
-    with patch("app.background.run_pipeline", side_effect=RuntimeError("STT 실패")), \
+    with patch("app.background.run_pipeline_phase1", side_effect=RuntimeError("STT 실패")), \
          patch("app.background.delete_original_video") as mock_delete:
         await background.analyze_and_save(tv_id, "/nonexistent.srt")
 
@@ -170,7 +215,7 @@ async def test_analyze_and_save_sets_status_failed_on_exception(monkeypatch):
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     tv_id = await _make_target_version()
 
-    with patch("app.background.run_pipeline", side_effect=RuntimeError("STT 실패")):
+    with patch("app.background.run_pipeline_phase1", side_effect=RuntimeError("STT 실패")):
         await background.analyze_and_save(tv_id, "/nonexistent.srt")
 
     async with async_session() as session:
@@ -190,7 +235,7 @@ async def test_analyze_and_save_sets_status_failed_on_timeout(monkeypatch):
         await asyncio.sleep(0.05)
         return {}
 
-    with patch("app.background.run_pipeline", side_effect=_slow_pipeline):
+    with patch("app.background.run_pipeline_phase1", side_effect=_slow_pipeline):
         await background.analyze_and_save(tv_id, "/nonexistent.srt")
 
     async with async_session() as session:
@@ -222,7 +267,10 @@ async def test_analyze_and_save_persists_stt_cache_on_first_success(tmp_path, mo
     async with async_session() as session:
         tv = await session.get(TargetVersion, tv_id)
         episode = await session.get(Episode, tv.episode_id)
-        assert episode.stt_cache == {"segments": [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]}
+        assert episode.stt_cache == {
+            "segments": [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}],
+            "granularity": "word",
+        }
         assert episode.video_proxy_path == "/fake/proxy.mp4"
 
 
@@ -237,7 +285,10 @@ async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, 
     async with async_session() as session:
         tv = await session.get(TargetVersion, tv_id)
         episode = await session.get(Episode, tv.episode_id)
-        episode.stt_cache = {"segments": [{"start": 0.0, "end": 1.0, "text": "캐시된 문장"}]}
+        episode.stt_cache = {
+            "segments": [{"start": 0.0, "end": 1.0, "text": "캐시된 단어"}],
+            "granularity": "word",
+        }
         episode.video_proxy_path = "/fake/cached_proxy.mp4"
         await session.commit()
 
@@ -252,6 +303,84 @@ async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, 
         segs = (await session.execute(
             select(Segment).where(Segment.target_version_id == tv_id)
         )).scalars().all()
-        assert any(s.korean_text == "캐시된 문장" for s in segs)
+        assert any(s.korean_text == "캐시된 단어" for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_ignores_stale_stt_cache_missing_granularity_tag(tmp_path, monkeypatch):
+    """캐시 형식이 바뀌면(문장→단어 단위) 옛 형식으로 저장된 캐시를 그대로
+    믿으면 안 된다 — granularity 태그가 없는(옛) 캐시는 무시하고 다시
+    STT를 돌려야 하고, 그 결과로 캐시도 새 형식으로 갱신돼야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        episode.stt_cache = {"segments": [{"start": 0.0, "end": 1.0, "text": "옛 형식 캐시"}]}
+        episode.video_proxy_path = "/fake/cached_proxy.mp4"
+        await session.commit()
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4") as mock_proxy, \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    mock_extract.assert_called_once()
+    mock_proxy.assert_called_once()
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        assert episode.stt_cache["granularity"] == "word"
+        segs = (await session.execute(
+            select(Segment).where(Segment.target_version_id == tv_id)
+        )).scalars().all()
+        assert not any(s.korean_text == "옛 형식 캐시" for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_analyze_and_save_persists_detected_video_offset(tmp_path, monkeypatch):
+    """회귀: 영상을 잘라 올려 STT-SRT 사이 상수 오프셋이 감지되면, 그 값이
+    TargetVersion.video_offset_seconds에 저장돼야 한다 — 프론트가 영상
+    미리보기 seek 시 이 값으로 SRT 시계를 영상 파일 시계로 변환한다."""
+    from app.core.ingest import build_srt
+
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+
+    entries = [
+        {"start": start, "end": start + 5.0, "text": f"Linea {i}"}
+        for i, start in enumerate([0.0, 13.0, 41.0, 68.0, 100.0, 155.0])
+    ]
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(build_srt(entries), encoding="utf-8")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        episode.stt_cache = {
+            "segments": [
+                {"start": e["start"] - 55.0 + 1.0, "end": e["start"] - 55.0 + 1.5, "text": f"단어{i}"}
+                for i, e in enumerate(entries)
+            ],
+            "granularity": "word",
+        }
+        episode.video_proxy_path = "/fake/cached_proxy.mp4"
+        await session.commit()
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy") as mock_proxy, \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    mock_extract.assert_not_called()
+    mock_proxy.assert_not_called()
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.video_offset_seconds == pytest.approx(55.0, abs=1.5)
 
 

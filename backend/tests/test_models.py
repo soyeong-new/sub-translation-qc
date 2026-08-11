@@ -22,7 +22,7 @@ async def test_all_expected_tables_exist():
         tables = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
     expected = {
         "titles", "episodes", "target_versions",
-        "segments", "findings", "stt_corrections", "learned_examples", "exports",
+        "segments", "findings", "stt_corrections", "exports",
     }
     assert expected.issubset(set(tables))
 

@@ -143,6 +143,65 @@ async def test_run_analysis_can_be_retried_without_integrity_error(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_rerun_reuses_stored_srt_path_without_new_upload(tmp_path, monkeypatch):
+    """"새로고침" 버튼 — run-analysis 때 저장해둔 target_srt_path를 그대로
+    써서 다시 도는지 확인한다. rerun 요청은 body가 없다(파일 재업로드 없음)."""
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="pending"); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    from app.core.uploads import MEDIA_ROOT
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy_rerun.mp4")
+
+    transport = ASGITransport(app=app)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.background.delete_original_video", return_value=None):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(f"/target-versions/{tv_id}/run-analysis",
+                                  json={"target_srt_path": str(srt_path)})
+            assert r.status_code == 200
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.post(f"/target-versions/{tv_id}/rerun")
+            assert r.status_code == 200
+            assert r.json()["status"] == "analyzing"
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}")
+            assert r.status_code == 200
+            assert r.json()["status"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_rerun_returns_400_when_no_srt_path_stored():
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="pending"); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/target-versions/{tv_id}/rerun")
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatch):
     """run_pipeline은 analyze_characters를 호출하지 않는다(인물/관계 로스터
     자체가 폐지됨). 이 테스트가 검증하려는 "파이프라인 어느 단계가 실패해도
@@ -192,6 +251,111 @@ async def test_get_target_version_exposes_pipeline_warnings(tmp_path, monkeypatc
     assert r.json()["warnings"] == [
         {"stage": "문법 필요성 판단", "message": "문법 필요성 판단 API 오류"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_registers_rejects_when_segments_still_unresolved(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="pending"); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    def _fake_grammar_necessity(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False,
+                  "resolved_formality": None, "resolved_gender_from_korean": None,
+                  "grammatical_person": None} for p in pairs]
+
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _fake_grammar_necessity)
+
+    # GET /target-versions/{id}가 video_proxy_url을 MEDIA_ROOT/video_proxy
+    # 기준 상대경로로 계산하므로, 실제 generate_video_proxy가 만드는 것과
+    # 같은 형태의 경로를 mock한다.
+    from app.core.uploads import MEDIA_ROOT
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy_reject.mp4")
+
+    transport = ASGITransport(app=app)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.background.delete_original_video", return_value=None):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(f"/target-versions/{tv_id}/run-analysis",
+                              json={"target_srt_path": str(srt_path)})
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}")
+            assert r.json()["status"] == "awaiting_confirmation"
+
+            r = await client.post(f"/target-versions/{tv_id}/confirm-registers")
+            assert r.status_code == 400
+
+            r = await client.get(f"/target-versions/{tv_id}")
+            assert r.json()["status"] == "awaiting_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_confirm_registers_runs_ai_verification_after_all_resolved(tmp_path, monkeypatch):
+    """성별 확인이 필요한 줄을 사람이(resolve-gender) 답한 뒤에만
+    confirm-registers가 S2(AI 검증)를 실행해 status를 review로 넘겨야 한다."""
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="pending"); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    def _fake_grammar_necessity(pairs, profile):
+        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False,
+                  "resolved_formality": None, "resolved_gender_from_korean": None,
+                  "grammatical_person": None} for p in pairs]
+
+    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _fake_grammar_necessity)
+
+    from app.core.uploads import MEDIA_ROOT
+    fake_proxy_path = str(MEDIA_ROOT / "video_proxy" / "fake_proxy_confirm.mp4")
+
+    transport = ASGITransport(app=app)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
+         patch("app.background.delete_original_video", return_value=None):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(f"/target-versions/{tv_id}/run-analysis",
+                              json={"target_srt_path": str(srt_path)})
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}/segments")
+            seg_id = r.json()[0]["id"]
+            r = await client.post(f"/segments/{seg_id}/resolve-gender", json={"gender": "female"})
+            assert r.status_code == 200
+
+            r = await client.post(f"/target-versions/{tv_id}/confirm-registers")
+            assert r.status_code == 200
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+            r = await client.get(f"/target-versions/{tv_id}")
+            assert r.json()["status"] == "review"
+
+            r = await client.get(f"/target-versions/{tv_id}/findings")
+            findings = r.json()
+            assert any(f["category"] == "mistranslation" for f in findings)
 
 
 @pytest.mark.asyncio

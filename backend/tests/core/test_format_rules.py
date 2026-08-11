@@ -84,3 +84,24 @@ def test_rewrap_line_normalizes_existing_bad_linebreaks():
     result = rewrap_line(text)
     assert result is not None
     assert all(len(ln) <= 50 for ln in result.split("\n"))
+
+
+def test_rewrap_line_prefers_sentence_boundary_over_word_boundary():
+    text = "안녕하세요 저는 홍길동입니다. 만나서 반갑습니다 잘 부탁드립니다"
+    result = rewrap_line(text)
+    assert result == "안녕하세요 저는 홍길동입니다.\n만나서 반갑습니다 잘 부탁드립니다"
+
+
+def test_rewrap_line_does_not_split_inside_ellipsis():
+    text = "그건 저도 잘 모르겠어요... 나중에 다시 물어봐 주시겠어요 부탁드립니다"
+    result = rewrap_line(text)
+    assert result is not None
+    for ln in result.split("\n"):
+        assert "..." not in ln or ln.count(".") in (0, 3)
+
+
+def test_rewrap_line_falls_back_to_word_boundary_without_punctuation():
+    text = " ".join(["word"] * 20)
+    result = rewrap_line(text)
+    assert "\n" in result
+    assert "." not in result and "," not in result

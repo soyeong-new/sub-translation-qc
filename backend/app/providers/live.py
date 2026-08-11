@@ -53,3 +53,9 @@ class LiveModelProvider(ModelProvider):
 
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.split_scenes(pairs, profile)
+
+    async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.gloss_words(items, profile)
+
+    async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.apply_formality(items, profile)

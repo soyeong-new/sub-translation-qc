@@ -55,6 +55,24 @@ def _make_finding(target_version_id: str, segment_id: str, category: str,
     )
 
 
+def find_pending_sensitive_hits(pairs: List[AlignedPair], sensitive_terms: List[str],
+                                 profanity_entries: List[dict]) -> List[dict]:
+    """target_text가 이미 사전처리(글로서리/CTA/비속어사전 치환)를 거친 뒤에도
+    남아있는 민감어 후보만 찾는다. run_pretreatment 안에서 쓰이는 것과 별개로,
+    성별/격식 확인이 끝난 뒤 검증(S2)을 재개할 때 — 사전처리는 이미 끝난
+    pairs에 대해 민감어 매칭만 다시 계산해야 할 때 재사용한다."""
+    applied_terms = {e["term"] for e in profanity_entries}
+    hits: List[dict] = []
+    for pair in pairs:
+        if pair.target is None:
+            continue
+        text_lower = pair.target.text.lower()
+        for term in sensitive_terms:
+            if term.lower() in text_lower and term not in applied_terms:
+                hits.append({"segment_id": pair.id, "term": term})
+    return hits
+
+
 def run_pretreatment(pairs: List[AlignedPair], glossary_entries: List[dict],
                       cta_patterns: List[str], profanity_entries: List[dict],
                       sensitive_terms: List[str], target_version_id: str) -> PretreatmentResult:
@@ -62,8 +80,6 @@ def run_pretreatment(pairs: List[AlignedPair], glossary_entries: List[dict],
     먼저 처리한다. profanity_entries에 없는 민감어 후보(sensitive_terms 매칭)는
     애매한 경우로 보고 Claude 1차로 넘긴다(pending_sensitive_hits)."""
     findings: List[Finding] = []
-    pending_sensitive_hits: List[dict] = []
-    applied_terms = {e["term"] for e in profanity_entries}
 
     for pair in pairs:
         if pair.target is None:
@@ -90,10 +106,7 @@ def run_pretreatment(pairs: List[AlignedPair], glossary_entries: List[dict],
                     target_version_id, pair.id, "sensitivity",
                     f"사전 등록된 비속어 자동 교정: {', '.join(profanity_hits)}", original, text))
 
-        text_lower = text.lower()
-        for term in sensitive_terms:
-            if term.lower() in text_lower and term not in applied_terms:
-                pending_sensitive_hits.append({"segment_id": pair.id, "term": term})
+    pending_sensitive_hits = find_pending_sensitive_hits(pairs, sensitive_terms, profanity_entries)
 
     return PretreatmentResult(pairs=pairs, findings=findings,
                                pending_sensitive_hits=pending_sensitive_hits)

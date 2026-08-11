@@ -84,18 +84,18 @@ async def test_verify_and_refine_raises_on_empty_choices():
         await client.verify_and_refine([], {}, [], "", "")
 
 
-def _make_client_with_fake_transcribe(segments):
+def _make_client_with_fake_transcribe(words):
     client = GptClient(api_key="fake", model="gpt-test", transcribe_model="whisper-1")
     fake_response = MagicMock()
-    fake_response.segments = segments
+    fake_response.words = words
     client._sdk_client.audio.transcriptions.create = AsyncMock(return_value=fake_response)
     return client
 
 
 @pytest.mark.asyncio
-async def test_transcribe_returns_segments_with_timecodes(tmp_path):
-    segments = [SimpleNamespace(start=0.0, end=2.0, text="안녕하세요")]
-    client = _make_client_with_fake_transcribe(segments)
+async def test_transcribe_returns_words_with_timecodes(tmp_path):
+    words = [SimpleNamespace(start=0.0, end=2.0, word="안녕하세요")]
+    client = _make_client_with_fake_transcribe(words)
     audio_path = tmp_path / "audio.wav"
     audio_path.write_bytes(b"fake-audio-bytes")
     result = await client.transcribe(str(audio_path))
@@ -104,19 +104,20 @@ async def test_transcribe_returns_segments_with_timecodes(tmp_path):
 
 @pytest.mark.asyncio
 async def test_transcribe_sends_korean_language_hint_and_configured_model(tmp_path):
-    segments = [SimpleNamespace(start=0.0, end=1.0, text="안녕")]
-    client = _make_client_with_fake_transcribe(segments)
+    words = [SimpleNamespace(start=0.0, end=1.0, word="안녕")]
+    client = _make_client_with_fake_transcribe(words)
     audio_path = tmp_path / "audio.wav"
     audio_path.write_bytes(b"fake-audio-bytes")
     await client.transcribe(str(audio_path))
     kwargs = client._sdk_client.audio.transcriptions.create.call_args.kwargs
     assert kwargs["language"] == "ko"
     assert kwargs["model"] == "whisper-1"
+    assert kwargs["timestamp_granularities"] == ["word"]
 
 
 @pytest.mark.asyncio
-async def test_transcribe_returns_empty_list_when_no_segments(tmp_path):
-    """회귀(Finding #1): transcribe는 이제 청크 단위로 호출되므로, 세그먼트
+async def test_transcribe_returns_empty_list_when_no_words(tmp_path):
+    """회귀(Finding #1): transcribe는 이제 청크 단위로 호출되므로, 단어가
     없는 조각(무음 구간 등)은 그 자체로는 실패가 아니다 — 빈 리스트를
     돌려주고, "에피소드 전체에 대사가 없음" 판단은
     pipeline._transcribe_in_chunks가 모든 조각을 병합한 뒤에 한다."""

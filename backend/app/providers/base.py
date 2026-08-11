@@ -92,6 +92,29 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
+    async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
+        """성별/격식 확인 화면에 뜨는, 성별 표시가 걸린 대상언어 단어들의 뜻을
+        한국어로 풀이한다 — 검수자가 대상언어를 몰라 "이 단어가 사람 얘기인지
+        사물 얘기인지"조차 판단 못 하는 문제를 돕는다(예: "caro"가 사람이
+        아니라 가격을 뜻한다는 걸 알아야 성별 확인이 필요 없다는 걸 판단할
+        수 있음). 입력은 [{"id": str, "word": str, "context": str(그 단어가
+        들어간 문장)}, ...], 반환값은 [{"id": str, "meaning": str(간결한
+        한국어 뜻)}, ...]."""
+        ...
+
+    @abstractmethod
+    async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
+        """확정된 격식(formal/informal)만 문장에 반영하는 전담 호출 — 오역/
+        뉘앙스/직역투 등 다른 검증과 한 프롬프트에 섞으면 모델이 부차적
+        지시(격식)를 놓치는 문제가 있었다(design §격식 지시가 무시됨). 오직
+        2인칭 대명사·동사 활용만 바꾸고 다른 건 손대지 않는다 — 이 결과가
+        이후 이중검증(S2)의 새 기준 텍스트가 된다. 입력은
+        [{"id": str, "target_text": str, "formality": "formal"|"informal"}],
+        반환값은 [{"id": str, "corrected_text": str}] — 이미 일치하면
+        target_text 그대로 돌아온다."""
+        ...
+
+    @abstractmethod
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
         """자막 전체(시간순 pairs)를 화제 전환·화자 구성 변화·시공간 이동·
         분위기 반전 기준으로 씬 단위로 나눈다. correct_primary/verify_and_refine

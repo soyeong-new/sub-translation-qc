@@ -1,5 +1,5 @@
 import pytest
-from app.core.safety_net import shrink_violating_lines
+from app.core.safety_net import shrink_violating_lines, enforce_line_length
 from app.schemas import AlignedPair, SegmentText, FormatViolation
 from app.providers.mock import MockProvider
 
@@ -63,3 +63,35 @@ async def test_violation_resolved_by_rewrap_alone_skips_llm():
     lines = pairs[0].target.text.split("\n")
     assert len(lines) <= 2
     assert all(len(ln) <= 50 for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_enforce_line_length_leaves_short_text_untouched_without_calling_llm():
+    provider = MockProvider()
+    calls = []
+    provider.shrink_line = lambda *a, **k: calls.append(a) or pytest.fail("should not be called")
+    text, changed = await enforce_line_length("짧은 줄", provider)
+    assert text == "짧은 줄"
+    assert changed is False
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_enforce_line_length_resolves_via_rewrap_without_llm():
+    text = " ".join(["word"] * 20)  # 99자, 한 줄 — 재배치만으로 2줄x50자 안에 들어감
+    result, changed = await enforce_line_length(text, MockProvider())
+    assert changed is True
+    lines = result.split("\n")
+    assert len(lines) <= 2
+    assert all(len(ln) <= 50 for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_enforce_line_length_falls_back_to_llm_when_rewrap_cannot_help():
+    # 공백 없는 긴 단어 하나 — rewrap_line은 단어를 못 쪼개므로 항상 실패,
+    # LLM(MockProvider.shrink_line = text[:max_chars]) 폴백을 강제로 탄다.
+    text = "a" * 70
+    result, changed = await enforce_line_length(text, MockProvider())
+    assert changed is True
+    assert len(result) <= 50
+    assert result != text

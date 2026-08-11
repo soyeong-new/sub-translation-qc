@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createTitle, createEpisode, createTargetVersion, runAnalysis, uploadVideo, uploadSrt,
-  getTargetVersion, listLanguageProfiles, uploadSrtEn,
+  listLanguageProfiles, uploadSrtEn, pollTargetVersionStatus,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
+import TitleArchiveList from "./TitleArchiveList.jsx";
 
 const STATUS_STYLES = {
   loading: "text-muted-foreground",
@@ -90,25 +91,7 @@ export default function TitleListView({ onSelect }) {
   }, []);
 
   function pollUntilDone(targetVersionId) {
-    return new Promise((resolve, reject) => {
-      const poll = async () => {
-        if (!isMountedRef.current) return;
-        try {
-          const tv = await getTargetVersion(targetVersionId);
-          if (!isMountedRef.current) return;
-          if (tv.status === "review") {
-            resolve();
-          } else if (tv.status === "failed") {
-            reject(new Error(tv.error_message || "분석 중 오류가 발생했습니다."));
-          } else {
-            setTimeout(poll, 2000);
-          }
-        } catch (err) {
-          if (isMountedRef.current) reject(err);
-        }
-      };
-      poll();
-    });
+    return pollTargetVersionStatus(targetVersionId, { isMounted: () => isMountedRef.current });
   }
 
   function handleVideoSelected(selected) {
@@ -175,9 +158,9 @@ export default function TitleListView({ onSelect }) {
       const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
       setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
       await runAnalysis(tv.id, srtUpload.path);
-      await pollUntilDone(tv.id);
+      const doneStatus = await pollUntilDone(tv.id);
       setStatus({ kind: "success", message: "완료" });
-      onSelect(tv.id);
+      onSelect(tv.id, doneStatus);
     } catch (err) {
       setStatus({ kind: "error", message: err.message ?? "요청 중 오류가 발생했습니다." });
     } finally {
@@ -188,7 +171,7 @@ export default function TitleListView({ onSelect }) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12">
+    <div className="flex min-h-screen flex-col items-center bg-background px-4 py-12">
       <div className="w-full max-w-md rounded-lg border border-border bg-card p-8 shadow-sm">
         <div className="mb-6">
           <h1 className="text-2xl font-semibold text-card-foreground">작품 등록</h1>
@@ -302,6 +285,8 @@ export default function TitleListView({ onSelect }) {
           )}
         </form>
       </div>
+
+      <TitleArchiveList onOpen={onSelect} />
     </div>
   );
 }

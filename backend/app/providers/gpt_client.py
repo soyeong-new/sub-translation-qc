@@ -19,8 +19,14 @@ _VERIFY_SCHEMA_INSTRUCTION = (
     '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
     '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
     "corrected_text (문자열, 최종 교정된 전체 대상언어 텍스트), "
-    "description (문자열, 한국어로 무엇을 왜 고쳤는지). "
-    "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라."
+    "original_meaning (문자열, 지금 target_text(수정 전 원문)가 실제로 무슨 "
+    "뜻인지 한국어로 간단히 설명 — \"~라는 뜻이다\"처럼. 대상언어를 모르는 "
+    "검수자가 이 문장만 보고 원문이 뭘 말하는지 바로 알 수 있어야 한다), "
+    "description (문자열, 무엇을 왜 그렇게 고쳤는지 한국어로 설명). "
+    "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라. "
+    "original_meaning과 description의 설명 문장 자체는 예외 없이 한국어로 "
+    "써라 — 다른 언어로 설명하지 마라. 단, 대상언어 원문 표현을 예시로 "
+    "인용하는 것은 괜찮다(예: \"'경비아저씨' 표현이 어색해 'el guardia'로 수정\")."
 )
 
 _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
@@ -37,6 +43,22 @@ _EQUIVALENCE_SCHEMA_INSTRUCTION = (
     "equivalent (불리언, text_a와 text_b가 같은 문제를 같은 방식으로 고친 "
     "것이면 true, 단어 선택이 달라도 무방하다 — 실질적으로 다른 내용·뉘앙스·"
     "해결책이면 false)."
+)
+
+_GLOSS_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "meaning (문자열, 그 단어가 context 문장 안에서 무슨 뜻인지 간결한 "
+    "한국어로, 1~4단어 정도로)."
+)
+
+_FORMALITY_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "corrected_text (문자열, 격식만 반영한 전체 문장 — 이미 일치하면 "
+    "원문 그대로)."
 )
 
 _SCENE_SPLIT_SYSTEM_PREFIX = (
@@ -135,15 +157,13 @@ class GptClient:
             "교정하라: 사전에 없는 애매한 비속어, 번역정확성, 문화맥락, 뉘앙스어조, "
             "자연스러운흐름(직역 지양, 한국어 어순을 그대로 따라간 부분을 찾아 "
             "고칠 것), 함축의미, 로컬라이제이션(그 나라 문화에 맞는 표현인지). "
-            "성별/격식(존댓말·반말)은 화자를 특정할 근거가 없어 다루지 마라 — "
-            "검수자가 영상을 보고 직접 확인한다. 단, 입력 pair에 "
-            "resolved_gender(male/female) 또는 resolved_formality(formal/"
-            "informal)가 이미 주어져 있으면 예외다 — 그건 이미 확정된 값이니, "
-            "네가 제안하는 corrected_text가 그 성별/격식과 문법적으로 반드시 "
-            "일치하게 하라(예: resolved_gender가 female이면 성별 표시 형용사/"
-            "분사는 여성형). resolved_gender/resolved_formality가 없는 pair는 "
-            "그대로 다루지 마라 — 추측 금지. 새 인물 이름의 표기 통일도 "
-            "다루지 마라(별도 사전으로 관리). "
+            "성별 표시 형용사/분사의 형태나 격식(존댓말·반말)은 이미 앞 단계"
+            "(파이썬의 결정론적 문법 반영 + 격식 전담 호출)에서 확정되어 "
+            "target_text에 반영된 상태다 — 이 값을 판단하거나 새로 바꾸는 "
+            "건 네 역할이 아니다. 다른 문제(오역/뉘앙스/직역투 등)를 고칠 "
+            "때 이미 반영된 성별 형태와 격식을 절대 건드리지 마라(그대로 "
+            "유지). 새 인물 이름의 표기 통일도 다루지 마라(별도 사전으로 "
+            "관리). "
             f"{format_constraint} 참고 지식베이스: {knowledge}\n"
         )
         system += (
@@ -180,6 +200,32 @@ class GptClient:
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="동등성 확인")
 
+    async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 {language_label} 단어(word)와 그 단어가 들어간 문장"
+            "(context) 목록이다. 검수자가 그 언어를 몰라서, 각 단어가 이 "
+            "문맥에서 무슨 뜻인지 판단하지 못한다 — 간결한 한국어 뜻을 "
+            "알려줘라.\n" + _GLOSS_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="단어 뜻풀이")
+
+    async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 {language_label} 문장(target_text) 목록과 각 문장이 "
+            "존댓말(formal)이어야 하는지 반말(informal)이어야 하는지 확정된 "
+            "값(formality)이다. 오직 그 문장의 격식(2인칭 대명사·동사 활용)"
+            "만 formality 값에 맞게 바꿔라 — informal이면 tú 활용형(2인칭 "
+            "단수 반말)으로, formal이면 usted 활용형(3인칭 단수 활용 기반 "
+            "존댓말)으로. 이미 formality와 일치하면 그대로 둬라. 어휘 선택, "
+            "의미, 어순 등 격식과 무관한 건 절대 바꾸지 마라 — 오직 격식만 "
+            "조정하는 게 유일한 임무다.\n" + _FORMALITY_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="격식 반영")
+
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
         """씬 분할 전용 콜. json_schema strict 모드로 출력 형식을 API 레벨에서
         강제한다 — correct_primary/verify_and_refine이 쓰는 json_object 모드보다
@@ -211,20 +257,29 @@ class GptClient:
             raise ValueError(f"GPT 씬 분할 응답이 기대한 JSON 형태가 아님: {preview}") from exc
 
     async def transcribe(self, audio_path: str) -> List[dict]:
-        """audio_path 하나의 STT 결과를 세그먼트 리스트로 반환한다. 호출자
-        (pipeline._transcribe_in_chunks)가 긴 오디오를 여러 조각으로 나눠 이
-        메서드를 조각당 한 번씩 호출하므로, 세그먼트가 하나도 없는 것(무음
-        구간, 엔드크레딧 등)은 그 조각만 보면 지극히 정상이다 — 여기서
+        """audio_path 하나의 STT 결과를 단어 단위 타임코드 리스트로 반환한다
+        (문장 단위 segment가 아니라 word). alignment.align()이 대상언어 SRT
+        큐의 시간 구간 안에 들어오는 단어들을 직접 모아 그 큐의 한국어
+        텍스트를 만들기 때문이다 — 위스퍼가 알아서 문장을 끊는 경계(침묵
+        기준)와 SRT 큐 경계(사람이 손으로 자른 것)가 서로 달라 생기던
+        "영상/한국어원문/대상언어가 안 맞는" 문제를, 애초에 문장 단위로
+        정렬하지 않음으로써 해소한다. 반환 형태는 기존 segment 형태와 동일한
+        {"start","end","text"} 딕셔너리라 호출자(_transcribe_in_chunks의
+        오프셋 보정 등)는 세그먼트든 단어든 그대로 다룰 수 있다.
+
+        호출자(pipeline._transcribe_in_chunks)가 긴 오디오를 여러 조각으로
+        나눠 이 메서드를 조각당 한 번씩 호출하므로, 단어가 하나도 없는 것
+        (무음 구간, 엔드크레딧 등)은 그 조각만 보면 지극히 정상이다 — 여기서
         실패로 처리하지 않고 빈 리스트를 반환한다. "에피소드 전체에 대사가
         없음"이라는 진짜 실패 판단은 모든 조각을 병합한 뒤 호출자 쪽에서
         한다."""
         with open(audio_path, "rb") as f:
             response = await self._sdk_client.audio.transcriptions.create(
                 model=self._transcribe_model, file=f, language="ko",
-                response_format="verbose_json", timestamp_granularities=["segment"],
+                response_format="verbose_json", timestamp_granularities=["word"],
             )
-        if not response.segments:
+        if not response.words:
             return []
-        return [{"start": seg.start, "end": seg.end, "text": seg.text}
-                for seg in response.segments]
+        return [{"start": w.start, "end": w.end, "text": w.word}
+                for w in response.words]
 

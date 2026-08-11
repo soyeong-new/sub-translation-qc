@@ -52,6 +52,16 @@ class TargetVersion(Base):
     # 위한 목록. [{"stage": "Claude 1차 교정", "message": "..."}] 형태. 전부
     # 성공하면 None.
     warnings: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # run-analysis 요청 시 받은 대상언어 SRT 업로드 경로 — 재분석("새로고침")
+    # 버튼이 파일을 다시 업로드하지 않고 같은 경로로 다시 돌 수 있게 저장해둔다.
+    target_srt_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # detect_global_offset()이 찾은, 한국어 STT(=영상 파일 자체의 시계)와
+    # 대상언어 SRT 시계 사이 상수 초 차이. Segment.start/end는 SRT 시계를
+    # 그대로 쓴다(내보내기 SRT가 원본 SRT 타이밍과 맞아야 하므로) — 그래서
+    # 영상 미리보기가 올바른 장면을 보여주려면, seek할 때 프론트가
+    # segment.start - video_offset_seconds로 영상 파일 자체의 시계로
+    # 변환해야 한다. 오프셋이 없었으면(또는 아직 계산 전이면) None.
+    video_offset_seconds: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
 
 class Segment(Base):
@@ -76,6 +86,13 @@ class Segment(Base):
     # gender_check_needed인 세그먼트에만 계산된다(design §영어 SRT 대조:
     # "걸린 줄과 시간대가 겹치는 세그먼트가 있으면").
     english_pronoun_hint: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # 한 줄에 성별이 다른 인물이 둘 이상 있을 때만 채워진다 — resolved_gender_raw
+    # 하나로는 "이 줄엔 남자도 여자도 있다"를 표현할 수 없어(그 하나의 값을
+    # 문장 전체에 적용하면 엉뚱한 인물까지 잘못 바뀜) 인물별 답을 리스트로
+    # 따로 저장한다: [{"words":[...], "target_word_lemmas":[...], "gender":
+    # "male"/"female"/"not_applicable"/None}, ...]. 채워져 있으면
+    # resolved_gender_raw는 쓰지 않는다.
+    resolved_gender_groups_raw: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class FindingRow(Base):
@@ -105,13 +122,27 @@ class SttCorrection(Base):
     reviewer_name: Mapped[str] = mapped_column(String)
 
 
-class LearnedExample(Base):
-    __tablename__ = "learned_examples"
+class GenderWordResolution(Base):
+    """검수자가 성별 표시 단어에 대해 실제로 어떻게 답했는지(male/female/
+    not_applicable) 프로젝트를 넘어 전부 기록한다 — target_version_id가
+    없다: 특정 프로젝트가 삭제돼도 이 기록은 남아야 다음 프로젝트에서 같은
+    단어(기본형 기준)를 또 사람에게 물을지 판단할 수 있다.
+
+    "제외 목록"이 아니라 "전체 이력"을 기록하는 이유: 어떤 단어가 지금까지
+    not_applicable로만 판정됐고 한 번도 실제 성별로 판정된 적이 없어야만
+    "이 단어는 사람과 무관하다"고 신뢰하고 자동으로 건너뛴다. 단 한 번이라도
+    실제 성별(male/female)로 판정된 적이 있으면(같은 단어가 문맥에 따라
+    사람을 가리킬 수 있다는 증거, 예: "grande") 절대 자동으로 건너뛰지
+    않는다 — 매번 다시 물어본다(repositories.get_suggested_not_applicable_lemmas
+    참고)."""
+    __tablename__ = "gender_word_resolutions"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
-    target_version_id: Mapped[str] = mapped_column(ForeignKey("target_versions.id"))
     language: Mapped[str] = mapped_column(String)
-    category: Mapped[str] = mapped_column(String)
-    example: Mapped[dict] = mapped_column(JSON)
+    # ADJ의 기본형(lemma) — 표면형(caro/cara/caros/caras)이 달라도 같은
+    # 단어로 취급한다.
+    word_lemma: Mapped[str] = mapped_column(String)
+    resolution: Mapped[str] = mapped_column(String)  # "male" | "female" | "not_applicable"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ExportRow(Base):

@@ -88,6 +88,29 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             if app.state.background_tasks:
                 await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
 
+            # "Segunda línea corta"의 "corta"가 성별 표시 형용사라 성별 확인이
+            # 걸린다 — 한국어 원문이 없는 대상언어 전용 세그먼트라 자동 판정도
+            # 안 되므로, 사람이 답할 때까지 S2(AI 검증)는 시작되지 않는다.
+            r = await client.get(f"/target-versions/{tv_id}")
+            assert r.json()["status"] == "awaiting_confirmation"
+
+            r = await client.get(f"/target-versions/{tv_id}/flagged-segments")
+            for seg in r.json():
+                if seg["gender_check_needed"] and not seg["resolved_gender_raw"]:
+                    r2 = await client.post(f"/segments/{seg['id']}/resolve-gender",
+                                           json={"gender": "female"})
+                    assert r2.status_code == 200
+                if seg["formality_check_needed"] and not seg["resolved_formality_raw"]:
+                    r2 = await client.post(f"/segments/{seg['id']}/resolve-formality",
+                                           json={"formality_level": "informal"})
+                    assert r2.status_code == 200
+
+            # 확인이 끝난 뒤에야 confirm-registers로 S2를 시작할 수 있다.
+            r = await client.post(f"/target-versions/{tv_id}/confirm-registers")
+            assert r.status_code == 200
+            if app.state.background_tasks:
+                await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
             r = await client.get(f"/target-versions/{tv_id}")
             assert r.json()["status"] == "review"
 

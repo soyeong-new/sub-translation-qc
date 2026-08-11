@@ -64,7 +64,11 @@ async def test_pipeline_runs_claude_and_gpt_on_the_same_original_text(tmp_path, 
             target_version_id="tv1", provider=provider,
         )
 
-    assert captured["claude_saw"] == captured["gpt_saw"] == "BAD_TRANSLATION aquí..."
+    # MockProvider의 STT가 반환하는 "안녕하세요"(존댓말)가 격식 자동 확정으로
+    # 이어져, S2가 보기 전에 이미 "[formal] " 마커가 target_text에 반영돼
+    # 있다(design §AI에게 반영해달라 부탁하지 말고 먼저 확정) — 이 테스트의
+    # 핵심 계약(둘이 같은 입력을 받는다)은 여전히 유지된다.
+    assert captured["claude_saw"] == captured["gpt_saw"] == "[formal] BAD_TRANSLATION aquí..."
 
 
 @pytest.mark.asyncio
@@ -155,7 +159,10 @@ async def test_pipeline_creates_two_pending_findings_when_equivalence_check_disa
     assert claude_finding.status == "pending" and claude_finding.suggested_text == "texto de claude"
     assert gpt_finding.status == "pending" and gpt_finding.suggested_text == "texto de gpt"
     final_pair = next(p for p in result["pairs"] if p.target is not None)
-    assert final_pair.target.text == "BAD_TRANSLATION aquí..."
+    # MockProvider의 STT가 반환하는 "안녕하세요"(존댓말)가 격식 자동 확정으로
+    # 이어져, S2 이전에 이미 "[formal] " 마커가 반영된다 — 이 테스트의 핵심
+    # 계약(불일치 시 교정을 적용하지 않고 원문을 유지)은 여전히 유지된다.
+    assert final_pair.target.text == "[formal] BAD_TRANSLATION aquí..."
 
 
 @pytest.mark.asyncio
@@ -190,7 +197,10 @@ async def test_pipeline_does_not_apply_when_only_one_model_flags_a_segment(tmp_p
     assert finding.status == "pending"
     assert finding.final_text == ""
     final_pair = next(p for p in result["pairs"] if p.target is not None)
-    assert final_pair.target.text == "BAD_TRANSLATION aquí..."
+    # MockProvider의 STT가 반환하는 "안녕하세요"(존댓말)가 격식 자동 확정으로
+    # 이어져, S2 이전에 이미 "[formal] " 마커가 반영된다 — 이 테스트의 핵심
+    # 계약(불일치 시 교정을 적용하지 않고 원문을 유지)은 여전히 유지된다.
+    assert final_pair.target.text == "[formal] BAD_TRANSLATION aquí..."
 
 
 @pytest.mark.asyncio
@@ -227,6 +237,125 @@ async def test_pipeline_attaches_cross_model_backtranslation_to_disputed_finding
 
     finding = next(f for f in result["findings"] if f.model == "claude")
     assert "역번역됨:texto de claude" in finding.description
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_backtranslation_separate_per_model_on_disputed_segment(
+    tmp_path, monkeypatch,
+):
+    """회귀: 같은 줄을 두 모델이 서로 다른 문구로 지적하면(의견 갈림),
+    각자의 역번역이 섞이거나 한쪽이 다른 쪽 걸 덮어써서는 안 된다 —
+    segment_id만으로 역번역을 키하면 disputed 케이스에서 한쪽 역번역이
+    사라지고 남은 값이 양쪽 finding에 똑같이 붙는 버그가 있었다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+
+    async def _claude_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de claude", "description": "클로드 지적"}]
+
+    async def _gpt_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "texto de gpt", "description": "GPT 지적"}]
+
+    async def _gpt_back_translates(texts, profile):
+        # Claude 문구를 GPT가 역번역
+        return [{"id": t["id"], "korean_text": f"클로드문구역번역:{t['text']}"} for t in texts]
+
+    async def _claude_back_translates(texts, profile):
+        # GPT 문구를 Claude가 역번역
+        return [{"id": t["id"], "korean_text": f"GPT문구역번역:{t['text']}"} for t in texts]
+
+    monkeypatch.setattr(provider, "correct_primary", _claude_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _gpt_flags)
+    monkeypatch.setattr(provider, "back_translate_with_gpt", _gpt_back_translates)
+    monkeypatch.setattr(provider, "back_translate_with_claude", _claude_back_translates)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    claude_finding = next(f for f in result["findings"] if f.model == "claude")
+    gpt_finding = next(f for f in result["findings"] if f.model == "gpt")
+    assert "클로드문구역번역:texto de claude" in claude_finding.description
+    assert "GPT문구역번역:texto de gpt" in gpt_finding.description
+
+
+@pytest.mark.asyncio
+async def test_back_translate_proposals_chunks_large_batches():
+    """회귀(사용자 재현: "역번역이 아예 안 뜨거나 이상하게 나옴"): 영화
+    전체 분량을 한 콜에 몰아넣으면 응답이 토큰 한도에서 잘려 JSON 파싱이
+    통째로 실패하거나 id가 엉뚱한 항목에 붙는다 — _verify_chunk가 이미
+    같은 이유로 씬 단위 청킹을 쓰는데, 역번역 콜에는 그 보호가 빠져 있었다.
+    CHUNK_MAX_SIZE를 넘는 분량이면 여러 번에 나눠 호출돼야 한다."""
+    from app.core.pipeline import _back_translate_proposals, CHUNK_MAX_SIZE
+
+    call_batches = []
+
+    async def _gpt_back_translates(texts, profile):
+        call_batches.append(len(texts))
+        return [{"id": t["id"], "korean_text": f"역번역:{t['text']}"} for t in texts]
+
+    class _FakeProvider:
+        back_translate_with_gpt = staticmethod(_gpt_back_translates)
+
+        @staticmethod
+        async def back_translate_with_claude(texts, profile):
+            return []
+
+    total = CHUNK_MAX_SIZE + 5  # 한 청크로는 안 들어가는 양
+    claude_only = [{"segment_id": f"p{i}", "corrected_text": f"texto {i}"} for i in range(total)]
+
+    backtranslation_by_id, warnings = await _back_translate_proposals(
+        _FakeProvider(), {"language": "es"}, agreed=[], claude_only=claude_only, gpt_only=[],
+        target_version_id="tv1",
+    )
+
+    assert warnings == []
+    assert len(call_batches) == 2  # 35 + 5, 한 콜에 다 안 들어가고 두 번 나뉨
+    assert all(n <= CHUNK_MAX_SIZE for n in call_batches)
+    assert len(backtranslation_by_id) == total
+    assert backtranslation_by_id[("p0", "claude_authored")] == "역번역:texto 0"
+    assert backtranslation_by_id[(f"p{total - 1}", "claude_authored")] == f"역번역:texto {total - 1}"
+
+
+@pytest.mark.asyncio
+async def test_back_translate_proposals_survives_one_chunk_failing():
+    """회귀: 청크 하나가 실패해도(네트워크 오류 등) 그 청크만 역번역 없이
+    넘어가고, 나머지 청크의 역번역은 살아남아야 한다 — 예전처럼 전체를
+    한 콜로 보내면 하나 실패할 때 전부 사라졌다."""
+    from app.core.pipeline import _back_translate_proposals, CHUNK_MAX_SIZE
+
+    async def _gpt_back_translates(texts, profile):
+        if texts[0]["id"] == "p0":
+            raise RuntimeError("네트워크 오류")
+        return [{"id": t["id"], "korean_text": f"역번역:{t['text']}"} for t in texts]
+
+    class _FakeProvider:
+        back_translate_with_gpt = staticmethod(_gpt_back_translates)
+
+        @staticmethod
+        async def back_translate_with_claude(texts, profile):
+            return []
+
+    total = CHUNK_MAX_SIZE + 5
+    claude_only = [{"segment_id": f"p{i}", "corrected_text": f"texto {i}"} for i in range(total)]
+
+    backtranslation_by_id, warnings = await _back_translate_proposals(
+        _FakeProvider(), {"language": "es"}, agreed=[], claude_only=claude_only, gpt_only=[],
+        target_version_id="tv1",
+    )
+
+    assert len(warnings) == 1  # 첫 청크만 실패
+    assert ("p0", "claude_authored") not in backtranslation_by_id
+    # 두 번째 청크(실패한 청크 밖)는 살아남는다.
+    assert backtranslation_by_id[(f"p{total - 1}", "claude_authored")] == f"역번역:texto {total - 1}"
 
 
 @pytest.mark.asyncio
@@ -460,6 +589,39 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
 
 
 @pytest.mark.asyncio
+async def test_pipeline_auto_corrects_constant_offset_between_stt_and_srt(tmp_path):
+    """회귀: 영상 앞부분을 잘라 올려(리캡/인트로 제거 등) 한국어 STT
+    타임코드 전체가 대상언어 SRT보다 상수만큼 앞서 있어도, 파이프라인이
+    자동으로 오프셋을 찾아 보정해서 올바른 큐에 한국어 원문이 붙어야
+    한다."""
+    from app.core.ingest import build_srt
+
+    entries = [
+        {"start": start, "end": start + 5.0, "text": f"Linea {i}"}
+        for i, start in enumerate([0.0, 13.0, 41.0, 68.0, 100.0, 155.0])
+    ]
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(build_srt(entries), encoding="utf-8")
+
+    # 실제 STT 타임코드는 55초 앞서 있다(영상 앞을 55초 잘라 올린 상황).
+    cached_words = [
+        {"start": e["start"] - 55.0 + 1.0, "end": e["start"] - 55.0 + 1.5, "text": f"단어{i}"}
+        for i, e in enumerate(entries)
+    ]
+
+    result = await run_pipeline(
+        video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+        language="es", variant="LATAM", target_version_id="tv1", provider=MockProvider(),
+        cached_korean_segments=cached_words, cached_video_proxy_path="/fake/cached_proxy.mp4",
+    )
+
+    matched = {p.target.text: p.korean.text for p in result["pairs"] if p.target and p.korean}
+    assert matched["Linea 0"] == "단어0"
+    assert matched["Linea 3"] == "단어3"
+    assert any(w["stage"] == "타임코드 자동 보정" for w in result["warnings"])
+
+
+@pytest.mark.asyncio
 async def test_pipeline_returns_empty_warnings_when_all_stages_succeed(tmp_path):
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
@@ -564,6 +726,27 @@ async def test_pipeline_attaches_english_pronoun_hint_to_gender_flagged_segment(
 
 
 @pytest.mark.asyncio
+async def test_pipeline_glosses_gender_flagged_words_via_provider(tmp_path):
+    """회귀: 성별 확인 대상 단어(예: cansado)의 뜻을 LLM으로 풀이해
+    english_pronoun_hint.word_meanings에 담아야 한다 — 대상언어를 모르는
+    검수자가 "이 단어가 사람 얘기인지 사물 얘기인지"조차 판단 못 하는
+    문제를 돕기 위함(design: caro 사례)."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEstá cansado.\n", encoding="utf-8")
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=MockProvider(),
+        )
+
+    resolution = next(r for r in result["segment_resolutions"] if r["gender_check_needed"])
+    assert resolution["english_pronoun_hint"]["target_words"] == ["cansado"]
+    assert resolution["english_pronoun_hint"]["word_meanings"] == {"cansado": "[뜻:cansado]"}
+
+
+@pytest.mark.asyncio
 async def test_pipeline_english_pronoun_hint_is_none_without_english_srt_path(tmp_path, monkeypatch):
     srt_path = tmp_path / "target.srt"
     srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
@@ -636,10 +819,13 @@ async def test_pipeline_auto_resolves_formality_from_korean_ending_without_stepp
 
 
 @pytest.mark.asyncio
-async def test_pipeline_passes_resolved_registers_to_dual_verification(tmp_path, monkeypatch):
-    """한국어/영어로 미리 확정된 성별·격식은 Claude/GPT 검증 단계의 pairs에
-    resolved_gender/resolved_formality로 같이 전달돼야, 두 모델이 문법적으로
-    일치하는 교정을 제안할 수 있다(design §관계에 맞는 문장을 추천)."""
+async def test_pipeline_applies_resolved_formality_before_dual_verification(tmp_path, monkeypatch):
+    """한국어로 미리 확정된 격식은 Claude/GPT 검증(S2)이 보기 전에 전담 LLM
+    호출(apply_formality)로 이미 문장에 반영돼 있어야 한다 — "반영해달라고
+    부탁"하는 대신 먼저 확정해서 넘긴다(design §AI에게 반영해달라 부탁하지
+    말고 파이썬/전담 호출이 먼저 확정). MockProvider.apply_formality는
+    "[formality] " 접두어를 붙이는 결정론적 마커라, 이 접두어가 S2로 넘어가는
+    target_text에 이미 붙어 있으면 성공이다."""
     srt_path = tmp_path / "target.srt"
     # MockProvider의 STT는 "안녕하세요"(존댓말 어미)를 반환한다.
     srt_path.write_text(
@@ -661,7 +847,245 @@ async def test_pipeline_passes_resolved_registers_to_dual_verification(tmp_path,
             language="es", variant="LATAM", target_version_id="tv1", provider=provider,
         )
 
-    assert captured["pairs"][0]["resolved_formality"] == "formal"
+    assert captured["pairs"][0]["target_text"] == "[formal] Estoy cansada."
+
+
+@pytest.mark.asyncio
+async def test_pipeline_applies_resolved_gender_and_formality_before_dual_verification(
+        tmp_path, monkeypatch):
+    """회귀: 확정된 성별은 파이썬이 결정론적으로(어미 변형), 확정된 격식은
+    전담 LLM 호출로, 둘 다 Claude/GPT 검증(S2)이 pairs를 보기 전에 이미
+    target_text에 반영돼 있어야 한다. 입력 "Está cansado."는 여성형
+    "cansada"였다가 성별 교정으로 남성형이 되고, 그 위에 격식(반말) 마커가
+    덧붙는다 — 순서(성별 먼저, 그다음 격식)까지 같이 확인한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nEstá cansada.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    captured = {}
+
+    async def _capture_correct_primary(pairs, *args, **kwargs):
+        captured["pairs"] = pairs
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _capture_correct_primary)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            cached_korean_segments=[{"start": 0.0, "end": 2.0, "text": "오빠 왜 그래"}],
+            cached_video_proxy_path="/fake/proxy.mp4",
+        )
+
+    assert captured["pairs"][0]["target_text"] == "[informal] Está cansado."
+
+
+def test_resolved_registers_treat_not_applicable_gender_as_no_gender_info():
+    """회귀: 검수자가 "해당 없음(사람 아님)"을 고르면(예: caro=비싸다,
+    사람 성별과 무관) resolved_gender_raw에 "not_applicable"이 저장되는데,
+    이 값이 진짜 성별인 것처럼 AI 프롬프트에 전달되면 안 된다 — 격식 정보는
+    영향받지 않아야 한다."""
+    from app.core.pipeline import _build_resolved_registers, resolved_registers_from_segments
+
+    segment_resolutions = [
+        {"segment_id": "pair_1", "resolved_gender": "not_applicable", "resolved_formality": "formal"},
+        {"segment_id": "pair_2", "resolved_gender": "male", "resolved_formality": None},
+        {"segment_id": "pair_3", "resolved_gender": "not_applicable", "resolved_formality": None},
+    ]
+    registers = _build_resolved_registers(segment_resolutions)
+    assert registers["pair_1"] == {"gender": None, "formality": "formal"}
+    assert registers["pair_2"] == {"gender": "male", "formality": None}
+    assert "pair_3" not in registers  # 성별도 격식도 실제 정보가 없으면 아예 빠짐
+
+    class _FakeSegment:
+        def __init__(self, id, resolved_gender_raw, resolved_formality_raw):
+            self.id = id
+            self.resolved_gender_raw = resolved_gender_raw
+            self.resolved_formality_raw = resolved_formality_raw
+            self.english_pronoun_hint = None
+            self.resolved_gender_groups_raw = None
+
+    segments = [
+        _FakeSegment("tv1:pair_1", "not_applicable", "formal"),
+        _FakeSegment("tv1:pair_2", "male", None),
+    ]
+    registers2 = resolved_registers_from_segments(segments, "tv1")
+    assert registers2["pair_1"] == {"gender": None, "formality": "formal"}
+    assert registers2["pair_2"] == {"gender": "male", "formality": None}
+
+
+def test_build_resolved_registers_omits_gender_groups_until_all_referents_answered():
+    """회귀(사용자 피드백 "인칭을 제대로 구분 못하는 경우가 있다"): 다인물
+    줄은 인물(그룹) 전부가 답변될 때까지 gender_groups를 아예 만들지
+    않는다 — 절반만 답한 상태로 적용을 시작하면 안 남은 인물의 단어가
+    원문 그대로 남았다가 나중에 값이 생겨도 재적용되지 않을 위험이 있다."""
+    from app.core.pipeline import _build_resolved_registers, registers_need_confirmation
+
+    partially_answered = [{
+        "segment_id": "pair_1", "gender_check_needed": True, "formality_check_needed": False,
+        "resolved_gender": None, "resolved_formality": None,
+        "resolved_gender_groups": [
+            {"target_word_lemmas": ["cansado"], "gender": "female"},
+            {"target_word_lemmas": ["enojado"], "gender": None},
+        ],
+    }]
+    assert registers_need_confirmation(partially_answered) is True
+    assert "pair_1" not in _build_resolved_registers(partially_answered)
+
+    fully_answered = [{
+        "segment_id": "pair_1", "gender_check_needed": True, "formality_check_needed": False,
+        "resolved_gender": None, "resolved_formality": None,
+        "resolved_gender_groups": [
+            {"target_word_lemmas": ["cansado"], "gender": "female"},
+            {"target_word_lemmas": ["enojado"], "gender": "male"},
+        ],
+    }]
+    assert registers_need_confirmation(fully_answered) is False
+    registers = _build_resolved_registers(fully_answered)
+    assert registers["pair_1"]["gender_groups"] == [
+        {"lemmas": ["cansado"], "gender": "female"},
+        {"lemmas": ["enojado"], "gender": "male"},
+    ]
+
+
+def test_build_resolved_registers_keeps_gender_group_positions_around_not_applicable():
+    """회귀: resolve_gender_groups_in_texts는 그룹을 lemma가 아니라 리스트
+    위치(그룹 인덱스)로 매칭한다. 앞쪽 인물이 "해당없음"으로 답해도 그
+    자리를 리스트에서 통째로 빼면 안 된다 — 빼면 뒷사람의 확정 성별이
+    앞으로 밀려 엉뚱한 인물(원래 앞자리였던 사람)에게 적용된다. gender=None
+    으로 자리만 지켜야 한다(resolve 쪽이 None gender는 이미 안전하게
+    건너뛴다)."""
+    from app.core.pipeline import _build_resolved_registers
+
+    fully_answered = [{
+        "segment_id": "pair_1", "gender_check_needed": True, "formality_check_needed": False,
+        "resolved_gender": None, "resolved_formality": None,
+        "resolved_gender_groups": [
+            {"target_word_lemmas": ["cansado"], "gender": "not_applicable"},
+            {"target_word_lemmas": ["enojado"], "gender": "male"},
+        ],
+    }]
+    registers = _build_resolved_registers(fully_answered)
+    assert registers["pair_1"]["gender_groups"] == [
+        {"lemmas": ["cansado"], "gender": None},
+        {"lemmas": ["enojado"], "gender": "male"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_applies_confirmed_gender_groups_to_correct_referent_before_dual_verification(
+        tmp_path, monkeypatch):
+    """엔드투엔드 회귀: 한 줄에 인물이 둘(성별 다름)이면 S1이 인물별로 따로
+    감지하고, 검수자가 인물별로 답한 뒤(스테퍼를 흉내냄)에만 S2 이전에
+    각자의 단어에만 정확히 반영돼야 한다 — 성별 하나를 문장 전체에 뭉뚱그려
+    적용해 엉뚱한 인물까지 잘못 바뀌는 문제(사용자 피드백)의 회귀 테스트."""
+    from app.core.pipeline import run_pipeline_phase1, run_pipeline_phase2, _build_resolved_registers
+    from app.language_profiles.loader import load_profile
+    from app.knowledge.loader import load_knowledge
+
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nÉl está cansado y ella está enojado.\n",
+        encoding="utf-8")
+    provider = MockProvider()
+    captured = {}
+
+    async def _capture_correct_primary(pairs, *args, **kwargs):
+        captured["pairs"] = pairs
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _capture_correct_primary)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        phase1 = await run_pipeline_phase1(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            cached_korean_segments=[{"start": 0.0, "end": 2.0, "text": "그는 화나고 그녀는 피곤해"}],
+            cached_video_proxy_path="/fake/proxy.mp4",
+        )
+
+    groups = phase1["segment_resolutions"][0]["resolved_gender_groups"]
+    assert len(groups) == 2  # 회귀: 두 인물이 따로 감지돼야 함(하나로 뭉치면 안 됨)
+    # 검수자가 스테퍼에서 인물별로 각각 답한 상태를 흉내낸다 — "cansado" 쪽
+    # 인물은 여성, "enojado" 쪽 인물은 남성으로 확정.
+    for group in groups:
+        group["gender"] = "female" if "cansado" in group["words"] else "male"
+    resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
+
+    profile = load_profile("es", "LATAM")
+    knowledge = load_knowledge()
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        await run_pipeline_phase2(
+            phase1["pairs"], provider, profile, knowledge, phase1["pending_sensitive_hits"],
+            "tv1", resolved_registers,
+        )
+
+    # "cansado"만 여성형(cansada)으로 바뀌고, "enojado"는 이미 확정된 남성과
+    # 일치하므로 그대로다 — 각자의 인물에만 정확히 반영됐다는 뜻이다.
+    assert captured["pairs"][0]["target_text"] == "[informal] Él está cansada y ella está enojado."
+
+
+@pytest.mark.asyncio
+async def test_dual_verification_reapplies_resolved_gender_to_llm_rewrite(tmp_path, monkeypatch):
+    """회귀: S2가 오역 등 다른 문제를 고치며 문장을 통째로 다시 쓰면서, 이미
+    확정된 성별(여성)을 무시하고 남성형으로 써버리는 사용자 리포트 —
+    Claude/GPT가 합의해 자동 적용(approved)되는 경로라 더 위험하다.
+    재검증(S2) 결과물에도 성별이 다시 강제 적용돼야 한다."""
+    from app.core.pipeline import run_pipeline_phase1, run_pipeline_phase2
+    from app.language_profiles.loader import load_profile
+    from app.knowledge.loader import load_knowledge
+
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nEstoy cansada.\n", encoding="utf-8")
+    provider = MockProvider()
+
+    async def _no_flags(pairs, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _no_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _no_flags)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        phase1 = await run_pipeline_phase1(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
+            cached_korean_segments=[{"start": 0.0, "end": 2.0, "text": "나 피곤해"}],
+            cached_video_proxy_path="/fake/proxy.mp4",
+        )
+
+    seg_id = phase1["pairs"][0].id
+    # 검수자가 이미 "여성"으로 확정해둔 상태를 흉내낸다.
+    resolved_registers = {seg_id: {"gender": "female", "formality": None}}
+
+    async def _both_agree_on_masculine_rewrite(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": "Sí, ahora veo que estás muy cansado.",
+                  "description": "번역 보정"}]
+
+    monkeypatch.setattr(provider, "correct_primary", _both_agree_on_masculine_rewrite)
+    monkeypatch.setattr(provider, "verify_and_refine", _both_agree_on_masculine_rewrite)
+
+    profile = load_profile("es", "LATAM")
+    knowledge = load_knowledge()
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline_phase2(
+            phase1["pairs"], provider, profile, knowledge, phase1["pending_sensitive_hits"],
+            "tv1", resolved_registers,
+        )
+
+    finding = next(f for f in result["findings"] if f.model == "claude+gpt")
+    assert finding.suggested_text == "Sí, ahora veo que estás muy cansada."
+    assert finding.final_text == "Sí, ahora veo que estás muy cansada."
+    final_pair = next(p for p in result["pairs"] if p.id == seg_id)
+    assert final_pair.target.text == "Sí, ahora veo que estás muy cansada."
 
 
 @pytest.mark.asyncio
@@ -1032,3 +1456,36 @@ async def test_dual_verification_uses_valid_scene_boundaries_from_provider(tmp_p
     )
 
     assert calls == [["pair_1", "pair_2", "pair_3"], ["pair_4", "pair_5", "pair_6"]]
+
+
+@pytest.mark.asyncio
+async def test_grammar_necessity_check_flags_suggested_not_applicable_word():
+    """caro처럼 학습된 "해당 없음 전용" 단어면 english_pronoun_hint에
+    suggested_not_applicable=True가 붙어야 한다 — 질문은 그대로 뜨되(design
+    §숨기면 반증 사례를 영영 못 잡음) "해당 없음" 버튼에 추천 표시만 한다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+
+    pairs = [AlignedPair(
+        id="pair_1",
+        korean=SegmentText(start=0.0, end=1.0, text="한국어"),
+        target=SegmentText(start=0.0, end=2.0, text="¿No es caro?"),
+    )]
+    resolutions, _warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es"}, [], "tv1", frozenset({"caro"}))
+    resolution = next(r for r in resolutions if r["gender_check_needed"])
+    assert resolution["english_pronoun_hint"]["suggested_not_applicable"] is True
+
+
+@pytest.mark.asyncio
+async def test_grammar_necessity_check_does_not_suggest_unlearned_word():
+    from app.core.pipeline import _run_grammar_necessity_check
+
+    pairs = [AlignedPair(
+        id="pair_1",
+        korean=SegmentText(start=0.0, end=1.0, text="한국어"),
+        target=SegmentText(start=0.0, end=2.0, text="¿No es caro?"),
+    )]
+    resolutions, _warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es"}, [], "tv1", frozenset())
+    resolution = next(r for r in resolutions if r["gender_check_needed"])
+    assert "suggested_not_applicable" not in resolution["english_pronoun_hint"]
