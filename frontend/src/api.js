@@ -26,11 +26,12 @@ export const listLanguageProfiles = () => request("/language-profiles");
 export const createTitle = (name, type) =>
   request("/titles", { method: "POST", body: JSON.stringify({ name, type }) });
 
-export const createEpisode = (titleId, episodeNo, videoPath, englishSrtPath = null) =>
+export const createEpisode = (titleId, episodeNo, videoPath, englishSrtPath = null, koreanSrtPath = null) =>
   request(`/titles/${titleId}/episodes`, {
     method: "POST",
     body: JSON.stringify({
       episode_no: episodeNo, video_path: videoPath, english_srt_path: englishSrtPath,
+      korean_srt_path: koreanSrtPath,
     }),
   });
 
@@ -184,5 +185,8 @@ export const uploadSrt = (file, onProgress) =>
 
 export const uploadSrtEn = (file, onProgress) =>
   uploadWithProgress("/uploads/srt-en", file, onProgress);
+
+export const uploadSrtKo = (file, onProgress) =>
+  uploadWithProgress("/uploads/srt-ko", file, onProgress);
 
 export const listTitles = () => request("/titles");
