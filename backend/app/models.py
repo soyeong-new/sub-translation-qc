@@ -32,15 +32,10 @@ class Episode(Base):
     # 재시도 시에도 원본 영상 없이(최초 성공 후 삭제됨) 재분석이 가능해진다.
     stt_cache: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     video_proxy_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
-    # 영어 SRT(선택) — 성별 확인이 필요한 줄에 대명사 힌트를 붙이는 참고
-    # 자료로만 쓰인다(design §영어 SRT 대조: 자동 확정에는 쓰지 않음).
-    # Episode 레벨인 이유는 한국어 영상/대상언어 SRT와 동일 — 같은 화를 여러
-    # target_version(언어)으로 분석해도 참고할 영어 대사는 하나로 공유된다.
-    english_srt_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # 사용자가 이미 갖고 있는 한국어 SRT(선택) — 있어도 STT는 그대로 돌려
     # 실측 타이밍을 얻고, 텍스트만 이 파일의 검증된 한국어 대사로 바꿔친다
     # (design 2026-08-12-korean-srt-stt-timing-match-design.md).
-    # Episode 레벨인 이유는 video_path/english_srt_path와 동일 — 같은 화를
+    # Episode 레벨인 이유는 video_path와 동일 — 같은 화를
     # 여러 target_version(언어)으로 분석해도 한국어 원문은 하나로 공유된다.
     korean_srt_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
@@ -87,16 +82,15 @@ class Segment(Base):
     # 세그먼트에 둘 다 걸리면 둘 다 채워질 수 있다.
     resolved_gender_raw: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     resolved_formality_raw: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
-    # 영어 SRT 대명사 힌트(분석 시점 계산, 참고용) — {"text", "he_count",
-    # "she_count"} 형태. 영어 SRT가 없거나 겹치는 대사가 없으면 None.
-    # gender_check_needed인 세그먼트에만 계산된다(design §영어 SRT 대조:
-    # "걸린 줄과 시간대가 겹치는 세그먼트가 있으면").
-    english_pronoun_hint: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # 한 줄에 성별이 다른 인물이 둘 이상 있을 때만 채워진다 — resolved_gender_raw
     # 하나로는 "이 줄엔 남자도 여자도 있다"를 표현할 수 없어(그 하나의 값을
     # 문장 전체에 적용하면 엉뚱한 인물까지 잘못 바뀜) 인물별 답을 리스트로
-    # 따로 저장한다: [{"words":[...], "target_word_lemmas":[...], "gender":
-    # "male"/"female"/"not_applicable"/None}, ...]. 채워져 있으면
+    # 따로 저장한다: [{"group_index", "referent", "words", "target_word_lemmas",
+    # "candidate_indices", "gender": "male"/"female"/"not_applicable"/None}, ...].
+    # referent/그룹핑은 LLM(resolve_gender_from_context)이 판단한 결과다.
+    # candidate_indices는 이 문장을 spaCy로 다시 파싱했을 때 나오는 후보
+    # 토큰 목록(등장 순서) 중 몇 번째가 이 그룹에 속하는지를 담아, 나중에
+    # 확정된 성별을 그 토큰에만 정확히 재적용할 수 있게 한다. 채워져 있으면
     # resolved_gender_raw는 쓰지 않는다.
     resolved_gender_groups_raw: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
@@ -126,29 +120,6 @@ class SttCorrection(Base):
     original_text: Mapped[str] = mapped_column(String)
     corrected_text: Mapped[str] = mapped_column(String)
     reviewer_name: Mapped[str] = mapped_column(String)
-
-
-class GenderWordResolution(Base):
-    """검수자가 성별 표시 단어에 대해 실제로 어떻게 답했는지(male/female/
-    not_applicable) 프로젝트를 넘어 전부 기록한다 — target_version_id가
-    없다: 특정 프로젝트가 삭제돼도 이 기록은 남아야 다음 프로젝트에서 같은
-    단어(기본형 기준)를 또 사람에게 물을지 판단할 수 있다.
-
-    "제외 목록"이 아니라 "전체 이력"을 기록하는 이유: 어떤 단어가 지금까지
-    not_applicable로만 판정됐고 한 번도 실제 성별로 판정된 적이 없어야만
-    "이 단어는 사람과 무관하다"고 신뢰하고 자동으로 건너뛴다. 단 한 번이라도
-    실제 성별(male/female)로 판정된 적이 있으면(같은 단어가 문맥에 따라
-    사람을 가리킬 수 있다는 증거, 예: "grande") 절대 자동으로 건너뛰지
-    않는다 — 매번 다시 물어본다(repositories.get_suggested_not_applicable_lemmas
-    참고)."""
-    __tablename__ = "gender_word_resolutions"
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
-    language: Mapped[str] = mapped_column(String)
-    # ADJ의 기본형(lemma) — 표면형(caro/cara/caros/caras)이 달라도 같은
-    # 단어로 취급한다.
-    word_lemma: Mapped[str] = mapped_column(String)
-    resolution: Mapped[str] = mapped_column(String)  # "male" | "female" | "not_applicable"
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ExportRow(Base):
