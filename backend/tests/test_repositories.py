@@ -6,7 +6,6 @@ from app.db import async_session, engine
 from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection
 from app.repositories import (
     save_pipeline_result, get_findings, delete_target_version_results,
-    get_suggested_not_applicable_lemmas, record_gender_word_resolution,
 )
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
 
@@ -445,56 +444,6 @@ async def test_save_pipeline_result_persists_segment_resolution_flags():
         assert seg1.formality_check_needed is False
         assert seg2.gender_check_needed is False
         assert seg2.formality_check_needed is True
-
-
-@pytest.mark.asyncio
-async def test_save_pipeline_result_persists_english_pronoun_hint():
-    async with async_session() as session:
-        title = Title(name="T", type="movie", created_at=datetime.now())
-        session.add(title)
-        await session.flush()
-        tv = await _make_target_version(session, title)
-
-        result = _result_with(segment_resolutions=[{
-            "segment_id": "pair_1",
-            "gender_check_needed": True,
-            "formality_check_needed": False,
-            "english_pronoun_hint": {"text": "She looks tired.", "he_count": 0, "she_count": 1},
-        }])
-        await save_pipeline_result(session, tv.id, result)
-        await session.commit()
-        seg = await session.get(Segment, f"{tv.id}:pair_1")
-        assert seg.english_pronoun_hint == {
-            "text": "She looks tired.", "he_count": 0, "she_count": 1,
-        }
-
-
-@pytest.mark.asyncio
-async def test_get_suggested_not_applicable_lemmas_only_when_never_assigned_real_gender():
-    """회귀(핵심 설계): 어떤 단어(기본형)가 "해당 없음"으로만 판정됐고 한
-    번도 실제 성별로 판정된 적 없어야만 추천 대상이다 — 단 한 번이라도
-    실제 성별로 판정된 적 있으면(문맥에 따라 사람을 가리킬 수 있다는
-    증거, 예: "grande") 절대 추천하지 않는다."""
-    async with async_session() as session:
-        await record_gender_word_resolution(session, "es", ["caro"], "not_applicable")
-        await record_gender_word_resolution(session, "es", ["grande"], "not_applicable")
-        await record_gender_word_resolution(session, "es", ["grande"], "male")
-        await session.commit()
-
-    async with async_session() as session:
-        lemmas = await get_suggested_not_applicable_lemmas(session, "es")
-    assert "caro" in lemmas
-    assert "grande" not in lemmas  # 한 번이라도 실제 성별로 판정된 적 있으면 제외
-
-
-@pytest.mark.asyncio
-async def test_get_suggested_not_applicable_lemmas_scoped_by_language():
-    async with async_session() as session:
-        await record_gender_word_resolution(session, "es", ["caro"], "not_applicable")
-        await session.commit()
-
-    async with async_session() as session:
-        assert "caro" not in await get_suggested_not_applicable_lemmas(session, "fr")
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,6 @@ from typing import Optional
 from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
 from app.core.stt_srt_matching import match_stt_words_to_korean_srt
-from app.core.pronoun_hints import find_pronoun_hint
 from app.core.alignment import align, detect_global_offset
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
 from app.core.safety_net import shrink_violating_lines
@@ -122,14 +121,14 @@ async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple[
 
 
 async def _run_grammar_necessity_check(
-    pairs: list, profile: dict, english_segments: list,
-    target_version_id: str, suggested_not_applicable_lemmas: frozenset = frozenset(),
+    pairs: list, profile: dict, provider: ModelProvider, target_version_id: str,
 ) -> tuple[list, list]:
     """문법 필요성 판단(줄 단위, 대상언어는 spaCy·한국어는 kiwipiepy 형태소
-    분석): 성별/격식 판단이 실제로 필요한 줄만 골라낸다. 값 자체는 한국어
-    원문(어미/호칭)으로 먼저 자동 판정을 시도하고 — 안 되면 영어 SRT 대명사
-    힌트로, 그래도 안 되면 사람에게 묻는다(design §정말 판단하기 어려운
-    것만 질문). 반환값은 (segment_resolutions, warnings)."""
+    분석): 성별/격식 판단이 실제로 필요한 줄만 골라낸다. 성별 값은 한국어
+    원문(어미/호칭, 후보가 1개일 때만)으로 먼저 자동 판정을 시도하고 — 안
+    되면 LLM(resolve_gender_from_context)이 문장 전체+한국어 원문을 보고
+    그룹핑+성별을 판단한다(확신 있으면 자동 확정, 애매하면 그룹만 만들고
+    사람에게 넘긴다). 반환값은 (segment_resolutions, warnings)."""
     grammar_pairs = [
         {"id": p.id, "target_text": p.target.text if p.target else "",
          "korean_text": p.korean.text if p.korean else ""}
@@ -149,83 +148,88 @@ async def _run_grammar_necessity_check(
             if flags_by_id.get(p.id, {}).get("gender_check_needed")
             or flags_by_id.get(p.id, {}).get("formality_check_needed")
         ]
+
+        # 한국어 규칙이 이미 확정한(후보 1개뿐인 줄만 가능) 것은 LLM을
+        # 부를 필요가 없다 — 그 외 후보가 있는 줄만 배치로 묶어 한 번에
+        # 판단받는다(gloss_gender_words와 같은 이유로 영화 전체를 한
+        # 콜에 몰아넣는다 — 항목이 word+context 수준으로 가벼움).
+        llm_items = [
+            {"id": p.id, "target_text": p.target.text if p.target else "",
+             "korean_text": p.korean.text if p.korean else "",
+             "candidate_words": flags_by_id[p.id]["candidate_words"],
+             "candidate_word_lemmas": flags_by_id[p.id]["candidate_word_lemmas"]}
+            for p in flagged_pairs
+            if flags_by_id[p.id]["candidate_words"]
+            and flags_by_id[p.id]["resolved_gender_from_korean"] is None
+        ]
+        gender_groups_by_id: dict = {}
+        if llm_items:
+            wire_items = [
+                {"id": i["id"], "target_text": i["target_text"],
+                 "korean_text": i["korean_text"], "candidate_words": i["candidate_words"]}
+                for i in llm_items
+            ]
+            # LLM이 완전히 실패하거나(예외), 응답에서 특정 id가 통째로
+            # 빠지면(스키마는 지켰지만 그 id를 안 돌려준 부분 실패) 쓸
+            # 폴백 — "과탐지 허용, 누락 금지" 방침대로 후보 단어 전체를
+            # 미확정 그룹 하나로 만들어 사람에게 넘긴다.
+            fallback_groups_by_id = {
+                i["id"]: [{
+                    "group_index": 0, "referent": None,
+                    "words": i["candidate_words"], "target_word_lemmas": i["candidate_word_lemmas"],
+                    "candidate_indices": list(range(len(i["candidate_words"]))),
+                    "gender": None,
+                }]
+                for i in llm_items
+            }
+            try:
+                llm_results = await provider.resolve_gender_from_context(wire_items, profile)
+                gender_groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results)
+                # _build_gender_groups_from_llm은 응답에 실제로 포함된 id만
+                # 키로 넣는다(빈 리스트 포함 가능 — "전부 사람 아님"이라는
+                # 유효한 판단) — 응답에서 아예 빠진 id만 폴백으로 채운다.
+                for item in llm_items:
+                    gender_groups_by_id.setdefault(item["id"], fallback_groups_by_id[item["id"]])
+            except Exception as exc:
+                logger.exception(
+                    "성별 문맥 판단(LLM) 실패, 해당 줄은 미확정 그룹으로 사람에게 넘김 "
+                    "(target_version_id=%s)", target_version_id)
+                warnings.append({"stage": "성별 문맥 판단", "message": str(exc)})
+                gender_groups_by_id = fallback_groups_by_id
+
         for p in flagged_pairs:
             flags = flags_by_id[p.id]
             gender_needed = bool(flags.get("gender_check_needed"))
-            gender_groups = flags.get("gender_groups") or []
+            resolved_gender = flags.get("resolved_gender_from_korean")
+            gender_groups = gender_groups_by_id.get(p.id)
 
-            # 한 줄에 성별 표시 단어가 서로 다른 인물(2명 이상)을 가리키면,
-            # 확정된 성별 하나를 문장 전체에 뭉뚱그려 적용할 수 없다(엉뚱한
-            # 인물의 형용사까지 잘못 바뀜 — 사용자 피드백 "인칭을 제대로
-            # 구분 못하는 경우가 있다"). 이때는 한국어/영어 자동판정을 아예
-            # 시도하지 않고(어느 인물 얘기인지 추측할 근거가 없음) 인물별로
-            # 따로 확인받는다 — 확실하지 않으면 무조건 사람에게 묻는다.
-            if len(gender_groups) > 1:
-                gender_group_hints = []
-                for group in gender_groups:
-                    lemmas = group["lemmas"]
-                    suggested = bool(lemmas) and all(
-                        lemma in suggested_not_applicable_lemmas for lemma in lemmas)
-                    hint = {
-                        "group_index": group["group_index"], "referent": group["referent"],
-                        "words": group["words"], "target_word_lemmas": lemmas, "gender": None,
-                    }
-                    if suggested:
-                        hint["suggested_not_applicable"] = True
-                    gender_group_hints.append(hint)
+            if gender_groups:
                 segment_resolutions.append({
                     "segment_id": p.id,
-                    "gender_check_needed": gender_needed,
+                    "gender_check_needed": True,
                     "formality_check_needed": bool(flags.get("formality_check_needed")),
                     "resolved_gender": None,
-                    "resolved_gender_groups": gender_group_hints,
+                    "resolved_gender_groups": gender_groups,
                     "resolved_formality": flags.get("resolved_formality"),
-                    "english_pronoun_hint": None,
                 })
                 continue
 
-            resolved_gender = flags.get("resolved_gender_from_korean")
-            # 성별 표시 걸린 실제 단어/인칭/영어 힌트를 하나로 묶어 기존
-            # english_pronoun_hint 컬럼(JSON) 그대로 재사용한다 — 새 DB 컬럼
-            # 없이 "정확히 어느 단어 때문에 성별을 고르는지" 힌트까지 얹는다.
-            # 아무 정보도 없으면 None 그대로 둔다 — 빈 껍데기 dict를 굳이
-            # 보여줄 이유가 없다.
-            grammatical_person = flags.get("grammatical_person")
-            gender_words = flags.get("gender_words") or []
-            gender_word_lemmas = flags.get("gender_word_lemmas") or []
-            gender_hint = {}
-            if grammatical_person:
-                gender_hint["grammatical_person"] = grammatical_person
-            if gender_words:
-                gender_hint["target_words"] = gender_words
-                gender_hint["target_word_lemmas"] = gender_word_lemmas
-                # 이 줄에 걸린 단어 전부가 "지금까지 해당 없음으로만 판정된"
-                # 이력이 있으면 "해당 없음" 버튼에 추천 표시를 한다 — 질문
-                # 자체를 숨기지는 않는다(design: 숨기면 반증 사례를 영영 못
-                # 잡음). 단어 하나라도 그런 이력이 없으면 추천하지 않는다
-                # (더 안전한 쪽으로).
-                if gender_word_lemmas and all(
-                    lemma in suggested_not_applicable_lemmas for lemma in gender_word_lemmas
-                ):
-                    gender_hint["suggested_not_applicable"] = True
-            gender_hint = gender_hint or None
-            # 한국어 호칭/대명사로 못 정했을 때만 영어 SRT 폴백을 계산한다 —
-            # 한국어로 이미 확정됐으면 계산할 이유가 없다.
-            if gender_needed and resolved_gender is None and english_segments and p.target is not None:
-                english_hint = find_pronoun_hint(p.target.start, p.target.end, english_segments)
-                if english_hint:
-                    gender_hint = {**(gender_hint or {}), **english_hint}
-                    if english_hint["he_count"] > 0 and english_hint["she_count"] == 0:
-                        resolved_gender = "male"
-                    elif english_hint["she_count"] > 0 and english_hint["he_count"] == 0:
-                        resolved_gender = "female"
+            # p.id가 gender_groups_by_id에 키로 있는데(빈 리스트로) 그룹이
+            # 없다는 건, LLM이 이 줄의 후보를 전부 "사람 얘기 아님"으로
+            # 판단했다는 뜻이다 — 이 줄은 성별 확인이 필요 없다(design
+            # §오탐 제거). 애초에 LLM을 부르지 않은 줄(후보 0개, 또는
+            # 한국어 규칙으로 이미 끝난 줄)은 이 키 자체가 없으므로 영향
+            # 없다.
+            if resolved_gender is None and p.id in gender_groups_by_id:
+                gender_needed = False
+
             segment_resolutions.append({
                 "segment_id": p.id,
                 "gender_check_needed": gender_needed,
                 "formality_check_needed": bool(flags.get("formality_check_needed")),
                 "resolved_gender": resolved_gender,
+                "resolved_gender_groups": None,
                 "resolved_formality": flags.get("resolved_formality"),
-                "english_pronoun_hint": gender_hint,
             })
     except Exception as exc:
         logger.exception(
@@ -235,6 +239,60 @@ async def _run_grammar_necessity_check(
     return segment_resolutions, warnings
 
 
+def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
+    """resolve_gender_from_context의 후보 단어별 판단(words: [{"index",
+    "is_person","group_id","gender","referent"}, ...])을, 검수자에게
+    보여주고 DB에 저장할 인물별 그룹 형태로 묶는다. is_person이 false인
+    후보는 그룹을 만들지 않는다(사람 얘기가 아니므로 확인 대상에서 제외).
+    candidate_indices는 나중에 resolve_gender_groups_in_texts가 같은
+    텍스트를 다시 파싱했을 때 같은 순서로 후보를 찾아 정확히 그 단어에만
+    성별을 적용하는 데 쓰인다(spaCy 의존구문 재분석 없이 등장 순서로만
+    매칭 — design §그룹핑도 LLM이 직접). 반환값은 {id: [group, ...]} —
+    id에 대응하는 값이 없으면(LLM 응답에 그 id가 통째로 빠졌으면) 그 id는
+    아예 키에 안 들어간다(호출자가 이걸 "응답 누락"으로 보고 폴백을
+    채운다). LLM이 그 id는 포함했지만 모든 후보가 is_person=false였으면
+    "그룹 없음"이라는 유효한 판단이므로 빈 리스트로(키는 존재) 넣는다 —
+    이 둘을 구분해야 호출자가 "사람 얘기 아님이라 질문 불필요"와 "응답
+    자체가 없어 안전하게 다시 물어봐야 함"을 다르게 처리할 수 있다."""
+    items_by_id = {i["id"]: i for i in llm_items}
+    results_by_id = {r["id"]: r for r in llm_results}
+    groups_by_id: dict = {}
+    for item_id, item in items_by_id.items():
+        candidate_words = item["candidate_words"]
+        candidate_lemmas = item["candidate_word_lemmas"]
+        result = results_by_id.get(item_id)
+        words_info = result.get("words") if result else None
+        if words_info is None:
+            continue
+        by_group: dict = {}
+        order: list = []
+        for w in words_info:
+            idx = w.get("index")
+            if not w.get("is_person") or idx is None or idx >= len(candidate_words):
+                continue
+            group_id = w.get("group_id")
+            if group_id not in by_group:
+                by_group[group_id] = {
+                    "referent": w.get("referent"), "words": [], "target_word_lemmas": [],
+                    "candidate_indices": [], "gender": w.get("gender"),
+                }
+                order.append(group_id)
+            entry = by_group[group_id]
+            entry["words"].append(candidate_words[idx])
+            entry["target_word_lemmas"].append(
+                candidate_lemmas[idx] if idx < len(candidate_lemmas) else candidate_words[idx].lower())
+            entry["candidate_indices"].append(idx)
+            # 같은 그룹 안의 후보끼리 성별 판단이 갈리면(정상적인 LLM 출력
+            # 이라면 안 생겨야 하지만, 방어적으로) 그룹 전체를 미확정으로
+            # 남긴다 — 절반만 적용하면 더 위험하다.
+            if w.get("gender") != entry["gender"]:
+                entry["gender"] = None
+        groups_by_id[item_id] = [
+            {"group_index": i, **by_group[gid]} for i, gid in enumerate(order)
+        ]
+    return groups_by_id
+
+
 async def _gloss_gender_words(
     segment_resolutions: list, pairs: list, provider: ModelProvider, profile: dict,
     target_version_id: str, warnings: list,
@@ -242,14 +300,9 @@ async def _gloss_gender_words(
     """성별 확인이 걸린 단어들의 뜻을 LLM 한 번(배치)으로 한국어로 풀이해
     segment_resolutions를 제자리에서(in-place) 채운다 — 대상언어를 모르는
     검수자가 "이 단어가 사람 얘기인지 사물 얘기인지"조차 판단 못 하는 문제를
-    돕는다(design: caro=가격 얘기라 성별 확인이 애초에 불필요한 걸 뜻을 보고
-    검수자가 스스로 판단할 수 있어야 함). 실패해도 파이프라인을 막지
-    않는다 — 뜻풀이 없이(단어만 보여주는 이전 상태로) 계속 진행한다."""
+    돕는다. 실패해도 파이프라인을 막지 않는다 — 뜻풀이 없이(단어만 보여주는
+    상태로) 계속 진행한다."""
     pair_by_id = {p.id: p for p in pairs}
-    # entries[i]는 items[i]가 어디로 다시 저장돼야 하는지를 가리킨다 —
-    # 단일 인물 줄은 (segment_id, word, None)로, 다인물 줄은 어느 그룹인지
-    # 구분해야 뜻풀이가 엉뚱한 인물의 그룹에 붙지 않으므로 group_index까지
-    # 담아 (segment_id, word, group_index)로 남긴다.
     entries: list = []
     items: list = []
     for r in segment_resolutions:
@@ -257,17 +310,12 @@ async def _gloss_gender_words(
         if pair is None or pair.target is None:
             continue
         groups = r.get("resolved_gender_groups")
-        if groups:
-            for group_index, group in enumerate(groups):
-                for w in group["words"]:
-                    items.append({"id": str(len(entries)), "word": w, "context": pair.target.text})
-                    entries.append((r["segment_id"], w, group_index))
+        if not groups:
             continue
-        hint = r.get("english_pronoun_hint") or {}
-        words = hint.get("target_words") or []
-        for w in words:
-            items.append({"id": str(len(entries)), "word": w, "context": pair.target.text})
-            entries.append((r["segment_id"], w, None))
+        for group_index, group in enumerate(groups):
+            for w in group["words"]:
+                items.append({"id": str(len(entries)), "word": w, "context": pair.target.text})
+                entries.append((r["segment_id"], w, group_index))
     if not items:
         return
     try:
@@ -279,28 +327,21 @@ async def _gloss_gender_words(
         warnings.append({"stage": "단어 뜻풀이", "message": str(exc)})
         return
     meaning_by_idx = {r["id"]: r.get("meaning") for r in results}
-    meanings_by_segment: dict = {}
     group_meanings_by_segment: dict = {}
     for idx, (segment_id, word, group_index) in enumerate(entries):
         meaning = meaning_by_idx.get(str(idx))
         if not meaning:
             continue
-        if group_index is None:
-            meanings_by_segment.setdefault(segment_id, {})[word] = meaning
-        else:
-            group_meanings_by_segment.setdefault(segment_id, {}).setdefault(group_index, {})[word] = meaning
+        group_meanings_by_segment.setdefault(segment_id, {}).setdefault(group_index, {})[word] = meaning
     for r in segment_resolutions:
         groups = r.get("resolved_gender_groups")
-        if groups:
-            group_meanings = group_meanings_by_segment.get(r["segment_id"]) or {}
-            for group_index, group in enumerate(groups):
-                meanings = group_meanings.get(group_index)
-                if meanings:
-                    group["word_meanings"] = meanings
+        if not groups:
             continue
-        meanings = meanings_by_segment.get(r["segment_id"])
-        if meanings and r.get("english_pronoun_hint") is not None:
-            r["english_pronoun_hint"]["word_meanings"] = meanings
+        group_meanings = group_meanings_by_segment.get(r["segment_id"]) or {}
+        for group_index, group in enumerate(groups):
+            meanings = group_meanings.get(group_index)
+            if meanings:
+                group["word_meanings"] = meanings
 
 
 def _dedupe_by_segment_id(corrections: list) -> dict:
@@ -729,16 +770,14 @@ def gender_groups_all_resolved(groups: Optional[list]) -> bool:
 def _gender_groups_for_ai(groups: Optional[list]) -> Optional[list]:
     """다인물 그룹의 확정된 성별을 AI 적용용 형태로 변환한다. not_applicable은
     실제 성별이 아니므로 gender를 None으로 남기되(_normalize_gender_for_ai와
-    동일한 이유) 리스트에서 빼지는 않는다 — resolve_gender_groups_in_texts는
-    그룹을 lemma가 아니라 리스트 위치(그룹 인덱스)로 매칭하므로, 중간 그룹을
-    걸러내면 뒤 그룹들이 앞으로 밀려 엉뚱한 사람에게 성별이 적용된다(회귀:
-    2인물 중 앞사람이 not_applicable이면 뒷사람 성별이 앞사람 자리로 밀려
-    잘못 적용됐다). resolve 쪽은 male/female이 아닌 gender를 이미 안전하게
-    건너뛰므로, 자리만 지켜주면 된다. male/female이 하나도 없으면 None."""
+    동일한 이유) 리스트에서 빼지는 않는다 — candidate_indices는 그룹 순서가
+    아니라 이 문장을 spaCy로 다시 파싱했을 때의 후보 등장 순서를 직접
+    가리키므로, 중간 그룹을 걸러내도 안전하다(resolve_gender_groups_in_texts
+    참고). male/female이 하나도 없으면 None."""
     if not groups:
         return None
     result = [
-        {"lemmas": g["target_word_lemmas"], "gender": _normalize_gender_for_ai(g.get("gender"))}
+        {"candidate_indices": g["candidate_indices"], "gender": _normalize_gender_for_ai(g.get("gender"))}
         for g in groups
     ]
     return result if any(g["gender"] for g in result) else None
@@ -835,9 +874,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                                provider: ModelProvider,
                                cached_korean_segments: Optional[list] = None,
                                cached_video_proxy_path: Optional[str] = None,
-                               english_srt_path: Optional[str] = None,
-                               korean_srt_path: Optional[str] = None,
-                               suggested_not_applicable_lemmas: frozenset = frozenset()) -> dict:
+                               korean_srt_path: Optional[str] = None) -> dict:
     """S1(STT/정렬/사전·규칙 처리/문법 필요성 판단)만 실행한다. 성별/격식
     확인이 필요한 줄이 있으면 AI 검증(S2)은 여기서 시작하지 않는다 — 사람이
     확정한 뒤에야 정확한 검증이 가능하므로(design §AI 검증은 확정된 값을
@@ -851,16 +888,6 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     `video_path`를 결과에 그대로 담아 돌려준다."""
     warnings: list = []
     target_segments = load_srt(target_srt_path)
-
-    english_segments: list = []
-    if english_srt_path:
-        try:
-            english_segments = load_srt(english_srt_path)
-        except Exception as exc:
-            logger.exception(
-                "영어 SRT 파싱 실패, 대명사 힌트 생략하고 계속 진행 (target_version_id=%s)",
-                target_version_id)
-            warnings.append({"stage": "영어 SRT 대조", "message": str(exc)})
 
     if cached_korean_segments is not None and cached_video_proxy_path is not None:
         # Episode 단위 캐시 재사용 — 같은 화를 다른 대상언어로 다시 분석하거나
@@ -927,7 +954,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     pairs = pretreatment.pairs
 
     segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
-        pairs, profile, english_segments, target_version_id, suggested_not_applicable_lemmas,
+        pairs, profile, provider, target_version_id,
     )
     warnings.extend(grammar_warnings)
 
@@ -1049,7 +1076,6 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         provider: ModelProvider,
                         cached_korean_segments: Optional[list] = None,
                         cached_video_proxy_path: Optional[str] = None,
-                        english_srt_path: Optional[str] = None,
                         korean_srt_path: Optional[str] = None) -> dict:
     """phase1 + phase2를 곧장 이어서 실행하는 편의 래퍼 — 성별/격식 확인이
     필요한 줄이 있어도 기다리지 않고 바로 phase2까지 실행한다. 실제 운영
@@ -1060,7 +1086,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     knowledge = load_knowledge()
     phase1 = await run_pipeline_phase1(
         video_path, target_srt_path, language, variant, target_version_id, provider,
-        cached_korean_segments, cached_video_proxy_path, english_srt_path, korean_srt_path,
+        cached_korean_segments, cached_video_proxy_path, korean_srt_path,
     )
     resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
     phase2 = await run_pipeline_phase2(

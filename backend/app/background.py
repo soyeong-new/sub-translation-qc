@@ -18,7 +18,7 @@ from app.core.pipeline import (
 )
 from app.core.pretreatment import find_pending_sensitive_hits
 from app.core.ingest import delete_original_video
-from app.repositories import save_phase1_result, save_phase2_result, get_suggested_not_applicable_lemmas
+from app.repositories import save_phase1_result, save_phase2_result
 from app.providers.base import get_provider, ModelProvider
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge, load_sensitive_terms, load_profanity_dictionary
@@ -45,8 +45,6 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
         async with async_session() as session:
             tv = await session.get(TargetVersion, target_version_id)
             episode = await session.get(Episode, tv.episode_id)
-            suggested_not_applicable_lemmas = await get_suggested_not_applicable_lemmas(
-                session, tv.target_language)
 
         provider = get_provider()
         # 캐시가 지금 기대하는 형태(단어 단위)로 저장된 게 아니면 무시하고
@@ -66,9 +64,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
                 target_version_id=target_version_id, provider=provider,
                 cached_korean_segments=cached_segments,
                 cached_video_proxy_path=episode.video_proxy_path,
-                english_srt_path=episode.english_srt_path,
                 korean_srt_path=episode.korean_srt_path,
-                suggested_not_applicable_lemmas=suggested_not_applicable_lemmas,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )

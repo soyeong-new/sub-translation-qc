@@ -710,7 +710,9 @@ async def test_pipeline_flags_lines_needing_gender_or_formality_check(tmp_path, 
     def _flag_first_only(pairs, profile):
         return [
             {"id": p["id"], "gender_check_needed": p["id"] == "pair_1",
-             "formality_check_needed": False}
+             "formality_check_needed": False, "resolved_formality": None,
+             "resolved_gender_from_korean": None,
+             "candidate_words": [], "candidate_word_lemmas": []}
             for p in pairs
         ]
 
@@ -756,106 +758,6 @@ async def test_pipeline_continues_when_check_grammar_necessity_raises(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_pipeline_attaches_english_pronoun_hint_to_gender_flagged_segment(tmp_path, monkeypatch):
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
-    english_srt_path = tmp_path / "english.srt"
-    english_srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nShe is tired.\n", encoding="utf-8")
-    provider = MockProvider()
-
-    def _flag_gender(pairs, profile):
-        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
-                for p in pairs]
-
-    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_gender)
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
-            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
-            english_srt_path=str(english_srt_path),
-        )
-
-    resolutions = result["segment_resolutions"]
-    assert len(resolutions) == 1
-    assert resolutions[0]["english_pronoun_hint"] == {
-        "text": "She is tired.", "he_count": 0, "she_count": 1,
-    }
-
-
-@pytest.mark.asyncio
-async def test_pipeline_glosses_gender_flagged_words_via_provider(tmp_path):
-    """회귀: 성별 확인 대상 단어(예: cansado)의 뜻을 LLM으로 풀이해
-    english_pronoun_hint.word_meanings에 담아야 한다 — 대상언어를 모르는
-    검수자가 "이 단어가 사람 얘기인지 사물 얘기인지"조차 판단 못 하는
-    문제를 돕기 위함(design: caro 사례)."""
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEstá cansado.\n", encoding="utf-8")
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
-            language="es", variant="LATAM", target_version_id="tv1", provider=MockProvider(),
-        )
-
-    resolution = next(r for r in result["segment_resolutions"] if r["gender_check_needed"])
-    assert resolution["english_pronoun_hint"]["target_words"] == ["cansado"]
-    assert resolution["english_pronoun_hint"]["word_meanings"] == {"cansado": "[뜻:cansado]"}
-
-
-@pytest.mark.asyncio
-async def test_pipeline_english_pronoun_hint_is_none_without_english_srt_path(tmp_path, monkeypatch):
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nEsta cansada.\n", encoding="utf-8")
-    provider = MockProvider()
-
-    def _flag_gender(pairs, profile):
-        return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False}
-                for p in pairs]
-
-    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_gender)
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
-            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
-        )
-
-    assert result["segment_resolutions"][0]["english_pronoun_hint"] is None
-
-
-@pytest.mark.asyncio
-async def test_pipeline_does_not_compute_pronoun_hint_for_formality_only_flags(tmp_path, monkeypatch):
-    """design §영어 SRT 대조는 "걸린 줄"(성별 체크가 필요한 줄)에 한정된다 —
-    격식만 걸린 줄에는 영어 SRT 힌트를 계산하지 않는다(대명사는 성별 신호이지
-    격식 신호가 아니다)."""
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\n¿Tú o usted?\n", encoding="utf-8")
-    english_srt_path = tmp_path / "english.srt"
-    english_srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nShe is tired.\n", encoding="utf-8")
-    provider = MockProvider()
-
-    def _flag_formality(pairs, profile):
-        return [{"id": p["id"], "gender_check_needed": False, "formality_check_needed": True}
-                for p in pairs]
-
-    monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _flag_formality)
-
-    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
-            language="es", variant="LATAM", target_version_id="tv1", provider=provider,
-            english_srt_path=str(english_srt_path),
-        )
-
-    assert result["segment_resolutions"][0]["english_pronoun_hint"] is None
-
-
-@pytest.mark.asyncio
 async def test_pipeline_auto_resolves_formality_from_korean_ending_without_stepper(tmp_path):
     """한국어 어미로 격식이 자동 판정되면 segment_resolutions에
     resolved_formality가 바로 채워져야 한다 — 검수자가 스테퍼에서 또 물을
@@ -886,9 +788,13 @@ async def test_pipeline_applies_resolved_formality_before_dual_verification(tmp_
     "[formality] " 접두어를 붙이는 결정론적 마커라, 이 접두어가 S2로 넘어가는
     target_text에 이미 붙어 있으면 성공이다."""
     srt_path = tmp_path / "target.srt"
-    # MockProvider의 STT는 "안녕하세요"(존댓말 어미)를 반환한다.
+    # MockProvider의 STT는 "안녕하세요"(존댓말 어미)를 반환한다. 성별 표시
+    # 후보 단어가 없는 문장을 써서(¿Cómo estás?에는 성별 어미 형용사가 없음)
+    # 격식 확정 경로만 단독으로 검증한다 — 성별 후보가 있었다면 LLM 그룹핑을
+    # 거치며 미확정 상태로 남아 _build_resolved_registers가 이 줄 전체(격식
+    # 포함)를 건너뛰어 이 테스트의 의도(격식만 검증)와 무관한 이유로 실패한다.
     srt_path.write_text(
-        "1\n00:00:00,000 --> 00:00:02,000\nEstoy cansada.\n", encoding="utf-8")
+        "1\n00:00:00,000 --> 00:00:02,000\n¿Cómo estás?\n", encoding="utf-8")
     provider = MockProvider()
 
     captured = {}
@@ -906,7 +812,7 @@ async def test_pipeline_applies_resolved_formality_before_dual_verification(tmp_
             language="es", variant="LATAM", target_version_id="tv1", provider=provider,
         )
 
-    assert captured["pairs"][0]["target_text"] == "[formal] Estoy cansada."
+    assert captured["pairs"][0]["target_text"] == "[formal] ¿Cómo estás?"
 
 
 @pytest.mark.asyncio
@@ -964,7 +870,6 @@ def test_resolved_registers_treat_not_applicable_gender_as_no_gender_info():
             self.id = id
             self.resolved_gender_raw = resolved_gender_raw
             self.resolved_formality_raw = resolved_formality_raw
-            self.english_pronoun_hint = None
             self.resolved_gender_groups_raw = None
 
     segments = [
@@ -987,8 +892,8 @@ def test_build_resolved_registers_omits_gender_groups_until_all_referents_answer
         "segment_id": "pair_1", "gender_check_needed": True, "formality_check_needed": False,
         "resolved_gender": None, "resolved_formality": None,
         "resolved_gender_groups": [
-            {"target_word_lemmas": ["cansado"], "gender": "female"},
-            {"target_word_lemmas": ["enojado"], "gender": None},
+            {"candidate_indices": [0], "gender": "female"},
+            {"candidate_indices": [1], "gender": None},
         ],
     }]
     assert registers_need_confirmation(partially_answered) is True
@@ -998,15 +903,15 @@ def test_build_resolved_registers_omits_gender_groups_until_all_referents_answer
         "segment_id": "pair_1", "gender_check_needed": True, "formality_check_needed": False,
         "resolved_gender": None, "resolved_formality": None,
         "resolved_gender_groups": [
-            {"target_word_lemmas": ["cansado"], "gender": "female"},
-            {"target_word_lemmas": ["enojado"], "gender": "male"},
+            {"candidate_indices": [0], "gender": "female"},
+            {"candidate_indices": [1], "gender": "male"},
         ],
     }]
     assert registers_need_confirmation(fully_answered) is False
     registers = _build_resolved_registers(fully_answered)
     assert registers["pair_1"]["gender_groups"] == [
-        {"lemmas": ["cansado"], "gender": "female"},
-        {"lemmas": ["enojado"], "gender": "male"},
+        {"candidate_indices": [0], "gender": "female"},
+        {"candidate_indices": [1], "gender": "male"},
     ]
 
 
@@ -1023,14 +928,14 @@ def test_build_resolved_registers_keeps_gender_group_positions_around_not_applic
         "segment_id": "pair_1", "gender_check_needed": True, "formality_check_needed": False,
         "resolved_gender": None, "resolved_formality": None,
         "resolved_gender_groups": [
-            {"target_word_lemmas": ["cansado"], "gender": "not_applicable"},
-            {"target_word_lemmas": ["enojado"], "gender": "male"},
+            {"candidate_indices": [0], "gender": "not_applicable"},
+            {"candidate_indices": [1], "gender": "male"},
         ],
     }]
     registers = _build_resolved_registers(fully_answered)
     assert registers["pair_1"]["gender_groups"] == [
-        {"lemmas": ["cansado"], "gender": None},
-        {"lemmas": ["enojado"], "gender": "male"},
+        {"candidate_indices": [0], "gender": None},
+        {"candidate_indices": [1], "gender": "male"},
     ]
 
 
@@ -1518,33 +1423,85 @@ async def test_dual_verification_uses_valid_scene_boundaries_from_provider(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_grammar_necessity_check_flags_suggested_not_applicable_word():
-    """caro처럼 학습된 "해당 없음 전용" 단어면 english_pronoun_hint에
-    suggested_not_applicable=True가 붙어야 한다 — 질문은 그대로 뜨되(design
-    §숨기면 반증 사례를 영영 못 잡음) "해당 없음" 버튼에 추천 표시만 한다."""
+async def test_run_grammar_necessity_check_auto_resolves_when_llm_gives_confident_gender(monkeypatch):
+    """LLM이 확신 있는 성별을 돌려주면 그 그룹은 이미 확정된 채로 저장되어
+    검수자에게 다시 묻지 않는다(design §확신 있으면 자동 확정)."""
     from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class ConfidentProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            return [
+                {"id": item["id"], "words": [
+                    {"index": 0, "is_person": True, "group_id": 0,
+                     "gender": "male", "referent": "Juan"},
+                ]}
+                for item in items
+            ]
 
     pairs = [AlignedPair(
-        id="pair_1",
-        korean=SegmentText(start=0.0, end=1.0, text="한국어"),
-        target=SegmentText(start=0.0, end=2.0, text="¿No es caro?"),
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="후안이 피곤해해."),
+        target=SegmentText(start=0.0, end=1.0, text="Juan está cansado."),
     )]
-    resolutions, _warnings = await _run_grammar_necessity_check(
-        pairs, {"language": "es"}, [], "tv1", frozenset({"caro"}))
-    resolution = next(r for r in resolutions if r["gender_check_needed"])
-    assert resolution["english_pronoun_hint"]["suggested_not_applicable"] is True
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, ConfidentProvider(), "tv1")
+    assert warnings == []
+    groups = resolutions[0]["resolved_gender_groups"]
+    assert groups[0]["gender"] == "male"
+    assert groups[0]["referent"] == "Juan"
+    assert groups[0]["candidate_indices"] == [0]
 
 
 @pytest.mark.asyncio
-async def test_grammar_necessity_check_does_not_suggest_unlearned_word():
+async def test_run_grammar_necessity_check_drops_line_when_llm_says_not_a_person(monkeypatch):
+    """LLM이 후보 단어를 "사람 얘기 아님"으로 판단하면 그 줄은 성별 확인이
+    필요 없다고 표시되어야 한다(design §오탐 제거, 예: tiempo compartido)."""
     from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class NotApplicableProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            return [
+                {"id": item["id"], "words": [
+                    {"index": 0, "is_person": False, "group_id": 0,
+                     "gender": None, "referent": None},
+                ]}
+                for item in items
+            ]
 
     pairs = [AlignedPair(
-        id="pair_1",
-        korean=SegmentText(start=0.0, end=1.0, text="한국어"),
-        target=SegmentText(start=0.0, end=2.0, text="¿No es caro?"),
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="타임셰어 멤버십을 줬어."),
+        target=SegmentText(start=0.0, end=1.0, text="Me dio tiempo compartido."),
     )]
-    resolutions, _warnings = await _run_grammar_necessity_check(
-        pairs, {"language": "es"}, [], "tv1", frozenset())
-    resolution = next(r for r in resolutions if r["gender_check_needed"])
-    assert "suggested_not_applicable" not in resolution["english_pronoun_hint"]
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, NotApplicableProvider(), "tv1")
+    assert warnings == []
+    assert resolutions[0]["gender_check_needed"] is False
+    assert resolutions[0]["resolved_gender_groups"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_grammar_necessity_check_falls_back_to_unresolved_group_when_llm_fails(monkeypatch):
+    """LLM 호출이 실패해도(과탐지 허용, 누락 금지 방침) 질문 자체는 사라지지
+    않고 미확정 그룹으로 사람에게 넘어가야 한다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class FailingProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            raise RuntimeError("network down")
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="피곤해."),
+        target=SegmentText(start=0.0, end=1.0, text="Estoy cansado."),
+    )]
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, FailingProvider(), "tv1")
+    assert len(warnings) == 1
+    assert resolutions[0]["gender_check_needed"] is True
+    groups = resolutions[0]["resolved_gender_groups"]
+    assert groups[0]["words"] == ["cansado"]
+    assert groups[0]["gender"] is None

@@ -3,7 +3,7 @@
 from typing import List
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import FindingRow, Segment, SttCorrection, GenderWordResolution
+from app.models import FindingRow, Segment, SttCorrection
 from app.schemas import Finding
 
 
@@ -94,13 +94,8 @@ def _save_segments(session: AsyncSession, target_version_id: str,
             target_text=pair.target.text if pair.target else "",
             gender_check_needed=bool(resolution.get("gender_check_needed")),
             formality_check_needed=bool(resolution.get("formality_check_needed")),
-            # 한국어 원문(어미/호칭)이나 영어 SRT로 이미 자동 판정된 값 —
-            # 검수자가 스테퍼에서 또 묻지 않아도 되게 미리 채운다(design
-            # §정말 판단하기 어려운 것만 질문). 자동 판정 못 했으면 None
-            # 그대로라 지금까지처럼 사람이 확인해야 한다.
             resolved_gender_raw=resolution.get("resolved_gender"),
             resolved_formality_raw=resolution.get("resolved_formality"),
-            english_pronoun_hint=resolution.get("english_pronoun_hint"),
             # 한 줄에 인물이 둘 이상이면 채워진다(design §인물별로 따로
             # 확인) — resolved_gender_raw는 이 경우 쓰지 않는다.
             resolved_gender_groups_raw=resolution.get("resolved_gender_groups"),
@@ -219,32 +214,3 @@ async def get_findings_for_segment(session: AsyncSession, segment_id: str) -> Li
         select(FindingRow).where(FindingRow.segment_id == segment_id)
     )
     return list(rows.scalars().all())
-
-
-async def get_suggested_not_applicable_lemmas(session: AsyncSession, language: str) -> set:
-    """이 언어에서 지금까지 "해당 없음"으로만 판정되고 한 번도 실제 성별
-    (male/female)로 판정된 적 없는 단어 기본형(lemma) 집합을 돌려준다.
-    질문 자체를 숨기는 데는 쓰지 않는다 — 한 번 숨기면 그 뒤로 반증 사례를
-    영영 못 잡기 때문이다(같은 단어가 다른 영화에서는 실제로 사람을
-    가리킬 수도 있음). "해당 없음" 버튼에 추천 표시만 하는 용도로만 쓴다."""
-    rows = await session.execute(
-        select(GenderWordResolution.word_lemma, GenderWordResolution.resolution)
-        .where(GenderWordResolution.language == language)
-    )
-    resolutions_by_lemma: dict = {}
-    for lemma, resolution in rows.all():
-        resolutions_by_lemma.setdefault(lemma, set()).add(resolution)
-    return {
-        lemma for lemma, resolutions in resolutions_by_lemma.items()
-        if resolutions == {"not_applicable"}
-    }
-
-
-async def record_gender_word_resolution(
-    session: AsyncSession, language: str, word_lemmas: List[str], resolution: str,
-) -> None:
-    """검수자가 성별 표시 단어에 실제로 어떻게 답했는지(male/female/
-    not_applicable) 기록한다 — 다음 프로젝트에서 같은 단어의 "해당 없음"
-    추천 여부를 판단하는 근거가 된다."""
-    for lemma in word_lemmas:
-        session.add(GenderWordResolution(language=language, word_lemma=lemma, resolution=resolution))
