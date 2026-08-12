@@ -168,8 +168,10 @@ export default function TitleListView({ onSelect }) {
           console.error("영어 SRT 업로드 실패:", err);
         }
       }
-      // 한국어 SRT는 선택 입력이지만, 있으면 STT를 건너뛰겠다는 의도이므로
-      // (영어 SRT와 달리) 업로드 실패를 조용히 무시하지 않고 등록 자체를 막는다.
+      // 한국어 SRT는 선택 입력이지만, 업로드가 실패하면 STT 자체 인식
+      // 텍스트(정확도가 더 낮음)로 조용히 되돌아가 버린다 — 사용자가 SRT를
+      // 올릴 때 의도한 바가 아니므로, (영어 SRT와 달리) 업로드 실패를
+      // 조용히 무시하지 않고 등록 자체를 막는다.
       let koreanSrtPath = null;
       if (koreanSrtFile) {
         setStatus({ kind: "loading", message: "한국어 SRT 업로드 중..." });
@@ -283,7 +285,7 @@ export default function TitleListView({ onSelect }) {
 
           <FileDropzone
             id="korean-srt-file"
-            label="한국어 SRT 자막 (선택, 있으면 STT 대신 이 파일을 사용합니다)"
+            label="한국어 SRT 자막 (선택, 있으면 STT 타이밍에 이 파일의 텍스트를 씁니다)"
             accept={SRT_EXTENSIONS.join(",")}
             file={koreanSrtFile}
             onFileSelected={handleKoreanSrtSelected}

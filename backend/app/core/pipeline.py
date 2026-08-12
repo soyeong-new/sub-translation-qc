@@ -81,7 +81,7 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
     return merged
 
 
-async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple:
+async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple[list, str]:
     """오디오 추출 + STT + 영상 저화질 프록시 생성을 병렬로 실행한다.
     korean_srt_path 유무와 무관하게 이제 STT는 항상 돌기 때문에, 기존
     "STT 생략" 분기와 "일반 STT" 분기가 이 로직을 공유한다."""

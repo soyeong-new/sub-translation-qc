@@ -58,11 +58,11 @@ def test_align_splits_words_across_two_target_cues_by_own_midpoint():
 
 
 def test_align_matches_by_overlap_even_when_midpoint_falls_outside_target():
-    """회귀: 한국어 SRT를 STT 대신 쓸 때(korean_words_from_srt) 큐에 단어가
-    하나뿐이면 그 단어 타임코드가 큐 표시 구간 전체로 늘어난다 — 실제 발화
-    보다 길게 잡히는 경우가 흔해서, 중점(midpoint)이 대응하는 대상언어 큐
-    밖으로 새는 실제 사례("맞죠?")를 재현한다. 겹침 기준이면 이런 경우도
-    붙어야 한다."""
+    """회귀: 한국어 SRT 단어를 STT가 못 들어 큐 경계로 폴백할 때
+    (stt_srt_matching의 cue-bound 폴백 경로) 큐에 단어가 하나뿐이면 그 단어
+    타임코드가 큐 표시 구간 전체로 늘어난다 — 실제 발화보다 길게 잡히는
+    경우가 흔해서, 중점(midpoint)이 대응하는 대상언어 큐 밖으로 새는 실제
+    사례("맞죠?")를 재현한다. 겹침 기준이면 이런 경우도 붙어야 한다."""
     korean_words = [SegmentText(start=202.70, end=203.54, text="맞죠?")]
     target = [SegmentText(start=202.16, end=202.95, text="Eres tú.")]
     pairs = align(korean_words, target)

@@ -50,8 +50,10 @@ def test_match_drops_stt_word_with_no_srt_counterpart(tmp_path):
 
 
 def test_match_falls_back_to_cue_bounds_when_no_confirmed_anchor_exists(tmp_path):
-    """이 큐의 어떤 단어와도 STT가 안 겹치면(양옆에 확실한 앵커가 전혀
-    없으면), 원본 SRT 큐 경계로 폴백해서 보간해야 한다."""
+    """파일 전체에서 STT가 어떤 단어와도 안 겹치면(왼쪽도 오른쪽도 확실한
+    앵커가 전혀 없는 i==0, j==n인 경우), 원본 SRT 큐 경계로 폴백해서
+    보간해야 한다 — 큐 하나만 안 겹치는 경우가 아니라 파일 전체/이웃
+    없음 케이스다."""
     srt_path = tmp_path / "ko.srt"
     srt_path.write_text(
         "1\n00:00:10,000 --> 00:00:12,000\n안녕 친구\n", encoding="utf-8",
@@ -133,3 +135,35 @@ def test_match_clamps_cue_fallback_instead_of_discarding_real_anchor_on_other_si
     # (10.0)을 그대로 썼다면 8.0보다 늦어져서 다음 확정 구간과 겹친다.
     assert result[0]["end"] <= 8.0
     assert result[1]["start"] == 8.0
+
+
+def test_match_keeps_multi_cue_gap_words_within_their_own_cue_bounds(tmp_path):
+    """회귀: STT가 큐 여러 개를 통째로 놓치면(예: 음악/노이즈 구간), 그 사이
+    단어들을 갭 전체 구간에 균등하게 뭉개면 안 된다 — 각 단어는 자기
+    원래 큐의 시간대 안(또는 그 근처)에 있어야 한다. 안 그러면 align()이
+    엉뚱한 대상언어 줄에 붙여버린다."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n처음\n\n"
+        "2\n00:01:00,000 --> 00:01:02,000\n중간에\n\n"
+        "3\n00:01:30,000 --> 00:01:32,000\n놓친\n\n"
+        "4\n00:02:00,000 --> 00:02:02,000\n마지막\n",
+        encoding="utf-8",
+    )
+    # STT는 "처음"과 "마지막"만 듣는다 — "중간에"/"놓친"이 담긴 두 큐를
+    # 통째로 놓친다.
+    stt_words = [
+        {"start": 1.0, "end": 1.5, "text": "처음"},
+        {"start": 121.0, "end": 121.5, "text": "마지막"},
+    ]
+    result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
+    by_text = {w["text"]: w for w in result}
+    # "중간에"는 원래 큐(60~62초) 근처여야지, 갭 전체(1.5~121.0초)에 걸쳐
+    # 뭉개진 위치(예: 20초대)면 안 된다.
+    assert 60.0 <= by_text["중간에"]["start"] <= 62.0
+    # "놓친"은 원래 큐(90~92초) 근처여야 한다.
+    assert 90.0 <= by_text["놓친"]["start"] <= 92.0
+    # 시간 순서가 뒤집히면 안 된다(처음 < 중간에 < 놓친 < 마지막).
+    assert (by_text["처음"]["end"] <= by_text["중간에"]["start"]
+            <= by_text["중간에"]["end"] <= by_text["놓친"]["start"]
+            <= by_text["놓친"]["end"] <= by_text["마지막"]["start"])

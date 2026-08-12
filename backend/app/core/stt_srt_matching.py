@@ -8,6 +8,7 @@
 
 import difflib
 import re
+from itertools import groupby
 from typing import List, Optional, Tuple
 from app.core.ingest import load_srt
 
@@ -150,7 +151,16 @@ def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -
             # 순서를 벗어남) — 폭 0으로 축소해 최소한 다음 확정 구간과
             # 안 겹치게 한다.
             right_time = left_time
-        result.extend(_interpolate_gap(srt_words[i:j], left_time, right_time))
+        for (cue_start, cue_end), cue_group in groupby(
+                srt_words[i:j], key=lambda w: (w["cue_start"], w["cue_end"])):
+            # 갭이 여러 큐에 걸쳐 있으면(STT가 큐 여러 개를 통째로 놓친 경우),
+            # 갭 전체 구간에 균등하게 뭉개지 말고 각 큐 자신의 [cue_start,
+            # cue_end]를 확정 앵커 구간 안으로 눌러 담아 그 큐 몫만 보간한다
+            # — 그래야 서로 다른 큐의 단어가 실제 큐 위치와 무관하게 뒤섞이지
+            # 않는다.
+            lo = min(max(cue_start, left_time), right_time)
+            hi = max(min(cue_end, right_time), lo)
+            result.extend(_interpolate_gap(list(cue_group), lo, hi))
         i = j
 
     return result
