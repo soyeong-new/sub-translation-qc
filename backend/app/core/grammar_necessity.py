@@ -4,17 +4,22 @@
 필요성 판단(*_check_needed)은 대상언어(target_text) 형태소만 본다 — 화자·맥락은
 텍스트에 없어 판단 불가능하므로, 그 줄 자체의 문법 구조(성별 표시 형용사/분사,
 활용된 동사 존재 여부)만 본다. 애매하면 재현율을 우선한다(과탐지 허용, 누락
-금지) — 과탐지는 검수자가 스테퍼에서 버튼 한 번 눌러 넘기면 되지만, 누락은
-존댓말/격식 오류가 검수 없이 그대로 나가는 더 나쁜 실패다.
+금지) — 성별 표시 형용사/분사는 전부 "후보"로만 반환하고, 실제로 사람을
+가리키는지/누구인지/성별이 뭔지는 이 모듈의 책임이 아니다(pipeline.py의
+resolve_gender_from_context LLM 호출이 판단한다) — spaCy 통계 모델은 amod
+수식 대상이 사람인지 사물인지, 형용사가 서술적으로 쓰였는지 감탄사로 쓰였는지를
+안정적으로 구분하지 못한다(design 2026-08-12-gender-detection-llm-redesign-
+design.md §문제 진단).
 
 값 자동 판정(resolved_*)은 반대로 **한국어 원문**(korean_text)을 본다 — 격식은
 한국어 어미에, 성별은 호칭·대명사에 화자가 텍스트만으로 알 수 있는 단서가 실제로
-있다. 성별(resolved_gender_from_korean)은 확정 못 하면(단서가 없거나 상충하면)
-None을 반환해 그대로 사람에게 넘긴다 — "판단 어려운 것만 질문"이 목표이지,
-억지로 다 자동 판정하는 게 목표가 아니다. 격식(resolved_formality)은 다르다 —
-한국어는 존댓말 어미가 없으면 곧 반말이라는 이분법이 성립하는 닫힌 체계라
-"애매함"이 원천적으로 없다: 원문 자체가 비었을 때만 None이고, 그 외엔 항상
-formal/informal 둘 중 하나로 확정된다."""
+있다. 성별(resolved_gender_from_korean)은 후보 단어가 정확히 1개일 때만
+시도한다 — 2개 이상이면 한국어 단서 하나로 어느 후보를 가리키는지 안전하게
+구분할 수 없어(design §그룹핑도 LLM이 직접), 확정 못 하면(단서가 없거나
+상충하거나 후보가 여럿이면) None을 반환해 그대로 다음 단계(LLM, 그다음 사람)로
+넘긴다. 격식(resolved_formality)은 다르다 — 한국어는 존댓말 어미가 없으면 곧
+반말이라는 이분법이 성립하는 닫힌 체계라 "애매함"이 원천적으로 없다: 원문 자체가
+비었을 때만 None이고, 그 외엔 항상 formal/informal 둘 중 하나로 확정된다."""
 
 import re
 from functools import lru_cache
@@ -83,150 +88,24 @@ def _resolve_model(language: str):
     return _load_model(model_name)
 
 
-def _referent_key(tok):
-    """성별 표시 형용사/분사 토큰이 문장 속 누구(어느 명사/대명사) 얘기인지
-    spaCy 의존구문을 따라가 추정한 앵커 토큰의 인덱스를 반환한다 — 정답을
-    보장하지 않는다, 어디까지나 문법 구조 기반 추정이다. 한 줄에 성별이
-    다른 인물이 둘 이상 있을 때, 확정된 성별 하나를 문장 전체에 무작정
-    적용하면 엉뚱한 인물의 형용사까지 잘못 바뀌는 걸 막기 위한 최선의
-    근사치다(사용자 피드백: "인칭을 제대로 구분 못하는 경우가 있다").
-    (1) 자기 자신에게 딸린 주어(nsubj)가 있으면 그 주어가 곧 이 형용사가
-        가리키는 인물이다(예: "Él está cansado y ella está feliz"에서 각
-        형용사가 자기 주어를 따로 갖는다).
-    (2) 명사를 직접 수식하면(amod, 예: "un hombre cansado") 그 명사가 인물이다.
-    (3) 등위접속(conj)으로 앞 형용사에 이어붙었고 자기 주어가 없으면(예:
-        "Está cansado y aburrido" — 주어 생략, 같은 인물의 술어 두 개), 앞
-        형용사와 같은 인물을 가리키는 것이므로 그 앞 형용사의 앵커를 그대로
-        물려받는다.
-    (4) 그 무엇도 없으면(주어 생략, 단독 술어) 자기 자신이 앵커다.
-
-    한계: 같은 절 안에서는 잘 맞지만, 절을 넘어가는 지시 관계는 원천적으로
-    못 푼다 — 이건 문법(syntax)이 아니라 의미(semantics)/담화 맥락을 알아야
-    풀리는 문제라 dependency parse만으로는 안 된다. 예: "Juan le dijo a
-    María que estaba cansada."에서 "cansada"의 실제 화자는 María이지만,
-    spaCy는 종속절의 관계대명사 "que"를 nsubj로 잡아 (1)이 "que" 자신을
-    앵커로 반환해버린다(Juan도 María도 아닌 엉뚱한 토큰). 이런 경우 그룹은
-    만들어지지만(구분은 됨) 그 그룹이 실제 누구인지는 이 함수도, 호출자도
-    모른다 — 검수자가 문맥/영상을 보고 판단해야 하는 영역이다."""
-    for child in tok.children:
-        if child.dep_ == "nsubj":
-            return child.i
-    if tok.dep_ == "amod":
-        return tok.head.i
-    if tok.dep_ == "conj" and tok.head.i != tok.i:
-        return _referent_key(tok.head)
-    return tok.i
-
-
-# amod(명사 직접 수식)로 걸린 형용사/분사가 가리키는 명사가 사람일 가능성이
-# 높은 경우만 화이트리스트로 잡는다("un hombre cansado"의 hombre 등) —
-# "tiempo compartido"(타임셰어)의 "tiempo"처럼 흔한 사물/추상 명사까지 다
-# 사람으로 오인하면, 실제로 사고가 난다: 이 그룹의 성별 확인에 누군가
-# 남성/여성을 답하면(회귀 재현, "compartido"→"compartida") 사람과 무관한
-# 단어가 조용히 잘못 바뀌어 최종 자막에 그대로 나간다 — "해당없음" 버튼이
-# 있어도 검수자가 "이게 왜 성별 확인 대상인지" 이해 못 하면 못 거른다.
-# PROPN/PRON(이름·대명사)은 화이트리스트 없이 항상 사람으로 본다.
-_COMMON_PERSON_NOUNS = frozenset({
-    "hombre", "mujer", "chico", "chica", "chiquillo", "chiquilla",
-    "niño", "niña", "muchacho", "muchacha", "joven",
-    "señor", "señora", "señorita", "amigo", "amiga",
-    "novio", "novia", "esposo", "esposa", "amante", "persona", "tipo", "tipa",
-})
-
-
-def _modifies_plausible_person(head_tok) -> bool:
-    if head_tok.pos_ in ("PROPN", "PRON"):
-        return True
-    return head_tok.lemma_.lower() in _COMMON_PERSON_NOUNS
-
-
 def _is_gendered_token(tok) -> bool:
     """성별 어미가 있는 형용사/분사인지 판단한다. ADJ만으로는 부족하다 —
     수동태/완료형 분사("fue abierta", "han sido invitados")는 spaCy가
     VERB+VerbForm=Part로 태깅해서 ADJ 필터에 안 잡힌다. 이 확장은 사물/상황에
     문법적으로 일치하는 분사도 같이 걸러낸다("la puerta fue abierta"의
-    "abierta"는 사람이 아니라 puerta에 일치하는 것) — spaCy 품사 태그만으로는
-    이 명사가 사람인지 사물인지 구분할 근거가 없다(예: "estudiantes"(사람)와
-    "puerta"(사물) 둘 다 그냥 NOUN). 이 프로젝트는 애매하면 과탐지를
-    허용하는 쪽이라(놓치는 것보다 낫다는 방침), 사물/상황에 걸린 경우는
-    검수자가 "해당없음" 버튼으로 걸러낸다(findings.py의 not_applicable —
-    한 번 답하면 같은 단어는 다음부터 자동 추천까지 된다).
-
-    단, amod(명사를 직접 수식)로 걸린 경우만은 예외다 — nsubj(자기 주어가
-    있는 서술 형용사, "Ella está cansada" 같은 대화체)는 사람 얘기일 확률이
-    압도적으로 높아 과탐지를 감수할 가치가 있지만, amod는 "tiempo
-    compartido"처럼 흔한 사물 명사를 수식하는 경우가 실제로 많아 위험 대비
-    이득이 낮다. 그래서 amod는 수식받는 명사가 사람일 근거(_modifies_
-    plausible_person)가 있을 때만 인정한다."""
+    "abierta"는 사람이 아니라 puerta에 일치하는 것) — 하지만 그 판단(사람인지
+    사물인지)은 여기서 하지 않는다. spaCy Gender 형태소가 있는 ADJ/분사는
+    전부 후보다 — "실제로 사람 얘기인가"는 LLM(resolve_gender_from_context)의
+    몫이다(design §spaCy는 순수 형태소 체크만)."""
     if not tok.morph.get("Gender"):
-        return False
-    if tok.dep_ == "amod" and not _modifies_plausible_person(tok.head):
         return False
     if tok.pos_ == "ADJ":
         return True
     return tok.pos_ == "VERB" and tok.morph.get("VerbForm") == ["Part"]
 
 
-def _referent_group_indices(doc) -> tuple[dict, dict]:
-    """성별 표시(ADJ+Gender) 토큰마다 몇 번째 그룹(첫 등장 순서 기준)에
-    속하는지 {tok.i: group_index}로 매핑하고, 각 그룹의 앵커 토큰 텍스트도
-    {group_index: 앵커 단어}로 함께 반환한다(주로 이름/대명사 — "Juan",
-    "María", "ella" 등. _referent_key 참고). 앵커 텍스트는 검수 화면에서
-    "이 성별 확인이 정확히 누구 얘기인지"를 보여주는 데 쓴다 — "인물 1"/
-    "인물 2"라는 무의미한 번호만으로는 검수자가 문장을 직접 읽고 유추해야
-    한다.
-
-    _group_gender_words_by_referent와 resolve_gender_groups_in_texts가 이
-    매핑을 공유한다 — 같은 텍스트를 두 번 파싱해도(검수 화면에 보여줄 때
-    한 번, 검수자가 확정한 성별을 실제로 적용할 때 한 번) 그룹 순서가
-    항상 같아야, 나중에 그룹 인덱스로 확정된 성별을 정확히 같은 사람의
-    단어에 다시 적용할 수 있다. lemma로 재매칭하면 안 되는 이유: spaCy가
-    성별 어미 차이를 하나의 lemma로 정규화한다(cansado/cansada 둘 다 lemma
-    "cansado") — 그래서 두 사람이 같은 형용사를 쓰면("Juan está cansado y
-    María está cansada") lemma만으로는 두 그룹이 구분이 안 돼 뒤 그룹이
-    앞 그룹을 덮어쓰는 사고가 난다."""
-    key_to_index: dict = {}
-    index_to_anchor: dict = {}
-    result: dict = {}
-    for tok in doc:
-        if not _is_gendered_token(tok):
-            continue
-        key = _referent_key(tok)
-        if key not in key_to_index:
-            index = len(key_to_index)
-            key_to_index[key] = index
-            index_to_anchor[index] = doc[key].text
-        result[tok.i] = key_to_index[key]
-    return result, index_to_anchor
-
-
-def _group_gender_words_by_referent(doc) -> List[dict]:
-    """성별 표시 단어들을 가리키는 인물(_referent_key)별로 묶는다. 한 줄에
-    인물이 하나뿐이면(절대다수의 경우) 그룹이 하나뿐이라 기존 동작과 동일하고,
-    둘 이상이면 인물별로 따로 확인해야 한다는 신호가 된다. 반환값은 문장 속
-    첫 등장 순서를 유지한
-    [{"group_index":.., "referent":.., "words":[...], "lemmas":[...]}, ...]
-    — group_index는 리스트 위치와 항상 같은 값이다(리스트 순서 자체가 이미
-    식별자라 중복 정보이지만, JSON으로 직렬화되어 DB/프론트를 오가는 동안
-    "위치가 곧 식별자"라는 암묵 규약에만 의존하지 않도록 명시해둔다).
-    referent는 이 그룹이 가리키는 앵커 단어(이름/대명사 등, _referent_key
-    참고) — 검수 화면에 "이게 누구 얘기인지" 보여주는 용도다.
-    resolve_gender_groups_in_texts가 확정된 성별을 다시 적용할 때 이
-    인덱스로 매칭한다."""
-    group_index_by_tok, index_to_anchor = _referent_group_indices(doc)
-    groups: List[dict] = []
-    for tok in doc:
-        idx = group_index_by_tok.get(tok.i)
-        if idx is None:
-            continue
-        while len(groups) <= idx:
-            groups.append({
-                "group_index": len(groups), "referent": index_to_anchor.get(len(groups)),
-                "words": [], "lemmas": [],
-            })
-        groups[idx]["words"].append(tok.text)
-        groups[idx]["lemmas"].append(tok.lemma_.lower())
-    return groups
+def _candidate_tokens(doc) -> list:
+    return [tok for tok in doc if _is_gendered_token(tok)]
 
 
 def _formality_check_needed(doc) -> bool:
@@ -238,30 +117,6 @@ def _formality_check_needed(doc) -> bool:
         tok.pos_ in ("VERB", "AUX") and tok.morph.get("VerbForm") == ["Fin"]
         for tok in doc
     )
-
-
-def _grammatical_person(doc) -> Optional[str]:
-    """성별 표시가 걸린 형용사/분사가 1인칭(화자 자신)/2인칭(상대방)/3인칭
-    (제3자) 중 무엇을 가리키는지 추정한다 — 확정값이 아니라 검수 화면에
-    보여주는 참고용 힌트다(최종 판단은 검수자가 영상/맥락을 보고 직접
-    내린다, FlaggedSegmentStepper의 personLabel). 동사에만 기대면 "Tú
-    primero"처럼 동사 없는 생략문(대명사가 인칭 정보를 직접 들고 있음)에서
-    아무것도 못 찾는다 — 그래서 품사를 가리지 않고 문장 안에서 인칭 정보
-    (Person 형태소)를 가진 토큰 중 성별 표시 단어와 토큰 위치가 가장 가까운
-    것을 쓴다. 이 "가까운 토큰" 휴리스틱은 진짜 의존 관계가 아니라 위치
-    근사치라 틀릴 수 있다 — 예: "Yo vi a María cansada."에서 cansada는
-    María를 수식(amod)하지만 María는 스페인어에서 고유명사라 Person
-    형태소가 안 붙어 후보에서 빠지고, 유일하게 남은 Yo(1인칭)가 뽑혀
-    실제로는 3인칭인데 1인칭으로 나온다. 아무 인칭 정보도 없으면 None."""
-    gendered = [tok for tok in doc if _is_gendered_token(tok)]
-    person_tokens = [tok for tok in doc if tok.morph.get("Person")]
-    if not person_tokens:
-        return None
-    if gendered:
-        anchor = gendered[0]
-        closest = min(person_tokens, key=lambda t: abs(t.i - anchor.i))
-        return closest.morph.get("Person")[0]
-    return person_tokens[0].morph.get("Person")[0]
 
 
 def _detect_korean_formality(korean_text: str) -> Optional[str]:
@@ -284,7 +139,7 @@ def _detect_korean_gender(korean_text: str) -> Optional[str]:
     """한국어 호칭·대명사(오빠/언니/엄마/그녀 등)로 성별 단서를 찾는다. 이
     호칭이 정확히 스페인어 문장의 어느 인칭(화자/상대/제3자)을 가리키는지까지는
     확인하지 않는다 — 문장에 성별 단서가 하나만, 애매함 없이 나오는 경우에만
-    쓰고, 상충하거나(둘 다 나옴) 아예 없으면 None을 반환해 다음 폴백(영어 힌트,
+    쓰고, 상충하거나(둘 다 나옴) 아예 없으면 None을 반환해 다음 폴백(LLM,
     그다음 사람)으로 넘긴다."""
     text = korean_text.strip()
     if not text:
@@ -378,9 +233,7 @@ def resolve_gender_in_texts(items: List[dict], language: str) -> dict:
         target_morph = _GENDER_TO_MORPH.get(item["gender"])
         replacements = []
         if target_morph:
-            for tok in doc:
-                if not _is_gendered_token(tok):
-                    continue
+            for tok in _candidate_tokens(doc):
                 if tok.morph.get("Gender")[0] == target_morph:
                     continue
                 new_word = _inflect_gender_word(tok.text, item["gender"])
@@ -394,30 +247,35 @@ def resolve_gender_groups_in_texts(items: List[dict], language: str) -> dict:
     """resolve_gender_in_texts의 다인물 버전 — 한 줄에 성별이 다른 인물이
     둘 이상 있을 때, 인물(그룹)별로 확정된 성별을 그 인물에 속한 단어에만
     적용한다(다른 인물의 단어는 건드리지 않는다). items:
-    [{"id","text","groups":[{"lemmas":[...], "gender":"male"/"female"}, ...]}].
-    반환값은 {id: 수정된 text}.
+    [{"id","text","groups":[{"candidate_indices":[int,...], "gender":
+    "male"/"female"}, ...]}]. 반환값은 {id: 수정된 text}.
 
-    groups는 반드시 원래 gender_groups와 같은 순서(첫 등장 순서)로 와야 한다
-    — lemma가 아니라 이 순서(그룹 인덱스)로 토큰을 매칭한다.
-    _referent_group_indices를 이 텍스트에 다시 적용해 같은 순서로 그룹을
-    재구성하기 때문이다. lemma로 매칭하면 안 되는 이유: spaCy가 성별 어미
-    차이를 하나의 lemma로 정규화해서(cansado/cansada 둘 다 "cansado"), 두
-    사람이 같은 형용사를 쓰면 그룹이 lemma 하나로 충돌해 뒤 그룹이 앞 그룹의
-    확정 성별을 덮어쓴다."""
+    candidate_indices는 "이 텍스트를 spaCy로 다시 파싱했을 때 나오는 후보
+    토큰(성별 어미 있는 형용사/분사) 목록을 문장 속 등장 순서로 셌을 때 몇
+    번째인가"다 — 이 순서는 같은 텍스트라면 항상 결정론적으로 같다. 그룹핑
+    자체(어느 후보가 같은 인물인가)는 LLM(resolve_gender_from_context)이
+    판단해 넘겨준 것을 그대로 신뢰하고, 여기서는 그 인덱스로 정확히 그
+    토큰만 찾아 치환한다 — 의존구문을 다시 분석해 그룹을 재구성하지
+    않는다(design §그룹핑도 LLM이 직접, 재적용은 순서 매칭만). 존재하지
+    않는 인덱스(텍스트가 바뀌어 후보 수가 줄어든 경우 등)는 조용히
+    무시한다."""
     nlp = _resolve_model(language)
     texts = [i["text"] for i in items]
     docs = nlp.pipe(texts)
     results: dict = {}
     for item, text, doc in zip(items, texts, docs):
-        group_index_by_tok, _ = _referent_group_indices(doc)
-        groups = item["groups"]
-        replacements = []
-        for tok in doc:
-            group_idx = group_index_by_tok.get(tok.i)
-            if group_idx is None or group_idx >= len(groups):
-                continue
-            target_gender = groups[group_idx].get("gender")
+        candidates = _candidate_tokens(doc)
+        gender_by_index: dict = {}
+        for group in item["groups"]:
+            target_gender = group.get("gender")
             if target_gender not in _GENDER_TO_MORPH:
+                continue
+            for idx in group["candidate_indices"]:
+                gender_by_index[idx] = target_gender
+        replacements = []
+        for idx, tok in enumerate(candidates):
+            target_gender = gender_by_index.get(idx)
+            if target_gender is None:
                 continue
             target_morph = _GENDER_TO_MORPH[target_gender]
             if tok.morph.get("Gender")[0] == target_morph:
@@ -432,28 +290,32 @@ def resolve_gender_groups_in_texts(items: List[dict], language: str) -> dict:
 def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
     """입력 pairs([{"id","target_text","korean_text"}, ...])와 1:1 대응하는
     결과를 반환한다: {"id", "gender_check_needed", "formality_check_needed",
-    "resolved_formality", "resolved_gender_from_korean", "grammatical_person",
-    "gender_groups"}. resolved_* 필드는 한국어 원문에서 확정 가능했을 때만
-    값이 채워지고, 확정 못 하면 None — 호출자(pipeline.py)가 이후 영어 SRT
-    힌트, 그래도 안 되면 사람에게 순서대로 넘긴다. gender_groups는 성별
-    표시 단어를 가리키는 인물별로 묶은 목록 — 길이가 2 이상이면 한 줄에
-    인물이 여럿이라는 뜻이라, 호출자가 인물별로 따로 확인을 받아야 한다."""
+    "resolved_formality", "resolved_gender_from_korean", "candidate_words",
+    "candidate_word_lemmas"}. resolved_* 필드는 한국어 원문에서 확정 가능했을
+    때만 값이 채워지고, 확정 못 하면 None — 호출자(pipeline.py)가 이후 LLM
+    문맥 판단, 그래도 안 되면 사람에게 순서대로 넘긴다. candidate_words/
+    candidate_word_lemmas는 성별 표시 후보 단어를 문장 속 등장 순서로 나열한
+    병렬 리스트다 — 실제로 사람을 가리키는지/누구인지/성별이 뭔지는 이 함수의
+    책임이 아니다."""
     language = profile.get("language")
     nlp = _resolve_model(language)
     texts = [p.get("target_text", "") for p in pairs]
     docs = nlp.pipe(texts)
     results = []
     for p, doc in zip(pairs, docs):
-        gender_groups = _group_gender_words_by_referent(doc)
+        candidates = _candidate_tokens(doc)
+        candidate_words = [tok.text for tok in candidates]
+        candidate_word_lemmas = [tok.lemma_.lower() for tok in candidates]
+        resolved_gender_from_korean = None
+        if len(candidates) == 1:
+            resolved_gender_from_korean = _detect_korean_gender(p.get("korean_text", ""))
         results.append({
             "id": p["id"],
-            "gender_check_needed": bool(gender_groups),
+            "gender_check_needed": bool(candidates),
             "formality_check_needed": _formality_check_needed(doc),
             "resolved_formality": _detect_korean_formality(p.get("korean_text", "")),
-            "resolved_gender_from_korean": _detect_korean_gender(p.get("korean_text", "")),
-            "grammatical_person": _grammatical_person(doc),
-            "gender_words": [w for g in gender_groups for w in g["words"]],
-            "gender_word_lemmas": [w for g in gender_groups for w in g["lemmas"]],
-            "gender_groups": gender_groups,
+            "resolved_gender_from_korean": resolved_gender_from_korean,
+            "candidate_words": candidate_words,
+            "candidate_word_lemmas": candidate_word_lemmas,
         })
     return results
