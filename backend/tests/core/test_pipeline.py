@@ -881,6 +881,18 @@ def test_resolved_registers_treat_not_applicable_gender_as_no_gender_info():
     assert registers2["pair_2"] == {"gender": "male", "formality": None}
 
 
+def test_gender_groups_for_ai_handles_legacy_rows_without_candidate_indices():
+    """회귀: 이 브랜치 이전에 저장된 resolved_gender_groups_raw 행은
+    candidate_indices 키가 없다(words/target_word_lemmas/gender만 있음).
+    옛 행을 만나면 KeyError로 파이프라인이 죽는 대신, 인덱스 없는 그룹은
+    안전하게 "아무 단어에도 적용 안 함"(빈 리스트)으로 처리해야 한다 —
+    엉뚱한 단어를 잘못 고쳐쓰는 것보다 안전한 방향이다."""
+    from app.core.pipeline import _gender_groups_for_ai
+
+    legacy_group = {"words": ["guapo"], "target_word_lemmas": ["guapo"], "gender": "male"}
+    assert _gender_groups_for_ai([legacy_group]) == [{"candidate_indices": [], "gender": "male"}]
+
+
 def test_build_resolved_registers_omits_gender_groups_until_all_referents_answered():
     """회귀(사용자 피드백 "인칭을 제대로 구분 못하는 경우가 있다"): 다인물
     줄은 인물(그룹) 전부가 답변될 때까지 gender_groups를 아예 만들지

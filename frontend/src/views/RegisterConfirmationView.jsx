@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  getFlaggedSegments, getTargetVersion, resolveGenderGroup,
+  getFlaggedSegments, getTargetVersion, resolveGender, resolveGenderGroup,
   resolveFormality, confirmRegisters,
 } from "../api.js";
 import FlaggedSegmentStepper, { isSegmentResolved } from "./FlaggedSegmentStepper.jsx";
@@ -96,6 +96,16 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
     });
   }
 
+  // 한국어 규칙이 후보 하나뿐인 줄을 자동으로 이미 확정한 경우(그룹이
+  // 아니라 resolved_gender_raw 단일값), 스텝퍼가 그 값을 보여주고 검수자가
+  // 바꿀 수 있게 하려면 이 핸들러가 필요하다 — handleResolveGenderGroup과
+  // 같은 패턴.
+  async function handleResolveGender(segmentId, gender) {
+    const updated = await resolveGender(segmentId, gender);
+    setSegments((prev) => prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)));
+    return updated;
+  }
+
   async function handleResolveGenderGroup(segmentId, groupIndex, gender) {
     const updated = await resolveGenderGroup(segmentId, groupIndex, gender);
     setSegments((prev) => prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)));
@@ -130,6 +140,7 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
         segments={segments}
         videoProxyUrl={videoProxyUrl}
         videoOffsetSeconds={videoOffsetSeconds}
+        onResolveGender={handleResolveGender}
         onResolveGenderGroup={handleResolveGenderGroup}
         onResolveFormality={handleResolveFormality}
         onComplete={handleComplete}

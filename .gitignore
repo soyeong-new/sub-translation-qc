@@ -10,7 +10,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
-backend/venv/
+backend/venv
 /backend/media
 /backend/.env
 .superpowers/

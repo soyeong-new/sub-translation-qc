@@ -118,7 +118,7 @@ export function GenderQuestion({
 // 덮어써서 저장된다).
 export default function FlaggedSegmentStepper({
   segments, videoProxyUrl, videoOffsetSeconds = 0,
-  onResolveGenderGroup, onResolveFormality, onComplete, completePending, onExit,
+  onResolveGender, onResolveGenderGroup, onResolveFormality, onComplete, completePending, onExit,
 }) {
   const [currentIndex, setCurrentIndex] = useState(() => {
     const idx = segments.findIndex((s) => !isSegmentResolved(s));
@@ -193,6 +193,28 @@ export default function FlaggedSegmentStepper({
     setError(null);
     try {
       const updated = await onResolveGenderGroup(currentSegment.id, groupIndex, gender);
+      if (!wasResolved && isSegmentResolved({ ...currentSegment, ...updated })) {
+        goToNextUnresolved(currentIndex);
+      }
+    } catch (err) {
+      setError(err.message ?? "요청 중 오류가 발생했습니다.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  // 한국어 규칙(_detect_korean_gender)이 후보 하나뿐인 줄을 자동으로 이미
+  // 확정한 경우, 그 값은 그룹이 아니라 resolved_gender_raw 단일값에
+  // 들어간다(pipeline._run_grammar_necessity_check) — genderGroups가
+  // 비어 있는 게 정상이다. ReviewView.jsx의 InlineGenderQuestion과 같은
+  // fallback이 여기도 필요하다: 그룹이 없을 때만 쓰는 단일값 경로.
+  async function handleResolveGender(gender) {
+    if (!currentSegment) return;
+    const wasResolved = isSegmentResolved(currentSegment);
+    setPending(true);
+    setError(null);
+    try {
+      const updated = await onResolveGender(currentSegment.id, gender);
       if (!wasResolved && isSegmentResolved({ ...currentSegment, ...updated })) {
         goToNextUnresolved(currentIndex);
       }
@@ -303,23 +325,31 @@ export default function FlaggedSegmentStepper({
                     이 줄엔 성별이 다른 인물이 {genderGroups.length}명 있습니다 — 각각 따로 확인해주세요.
                   </p>
                 )}
-                {genderGroups.map((group, index) => (
-                  <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border/60 p-3" : ""}>
-                    <GenderQuestion
-                      heading={
-                        genderGroups.length > 1
-                          ? (group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`)
-                          : null
-                      }
-                      words={group.words}
-                      wordMeanings={group.word_meanings}
-                      referent={genderGroups.length > 1 ? null : group.referent}
-                      resolvedGender={group.gender}
-                      pending={pending}
-                      onSelect={(gender) => handleResolveGenderGroup(index, gender)}
-                    />
-                  </div>
-                ))}
+                {genderGroups.length > 0 ? (
+                  genderGroups.map((group, index) => (
+                    <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border/60 p-3" : ""}>
+                      <GenderQuestion
+                        heading={
+                          genderGroups.length > 1
+                            ? (group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`)
+                            : null
+                        }
+                        words={group.words}
+                        wordMeanings={group.word_meanings}
+                        referent={genderGroups.length > 1 ? null : group.referent}
+                        resolvedGender={group.gender}
+                        pending={pending}
+                        onSelect={(gender) => handleResolveGenderGroup(index, gender)}
+                      />
+                    </div>
+                  ))
+                ) : (
+                  <GenderQuestion
+                    resolvedGender={currentSegment.resolved_gender_raw}
+                    pending={pending}
+                    onSelect={(gender) => handleResolveGender(gender)}
+                  />
+                )}
               </div>
             </section>
           )}

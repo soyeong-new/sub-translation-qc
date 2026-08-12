@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock
-from app.core.requery import requery_finding, RequeryNotSupportedError
+from app.core.requery import requery_finding, apply_resolved_gender_to_text, RequeryNotSupportedError
 from app.models import FindingRow, Segment
 
 
@@ -72,3 +72,16 @@ async def test_requery_returns_current_text_unchanged_when_provider_returns_no_r
                                     knowledge="", profile={})
     assert result == "hola corregido"
     provider.verify_and_refine.assert_awaited_once()
+
+
+def test_apply_resolved_gender_to_text_handles_legacy_groups_without_candidate_indices():
+    """회귀: 이 브랜치 이전에 저장된 resolved_gender_groups_raw 행은
+    candidate_indices 키가 없다(words/target_word_lemmas/gender만 있음).
+    이런 옛 행을 만나면 KeyError로 죽는 대신, 인덱스 없는 그룹은 안전하게
+    "아무 단어에도 적용 안 함"으로 처리해 원문을 그대로 돌려줘야 한다."""
+    segment = _segment()
+    segment.resolved_gender_groups_raw = [
+        {"words": ["guapo"], "target_word_lemmas": ["guapo"], "gender": "male"},
+    ]
+    result = apply_resolved_gender_to_text(segment, "es una persona guapa", "es")
+    assert result == "es una persona guapa"

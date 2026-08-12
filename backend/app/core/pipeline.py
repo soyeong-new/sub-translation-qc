@@ -163,6 +163,13 @@ async def _run_grammar_necessity_check(
             and flags_by_id[p.id]["resolved_gender_from_korean"] is None
         ]
         gender_groups_by_id: dict = {}
+        # ponytail: 영화 전체 llm_items를 한 콜로 보낸다 — _split_into_scenes/
+        # _verify_chunk(AI 검증)처럼 씬 단위로 청킹하지 않는다. 토큰 한도로
+        # 이 콜이 실패하면 영화 전체가 미확정 그룹 폴백으로 넘어간다(문장별
+        # 데이터 유실은 없음, 다만 전부 사람에게 확인받게 됨 — 위 except가
+        # 이미 그렇게 처리). 항목이 word+context 수준으로 가벼워 아직은
+        # 문제된 적이 없다. 실제 영화 길이로 토큰 한도에 걸리기 시작하면
+        # _split_into_scenes 같은 씬 단위 청킹으로 승급.
         if llm_items:
             wire_items = [
                 {"id": i["id"], "target_text": i["target_text"],
@@ -268,7 +275,7 @@ def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
         order: list = []
         for w in words_info:
             idx = w.get("index")
-            if not w.get("is_person") or idx is None or idx >= len(candidate_words):
+            if not w.get("is_person") or idx is None or idx < 0 or idx >= len(candidate_words):
                 continue
             group_id = w.get("group_id")
             if group_id not in by_group:
@@ -777,7 +784,7 @@ def _gender_groups_for_ai(groups: Optional[list]) -> Optional[list]:
     if not groups:
         return None
     result = [
-        {"candidate_indices": g["candidate_indices"], "gender": _normalize_gender_for_ai(g.get("gender"))}
+        {"candidate_indices": g.get("candidate_indices") or [], "gender": _normalize_gender_for_ai(g.get("gender"))}
         for g in groups
     ]
     return result if any(g["gender"] for g in result) else None

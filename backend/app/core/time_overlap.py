@@ -8,8 +8,8 @@
 쓰면 후보 구간이 짧을수록 합집합이 작아져 유리해지는 왜곡이 생긴다(실제
 사례: 5초짜리 후보와 1초짜리 후보에 단어 하나가 거의 반반씩 걸쳐 있는데도
 IoU로는 1초짜리가 압도적으로 이겨버림 — 진짜는 애매한 경우인데 확신하는
-걸로 잘못 나옴). alignment.align()의 한국어-대상언어 단어 매칭과
-pronoun_hints의 영어 SRT 힌트 매칭이 이 하나의 기준을 공유한다."""
+걸로 잘못 나옴). alignment.align()의 한국어-대상언어 단어 매칭이 이
+기준을 쓴다."""
 
 
 def coverage_ratio(query_start: float, query_end: float,

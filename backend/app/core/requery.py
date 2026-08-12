@@ -74,7 +74,7 @@ def apply_resolved_gender_to_text(segment: Segment, text: str, language: str) ->
     if groups and gender_groups_all_resolved(groups):
         fixed = resolve_gender_groups_in_texts(
             [{"id": segment.id, "text": text,
-              "groups": [{"candidate_indices": g["candidate_indices"], "gender": g["gender"]} for g in groups]}],
+              "groups": [{"candidate_indices": g.get("candidate_indices") or [], "gender": g["gender"]} for g in groups]}],
             language)
         return fixed[segment.id]
     gender = _normalize_gender_for_ai(segment.resolved_gender_raw)
@@ -123,10 +123,15 @@ async def flag_new_gender_ambiguity(
             [{"id": llm_item["id"], "target_text": llm_item["target_text"],
               "korean_text": llm_item["korean_text"], "candidate_words": candidate_words}],
             profile)
+        groups_by_id = _build_gender_groups_from_llm(
+            [{**llm_item, "candidate_word_lemmas": candidate_lemmas}], llm_results)
     except Exception:
-        llm_results = []
-    groups_by_id = _build_gender_groups_from_llm(
-        [{**llm_item, "candidate_word_lemmas": candidate_lemmas}], llm_results)
+        # LLM 호출 자체의 실패든(네트워크/타임아웃), 스키마는 지켰지만
+        # 그룹핑이 불가능한 응답(예: group_id가 해시 불가능한 타입)이든
+        # 같은 방식으로 처리한다 — 이 줄은 새 그룹 없이 그대로 두고 사람이
+        # "다시 질문하기"로 재요청할 수 있게 한다(500으로 STT 교정
+        # 엔드포인트 전체를 죽이면 안 된다).
+        groups_by_id = {}
     new_groups = groups_by_id.get(segment.id)
     if not new_groups:
         return False
