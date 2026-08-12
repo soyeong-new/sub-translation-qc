@@ -5,7 +5,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 from app.providers.base import ModelProvider
-from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks, korean_words_from_srt
+from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
+from app.core.stt_srt_matching import match_stt_words_to_korean_srt
 from app.core.pronoun_hints import find_pronoun_hint
 from app.core.alignment import align, detect_global_offset
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
@@ -78,6 +79,46 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
         # 기준을 병합 레벨로 옮긴 것).
         raise ValueError("GPT STT 응답에 세그먼트가 없음")
     return merged
+
+
+async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple:
+    """오디오 추출 + STT + 영상 저화질 프록시 생성을 병렬로 실행한다.
+    korean_srt_path 유무와 무관하게 이제 STT는 항상 돌기 때문에, 기존
+    "STT 생략" 분기와 "일반 STT" 분기가 이 로직을 공유한다."""
+    # extract_audio는 subprocess.run(check=True)로 ffmpeg을 동기 호출하는,
+    # 잠재적으로 몇 분씩 걸리는 CPU 바운드 작업이다. asyncio.to_thread로 감싸지
+    # 않으면 이 코루틴이 FastAPI 프로세스의 이벤트 루프 자체를 막아버려 헬스체크나
+    # 다른 요청까지 전부 멈춘다 — 아래 generate_video_proxy와 동일한 이유.
+    wav_path = await asyncio.to_thread(extract_audio, video_path)
+    try:
+        # STT(네트워크 호출)와 영상 저화질 프록시 생성(로컬 ffmpeg, CPU 바운드)은
+        # 서로 결과를 주고받지 않는 독립적인 작업이라 동시에 실행한다 — STT를
+        # 기다리는 동안 영상 트랜스코딩도 같이 진행되어 전체 대기 시간이 줄어든다.
+        # generate_video_proxy는 동기 함수라 asyncio.to_thread로 감싸 이벤트
+        # 루프를 막지 않게 한다.
+        #
+        # return_exceptions=True로 두 작업의 완료를 항상 기다린다 — to_thread로
+        # 감싼 동기 함수는 취소할 수 없으므로, transcribe가 먼저 실패해도
+        # generate_video_proxy는 백그라운드 스레드에서 계속 돌아 프록시 파일을
+        # 만들어낼 수 있다. 예외를 즉시 전파(gather 기본 동작)하면 그 파일이
+        # 아무도 참조하지 않는 고아로 남는다 — 아래에서 결과를 직접 검사해
+        # 그런 파일이 생겼으면 지우고 나서 실패를 전파한다.
+        korean_raw, video_proxy_path = await asyncio.gather(
+            _transcribe_in_chunks(provider, wav_path),
+            asyncio.to_thread(generate_video_proxy, video_path),
+            return_exceptions=True,
+        )
+    finally:
+        # STT가 WAV를 다 읽은 뒤(성공/실패 무관)에는 더 이상 필요 없다. 2시간
+        # 분량 영화의 16kHz mono WAV는 ~230MB에 달해, 지우지 않으면 영상
+        # 프록시 기능의 스토리지 절감 취지가 무색해진다.
+        Path(wav_path).unlink(missing_ok=True)
+
+    if isinstance(korean_raw, Exception) or isinstance(video_proxy_path, Exception):
+        if not isinstance(video_proxy_path, Exception) and video_proxy_path:
+            Path(video_proxy_path).unlink(missing_ok=True)
+        raise korean_raw if isinstance(korean_raw, Exception) else video_proxy_path
+    return korean_raw, video_proxy_path
 
 
 async def _run_grammar_necessity_check(
@@ -829,51 +870,19 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         korean_raw = cached_korean_segments
         video_proxy_path = cached_video_proxy_path
     elif korean_srt_path:
-        # 사용자가 이미 한국어 SRT를 갖고 있으면 STT(오디오 추출 포함)를
-        # 건너뛴다 — 비용/시간과 오인식 위험을 없앤다(design
-        # 2026-08-11-korean-srt-input-design.md). 영상 프록시는 STT와
-        # 무관하게 검수 화면 재생에 필요하므로 그대로 만든다.
-        korean_raw = korean_words_from_srt(korean_srt_path)
+        # 한국어 SRT가 있어도 STT는 그대로 돌린다 — SRT 큐 단위 타임코드만
+        # 으로는 단어별 실제 발화 시각을 알 수 없어(design
+        # 2026-08-12-korean-srt-stt-timing-match-design.md), 그 시각을
+        # STT로 실측하고 텍스트만 검증된 SRT로 교체한다.
+        stt_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
+        korean_raw = match_stt_words_to_korean_srt(stt_raw, korean_srt_path)
         if not korean_raw:
             warnings.append({
                 "stage": "한국어 SRT",
-                "message": "한국어 SRT에서 대사를 하나도 추출하지 못했습니다 — 파일 형식을 확인하세요.",
+                "message": "한국어 SRT와 STT 결과를 매칭하지 못했습니다 — 파일 형식을 확인하세요.",
             })
-        video_proxy_path = await asyncio.to_thread(generate_video_proxy, video_path)
     else:
-        # extract_audio는 subprocess.run(check=True)로 ffmpeg을 동기 호출하는,
-        # 잠재적으로 몇 분씩 걸리는 CPU 바운드 작업이다. asyncio.to_thread로 감싸지
-        # 않으면 이 코루틴이 FastAPI 프로세스의 이벤트 루프 자체를 막아버려 헬스체크나
-        # 다른 요청까지 전부 멈춘다 — 아래 generate_video_proxy와 동일한 이유.
-        wav_path = await asyncio.to_thread(extract_audio, video_path)
-        try:
-            # STT(네트워크 호출)와 영상 저화질 프록시 생성(로컬 ffmpeg, CPU 바운드)은
-            # 서로 결과를 주고받지 않는 독립적인 작업이라 동시에 실행한다 — STT를
-            # 기다리는 동안 영상 트랜스코딩도 같이 진행되어 전체 대기 시간이 줄어든다.
-            # generate_video_proxy는 동기 함수라 asyncio.to_thread로 감싸 이벤트
-            # 루프를 막지 않게 한다.
-            #
-            # return_exceptions=True로 두 작업의 완료를 항상 기다린다 — to_thread로
-            # 감싼 동기 함수는 취소할 수 없으므로, transcribe가 먼저 실패해도
-            # generate_video_proxy는 백그라운드 스레드에서 계속 돌아 프록시 파일을
-            # 만들어낼 수 있다. 예외를 즉시 전파(gather 기본 동작)하면 그 파일이
-            # 아무도 참조하지 않는 고아로 남는다 — 아래에서 결과를 직접 검사해
-            # 그런 파일이 생겼으면 지우고 나서 실패를 전파한다.
-            korean_raw, video_proxy_path = await asyncio.gather(
-                _transcribe_in_chunks(provider, wav_path),
-                asyncio.to_thread(generate_video_proxy, video_path),
-                return_exceptions=True,
-            )
-        finally:
-            # STT가 WAV를 다 읽은 뒤(성공/실패 무관)에는 더 이상 필요 없다. 2시간
-            # 분량 영화의 16kHz mono WAV는 ~230MB에 달해, 지우지 않으면 영상
-            # 프록시 기능의 스토리지 절감 취지가 무색해진다.
-            Path(wav_path).unlink(missing_ok=True)
-
-        if isinstance(korean_raw, Exception) or isinstance(video_proxy_path, Exception):
-            if not isinstance(video_proxy_path, Exception) and video_proxy_path:
-                Path(video_proxy_path).unlink(missing_ok=True)
-            raise korean_raw if isinstance(korean_raw, Exception) else video_proxy_path
+        korean_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
 
     # transcribe()가 이제 문장이 아니라 단어 단위 타임코드를 반환한다 —
     # align()이 대상언어 SRT 큐 시간 구간 안에 담기는 단어를 직접 모은다.
@@ -931,7 +940,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         "segment_resolutions": segment_resolutions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
-        "video_offset_seconds": None if korean_srt_path else global_offset,
+        "video_offset_seconds": global_offset,
         "korean_segments_raw": korean_raw,
         "warnings": warnings,
         "findings": pretreatment.findings,

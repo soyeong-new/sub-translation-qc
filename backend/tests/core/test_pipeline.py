@@ -589,7 +589,44 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
 
 
 @pytest.mark.asyncio
-async def test_pipeline_uses_korean_srt_and_skips_transcribe(tmp_path):
+async def test_pipeline_runs_stt_even_when_korean_srt_path_given(tmp_path):
+    """핵심 회귀: korean_srt_path가 있어도 이제 STT(extract_audio)가 항상
+    실행돼야 한다 — 이전 "생략" 동작은 완전히 제거됐다. 결과 텍스트는
+    SRT 원문(문장부호 포함)을 쓰되, 타이밍은 STT(MockProvider가 반환하는
+    [0.0,2.0])를 써야 한다 — SRT 큐 자체의 타임코드([5.0,7.0])가 아니다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(
+        "1\n00:00:05,000 --> 00:00:07,000\n안녕하세요!\n", encoding="utf-8",
+    )
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+            korean_srt_path=str(ko_srt_path),
+        )
+
+    mock_extract.assert_called_once_with("/fake/video.mp4")
+    korean_pair = next(p for p in result["pairs"] if p.korean is not None)
+    assert korean_pair.korean.text == "안녕하세요!"
+    assert korean_pair.korean.start == 0.0
+    assert korean_pair.korean.end == 2.0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_reports_real_video_offset_with_korean_srt_path(tmp_path):
+    """회귀: 이전 수정(final-review Finding 1)은 korean_srt_path가 있으면
+    STT를 아예 안 돌렸기 때문에 video_offset_seconds를 강제로 None으로
+    감췄다. 이제 korean_srt_path가 있어도 STT가 항상 돌아서 그 특수
+    처리가 필요 없어졌다 — detect_global_offset()의 실제 반환값(항상
+    float, 절대 None이 아님)을 그대로 돌려줘야 한다. 이 테스트는 그
+    None 강제 처리가 되살아나지 않는지만 확인한다(오프셋 값 자체가
+    0.0이어도 상관없다 — None이냐 아니냐가 핵심)."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     ko_srt_path = tmp_path / "ko.srt"
@@ -597,51 +634,7 @@ async def test_pipeline_uses_korean_srt_and_skips_transcribe(tmp_path):
         "1\n00:00:00,000 --> 00:00:02,000\n안녕하세요\n", encoding="utf-8",
     )
 
-    with patch("app.core.pipeline.extract_audio") as mock_extract, \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4") as mock_proxy:
-        result = await run_pipeline(
-            video_path="/fake/video.mp4",
-            target_srt_path=str(srt_path),
-            language="es", variant="LATAM",
-            target_version_id="tv1", provider=MockProvider(),
-            korean_srt_path=str(ko_srt_path),
-        )
-
-    mock_extract.assert_not_called()
-    mock_proxy.assert_called_once_with("/fake/video.mp4")
-    korean_pair = next(p for p in result["pairs"] if p.korean is not None)
-    assert korean_pair.korean.text == "안녕하세요"
-    assert result["video_proxy_path"] == "/fake/proxy.mp4"
-
-
-@pytest.mark.asyncio
-async def test_pipeline_korean_srt_offset_not_reported_as_video_offset(tmp_path):
-    """회귀(final-review Finding 1): korean_srt_path 경로에서 detect_global_offset()이
-    찾는 오프셋은 "한국어 SRT ↔ 대상언어 SRT" 시계 차이일 뿐, "영상 파일
-    ↔ 대상언어 SRT" 시계 차이(video_offset_seconds의 계약, models.py 참고)가
-    아니다. 두 시계가 다를 수 있으므로 이 값을 video_offset_seconds로
-    돌려주면 프론트가 영상의 엉뚱한 지점으로 seek한다 — None이어야 한다."""
-    from app.core.ingest import build_srt
-
-    entries = [
-        {"start": start, "end": start + 5.0, "text": f"Linea {i}"}
-        for i, start in enumerate([60.0, 73.0, 101.0, 128.0, 160.0, 215.0])
-    ]
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text(build_srt(entries), encoding="utf-8")
-
-    # 한국어 SRT 큐는 대상언어 SRT보다 55초 앞서 있다(예: 한국어 SRT가
-    # 원본 영상 기준이 아닌 다른 편집본 기준으로 만들어진 경우). 큐 타임코드가
-    # SRT 파일로 왕복해야 하므로(음수 타임코드는 표현 불가) 대상언어 SRT
-    # 큐 시작을 60초부터로 잡아 여유를 둔다.
-    ko_entries = [
-        {"start": e["start"] - 55.0 + 1.0, "end": e["start"] - 55.0 + 1.5, "text": f"단어{i}"}
-        for i, e in enumerate(entries)
-    ]
-    ko_srt_path = tmp_path / "ko.srt"
-    ko_srt_path.write_text(build_srt(ko_entries), encoding="utf-8")
-
-    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
@@ -651,40 +644,7 @@ async def test_pipeline_korean_srt_offset_not_reported_as_video_offset(tmp_path)
             korean_srt_path=str(ko_srt_path),
         )
 
-    mock_extract.assert_not_called()
-    # 정렬 자체는 여전히 오프셋을 감지해 정상 동작해야 한다(회귀 방지).
-    assert any(w["stage"] == "타임코드 자동 보정" for w in result["warnings"])
-    matched = {p.target.text: p.korean.text for p in result["pairs"] if p.target and p.korean}
-    assert matched["Linea 0"] == "단어0"
-    # 그러나 이 오프셋은 video_offset_seconds로 반환되면 안 된다.
-    assert result["video_offset_seconds"] is None
-
-
-@pytest.mark.asyncio
-async def test_pipeline_korean_srt_with_zero_extractable_words_warns(tmp_path):
-    """회귀(final-review Finding 2): 한국어 SRT가 있어도 파싱 결과 대사가
-    하나도 없으면(예: 전부 효과음 표기 `[...]`) 한국어 쪽이 통째로 비어
-    비싼 LLM 검증을 그대로 태우게 된다 — 사람이 알아챌 수 있도록 경고를
-    남겨야 한다."""
-    srt_path = tmp_path / "target.srt"
-    srt_path.write_text(TARGET_SRT, encoding="utf-8")
-    ko_srt_path = tmp_path / "ko.srt"
-    ko_srt_path.write_text(
-        "1\n00:00:00,000 --> 00:00:02,000\n[음악]\n", encoding="utf-8",
-    )
-
-    with patch("app.core.pipeline.extract_audio") as mock_extract, \
-         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
-        result = await run_pipeline(
-            video_path="/fake/video.mp4",
-            target_srt_path=str(srt_path),
-            language="es", variant="LATAM",
-            target_version_id="tv1", provider=MockProvider(),
-            korean_srt_path=str(ko_srt_path),
-        )
-
-    mock_extract.assert_not_called()
-    assert any(w["stage"] == "한국어 SRT" for w in result["warnings"])
+    assert result["video_offset_seconds"] is not None
 
 
 @pytest.mark.asyncio
