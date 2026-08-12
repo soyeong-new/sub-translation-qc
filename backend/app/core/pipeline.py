@@ -834,6 +834,11 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         # 2026-08-11-korean-srt-input-design.md). 영상 프록시는 STT와
         # 무관하게 검수 화면 재생에 필요하므로 그대로 만든다.
         korean_raw = korean_words_from_srt(korean_srt_path)
+        if not korean_raw:
+            warnings.append({
+                "stage": "한국어 SRT",
+                "message": "한국어 SRT에서 대사를 하나도 추출하지 못했습니다 — 파일 형식을 확인하세요.",
+            })
         video_proxy_path = await asyncio.to_thread(generate_video_proxy, video_path)
     else:
         # extract_audio는 subprocess.run(check=True)로 ffmpeg을 동기 호출하는,
@@ -926,7 +931,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         "segment_resolutions": segment_resolutions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
-        "video_offset_seconds": global_offset,
+        "video_offset_seconds": None if korean_srt_path else global_offset,
         "korean_segments_raw": korean_raw,
         "warnings": warnings,
         "findings": pretreatment.findings,
