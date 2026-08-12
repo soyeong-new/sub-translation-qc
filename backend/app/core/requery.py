@@ -10,7 +10,9 @@ from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES
 from app.core.grammar_necessity import (
     check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
 )
-from app.core.pipeline import _normalize_gender_for_ai, gender_groups_all_resolved
+from app.core.pipeline import (
+    _normalize_gender_for_ai, gender_groups_all_resolved, _build_gender_groups_from_llm,
+)
 from app.repositories import get_pending_findings_for_segment
 
 _LLM_REQUERYABLE_MODELS = ("claude", "gpt", "claude+gpt")
@@ -72,7 +74,7 @@ def apply_resolved_gender_to_text(segment: Segment, text: str, language: str) ->
     if groups and gender_groups_all_resolved(groups):
         fixed = resolve_gender_groups_in_texts(
             [{"id": segment.id, "text": text,
-              "groups": [{"lemmas": g["target_word_lemmas"], "gender": g["gender"]} for g in groups]}],
+              "groups": [{"candidate_indices": g["candidate_indices"], "gender": g["gender"]} for g in groups]}],
             language)
         return fixed[segment.id]
     gender = _normalize_gender_for_ai(segment.resolved_gender_raw)
@@ -82,44 +84,54 @@ def apply_resolved_gender_to_text(segment: Segment, text: str, language: str) ->
     return text
 
 
-def flag_new_gender_ambiguity(segment: Segment, flags: dict) -> bool:
+async def flag_new_gender_ambiguity(
+    segment: Segment, flags: dict, provider: ModelProvider, profile: dict,
+) -> bool:
     """check_grammar_necessity의 gender_check_needed는 "이 줄에 성별 표시
-    문법이 있다"는 구조적 판단일 뿐, "아직 답 안 됐다"는 뜻이 아니다 —
-    이미 apply_resolved_gender_to_text로 반영된 줄도 그 형용사 자체는
-    여전히 성별 표시 형용사라 다시 감지된다. 그래서 여기서는 감지된 인물
-    그룹이 기존 확정값으로 이미 커버되는지 직접 판단한다: (1) 단일값
-    (resolved_gender_raw)으로 이미 답변된 줄이고 재검출된 인물이 여전히
-    하나뿐이면(구조가 안 바뀌었으면) 이미 커버된 것 — 새로 물을 필요 없다.
-    (2) 그 외에는 감지된 각 인물 그룹의 lemma 조합이 기존
-    resolved_gender_groups_raw에 이미 있는지로 판단한다. 커버 안 되는
-    그룹만 미답변으로 추가하고 True를 반환한다."""
+    문법이 있다"는 구조적 판단일 뿐, "아직 답 안 됐다"는 뜻이 아니다.
+    (1) 단일값(resolved_gender_raw)으로 이미 답변된 줄이고 재검출된 후보가
+    여전히 하나뿐이면(구조가 안 바뀌었으면) 이미 커버된 것 — 새로 물을
+    필요 없다.
+    (2) 재검출된 후보 단어(lemma 기준)의 전체 집합이 기존 그룹들의 lemma
+    전체 집합과 정확히 같으면(단어가 하나도 안 바뀌었으면) 역시 이미
+    커버된 것으로 본다.
+    (3) 그 외(후보가 새로 생겼거나 구성이 바뀌었으면)에는 pipeline.py의
+    _run_grammar_necessity_check와 같은 방식으로 LLM에 그룹핑+성별
+    판단을 다시 맡기고, 그 결과로 기존 그룹을 통째로 교체한다 — 기존
+    답과 새 후보를 부분적으로 짜맞추는 건 엉뚱한 답을 엉뚱한 단어에
+    붙일 위험이 있다(design §그룹핑도 LLM이 직접)."""
     if not flags.get("gender_check_needed"):
         return False
-    detected_groups = flags.get("gender_groups") or []
+    candidate_words = flags.get("candidate_words") or []
+    candidate_lemmas = flags.get("candidate_word_lemmas") or []
     existing = segment.resolved_gender_groups_raw or []
 
-    if (not existing and len(detected_groups) <= 1
+    if (not existing and len(candidate_words) <= 1
             and _normalize_gender_for_ai(segment.resolved_gender_raw)):
         return False
 
-    existing_lemma_sets = {tuple(sorted(g["target_word_lemmas"])) for g in existing}
-    new_groups = [
-        {"words": g["words"], "target_word_lemmas": g["lemmas"], "gender": None,
-         "referent": g.get("referent")}
-        for g in detected_groups
-        if tuple(sorted(g["lemmas"])) not in existing_lemma_sets
-    ]
+    existing_lemmas = sorted(lemma for g in existing for lemma in g["target_word_lemmas"])
+    if existing and existing_lemmas == sorted(candidate_lemmas):
+        return False
+
+    llm_item = {
+        "id": segment.id, "target_text": segment.target_text,
+        "korean_text": segment.korean_text, "candidate_words": candidate_words,
+    }
+    try:
+        llm_results = await provider.resolve_gender_from_context(
+            [{"id": llm_item["id"], "target_text": llm_item["target_text"],
+              "korean_text": llm_item["korean_text"], "candidate_words": candidate_words}],
+            profile)
+    except Exception:
+        llm_results = []
+    groups_by_id = _build_gender_groups_from_llm(
+        [{**llm_item, "candidate_word_lemmas": candidate_lemmas}], llm_results)
+    new_groups = groups_by_id.get(segment.id)
     if not new_groups:
         return False
-    combined = existing + new_groups
-    # grammatical_person(1/2/3인칭)은 문장 전체를 기준으로 계산돼서 "이 그룹이
-    # 정확히 누구 얘기인지"까지는 구분 못 한다 — 인물이 이 줄에 하나뿐일
-    # 때만(기존 pipeline._run_grammar_necessity_check와 동일한 조건) 그
-    # 하나의 그룹에 붙여도 안전하다. 둘 이상이면 어느 그룹 것인지 알 길이
-    # 없으니 아예 안 붙인다.
-    if len(combined) == 1:
-        combined[0] = {**combined[0], "person": flags.get("grammatical_person")}
-    segment.resolved_gender_groups_raw = combined
+
+    segment.resolved_gender_groups_raw = new_groups
     segment.gender_check_needed = True
     return True
 

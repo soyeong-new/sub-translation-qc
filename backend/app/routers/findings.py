@@ -22,7 +22,7 @@ from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
 from app.repositories import (
-    get_findings as repo_get_findings, get_findings_for_segment, record_gender_word_resolution,
+    get_findings as repo_get_findings, get_findings_for_segment,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,6 @@ async def list_flagged_segments(target_version_id: str):
              "formality_check_needed": s.formality_check_needed,
              "resolved_gender_raw": s.resolved_gender_raw,
              "resolved_formality_raw": s.resolved_formality_raw,
-             "english_pronoun_hint": s.english_pronoun_hint,
              "resolved_gender_groups_raw": s.resolved_gender_groups_raw}
             for s in rows
         ]
@@ -147,16 +146,9 @@ async def resolve_gender(segment_id: str, payload: ResolveGenderIn):
         if seg is None:
             raise HTTPException(404, "segment not found")
         seg.resolved_gender_raw = payload.gender
-        # 이 판정을 언어별 이력에 남긴다 — 다음 프로젝트에서 같은 단어(기본형)에
-        # "해당 없음" 추천 표시를 할지 판단하는 근거가 된다. 질문 자체를
-        # 숨기지는 않는다(design: 숨기면 반증 사례를 영영 못 잡음).
-        hint = seg.english_pronoun_hint or {}
-        lemmas = hint.get("target_word_lemmas") or []
-        tv = await session.get(TargetVersion, seg.target_version_id)
-        if lemmas and tv is not None:
-            await record_gender_word_resolution(session, tv.target_language, lemmas, payload.gender)
         # STT 재검증이 성별 확인을 기다리며 만들어둔 pending finding이
         # 있으면, 방금 답한 값을 그 제안문구에도 반영한다.
+        tv = await session.get(TargetVersion, seg.target_version_id)
         if tv is not None:
             profile = load_profile(tv.target_language, tv.variant)
             await reapply_gender_to_pending_findings(session, seg, profile.get("language"))
@@ -180,10 +172,7 @@ async def resolve_gender_group(segment_id: str, payload: ResolveGenderGroupIn):
         new_groups[payload.group_index]["gender"] = payload.gender
         seg.resolved_gender_groups_raw = new_groups
 
-        lemmas = new_groups[payload.group_index].get("target_word_lemmas") or []
         tv = await session.get(TargetVersion, seg.target_version_id)
-        if lemmas and tv is not None:
-            await record_gender_word_resolution(session, tv.target_language, lemmas, payload.gender)
         # STT 재검증이 성별 확인을 기다리며 만들어둔 pending finding이
         # 있으면, 방금 답한 값을 그 제안문구에도 반영한다.
         if tv is not None:
@@ -336,7 +325,7 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
             remaining_flags = await asyncio.to_thread(
                 check_grammar_necessity,
                 [{"id": segment_id, "target_text": fixed_text, "korean_text": seg.korean_text}], profile)
-            if flag_new_gender_ambiguity(seg, remaining_flags[0]):
+            if await flag_new_gender_ambiguity(seg, remaining_flags[0], provider, profile):
                 # 새로 생긴 그룹은 뜻풀이가 없다 — 스페인어를 모르는 검수자가
                 # "caro"만 보고는 사람 얘기인지조차 못 가른다. 실패해도(네트워크
                 # 등) STT 재검증 저장 자체는 막지 않는다 — 뜻풀이는 참고용이다.

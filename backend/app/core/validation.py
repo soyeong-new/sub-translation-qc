@@ -22,16 +22,8 @@ def validate_media_subpath(path: str, subdir: str, error_message: str) -> None:
         raise HTTPException(400, error_message)
 
 
-def validate_english_srt_path(english_srt_path: str) -> None:
-    """english_srt_path가 실제로 MEDIA_ROOT/srt_en 아래를 가리키는지 확인한다 —
-    pipeline.load_srt()가 이 경로를 열어 파싱하고, 매칭된 텍스트가
-    Segment.english_pronoun_hint로 저장되어 flagged-segments 응답을 통해 그대로
-    클라이언트에 노출되므로 검증이 필요하다."""
-    validate_media_subpath(english_srt_path, "srt_en", "유효하지 않은 영어 자막 경로입니다.")
-
-
 def validate_korean_srt_path(korean_srt_path: str) -> None:
     """korean_srt_path가 실제로 MEDIA_ROOT/srt_ko 아래를 가리키는지 확인한다 —
     pipeline이 이 경로를 열어 파싱해 한국어 대사로 그대로 쓰므로,
-    validate_english_srt_path와 동일한 이유로 검증이 필요하다."""
+    validate_media_subpath와 동일한 이유로 검증이 필요하다."""
     validate_media_subpath(korean_srt_path, "srt_ko", "유효하지 않은 한국어 자막 경로입니다.")

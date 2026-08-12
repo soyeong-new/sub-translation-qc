@@ -242,6 +242,7 @@ async def test_correct_stt_flags_new_gender_ambiguity_when_not_covered_by_prior_
         group = seg.resolved_gender_groups_raw[0]
         assert group["word_meanings"] == {"cansado": "[뜻:cansado]"}
         # 회귀(사용자 재현): "이게 누구 얘기인지"도 메인 파이프라인처럼 같이
-        # 나와야 한다 — 인물이 이 줄에 하나뿐일 때만(여기선 "Estoy"=1인칭).
-        assert group["person"] == "1"
+        # 나와야 한다 — 새 설계에서는 숫자 인칭 대신 LLM이 준 referent
+        # 설명 문자열이다.
+        assert group["referent"] == "인물1"
         assert seg.resolved_gender_groups_raw[0]["gender"] is None

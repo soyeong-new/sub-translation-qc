@@ -40,29 +40,6 @@ async def test_create_title_episode_and_target_version():
 
 
 @pytest.mark.asyncio
-async def test_create_episode_persists_english_srt_path(monkeypatch, tmp_path):
-    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
-    srt_en_dir = tmp_path / "srt_en"
-    srt_en_dir.mkdir(parents=True)
-    srt_file = srt_en_dir / "x.srt"
-    srt_file.write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n", encoding="utf-8")
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
-        title_id = title_res.json()["id"]
-        episode_res = await client.post(
-            f"/titles/{title_id}/episodes",
-            json={"video_path": "/x.mp4", "english_srt_path": str(srt_file)},
-        )
-    assert episode_res.status_code == 200
-    from app.models import Episode
-    async with async_session() as session:
-        episode = await session.get(Episode, episode_res.json()["id"])
-        assert episode.english_srt_path == str(srt_file)
-
-
-@pytest.mark.asyncio
 async def test_create_episode_persists_korean_srt_path(monkeypatch, tmp_path):
     monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
     srt_ko_dir = tmp_path / "srt_ko"
@@ -97,44 +74,6 @@ async def test_create_episode_rejects_korean_srt_path_outside_srt_ko_dir(monkeyp
         r = await client.post(
             f"/titles/{title_id}/episodes",
             json={"video_path": "/x.mp4", "korean_srt_path": "/etc/passwd"},
-        )
-        assert r.status_code == 400
-
-    from app.models import Episode
-    async with async_session() as session:
-        result = await session.execute(select(Episode).where(Episode.title_id == title_id))
-        assert result.scalars().all() == []
-
-
-@pytest.mark.asyncio
-async def test_create_episode_rejects_english_srt_path_outside_srt_en_dir(monkeypatch, tmp_path):
-    """Finding #1 회귀: english_srt_path는 클라이언트가 넘긴 임의 경로다.
-    pipeline.load_srt()가 이 경로를 열어 파싱한 텍스트가
-    Segment.english_pronoun_hint로 저장되어 flagged-segments 응답을 통해
-    그대로 노출되므로, MEDIA_ROOT/srt_en 밖을 가리키는 경로(절대 경로든
-    ".." 트래버설이든)는 400으로 거부해야 한다."""
-    monkeypatch.setattr("app.core.validation.MEDIA_ROOT", tmp_path)
-    srt_en_dir = tmp_path / "srt_en"
-    srt_en_dir.mkdir(parents=True)
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
-        title_id = title_res.json()["id"]
-
-        # 완전히 밖에 있는 절대 경로
-        r = await client.post(
-            f"/titles/{title_id}/episodes",
-            json={"video_path": "/x.mp4", "english_srt_path": "/etc/passwd"},
-        )
-        assert r.status_code == 400
-
-        # 문자열상으로는 srt_en/ 아래처럼 보이지만 ".."으로 실제로는 밖을
-        # 가리키는 경로 — resolve() 없이 lexical하게만 검사하면 통과해버린다.
-        traversal_path = srt_en_dir / ".." / ".." / "etc" / "passwd"
-        r = await client.post(
-            f"/titles/{title_id}/episodes",
-            json={"video_path": "/x.mp4", "english_srt_path": str(traversal_path)},
         )
         assert r.status_code == 400
 
@@ -228,19 +167,3 @@ async def test_delete_title_returns_404_for_missing_title():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.delete("/titles/does-not-exist")
     assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_create_episode_english_srt_path_defaults_to_none():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
-        title_id = title_res.json()["id"]
-        episode_res = await client.post(
-            f"/titles/{title_id}/episodes", json={"video_path": "/x.mp4"},
-        )
-    assert episode_res.status_code == 200
-    from app.models import Episode
-    async with async_session() as session:
-        episode = await session.get(Episode, episode_res.json()["id"])
-        assert episode.english_srt_path is None

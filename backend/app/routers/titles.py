@@ -7,7 +7,7 @@ from app.db import async_session
 from app.models import (
     Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection, ExportRow,
 )
-from app.core.validation import validate_english_srt_path, validate_korean_srt_path
+from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
 from app.language_profiles.loader import list_profiles
 
@@ -22,7 +22,6 @@ class TitleIn(BaseModel):
 class EpisodeIn(BaseModel):
     episode_no: int | None = None
     video_path: str
-    english_srt_path: str | None = None
     korean_srt_path: str | None = None
 
 
@@ -42,8 +41,6 @@ async def create_title(payload: TitleIn):
 
 @router.post("/titles/{title_id}/episodes")
 async def create_episode(title_id: str, payload: EpisodeIn):
-    if payload.english_srt_path is not None:
-        validate_english_srt_path(payload.english_srt_path)
     if payload.korean_srt_path is not None:
         validate_korean_srt_path(payload.korean_srt_path)
     async with async_session() as session:
@@ -52,7 +49,6 @@ async def create_episode(title_id: str, payload: EpisodeIn):
             raise HTTPException(404, "title not found")
         episode = Episode(title_id=title_id, episode_no=payload.episode_no,
                           video_path=payload.video_path,
-                          english_srt_path=payload.english_srt_path,
                           korean_srt_path=payload.korean_srt_path)
         session.add(episode)
         await session.commit()
