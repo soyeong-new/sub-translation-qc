@@ -109,3 +109,27 @@ def test_match_strips_speaker_prefix_and_dash_multi_speaker(tmp_path):
     texts = [w["text"] for w in result]
     assert texts == ["너무", "걱정하지", "마세요"]
     assert not any("순모" in t for t in texts)
+
+
+def test_match_clamps_cue_fallback_instead_of_discarding_real_anchor_on_other_side(tmp_path):
+    """회귀: 왼쪽에 확실한 앵커가 없어 큐 시작으로 대체할 때, 그 큐 시작이
+    오른쪽의 실측 앵커보다 늦으면(SRT 큐 타임코드와 STT 실측이 어긋나는
+    흔한 경우) 실측 앵커를 버리면 안 된다 — 큐 시작 쪽을 실측 앵커에
+    맞춰 당겨야 한다."""
+    srt_path = tmp_path / "ko.srt"
+    # 이 큐의 SRT 타임코드는 10~14초라고 적혀 있지만, 실제 발화는
+    # 그보다 일찍(8초) 시작했다고 가정한다.
+    srt_path.write_text(
+        "1\n00:00:10,000 --> 00:00:14,000\n안녕 반가워\n", encoding="utf-8",
+    )
+    stt_words = [
+        # "안녕"은 STT가 못 들었다(왼쪽 앵커 없음).
+        {"start": 8.0, "end": 8.5, "text": "반가워"},
+    ]
+    result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
+    texts = [w["text"] for w in result]
+    assert texts == ["안녕", "반가워"]
+    # "안녕"의 보간 구간은 실측 앵커(8.0)를 넘어서면 안 된다 — 큐 시작
+    # (10.0)을 그대로 썼다면 8.0보다 늦어져서 다음 확정 구간과 겹친다.
+    assert result[0]["end"] <= 8.0
+    assert result[1]["start"] == 8.0

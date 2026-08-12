@@ -131,11 +131,25 @@ def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -
         j = i
         while j < n and confirmed[j] is None:
             j += 1
-        left_time = confirmed[i - 1][1] if i > 0 else srt_words[i]["cue_start"]
-        right_time = confirmed[j][0] if j < n else srt_words[j - 1]["cue_end"]
-        if right_time <= left_time:
+        left_time = confirmed[i - 1][1] if i > 0 else None
+        right_time = confirmed[j][0] if j < n else None
+
+        if left_time is None and right_time is None:
             left_time = srt_words[i]["cue_start"]
             right_time = srt_words[j - 1]["cue_end"]
+        elif left_time is None:
+            # 왼쪽에 확실한 앵커가 없다 — 큐 시작을 쓰되, 오른쪽의 실측
+            # 앵커보다 늦어지지 않게 한다(실측값을 버리지 않기 위해).
+            left_time = min(srt_words[i]["cue_start"], right_time)
+        elif right_time is None:
+            # 오른쪽에 확실한 앵커가 없다 — 큐 끝을 쓰되, 왼쪽의 실측
+            # 앵커보다 빨라지지 않게 한다.
+            right_time = max(srt_words[j - 1]["cue_end"], left_time)
+        elif right_time <= left_time:
+            # 양쪽 다 실측 앵커인데 뒤집힌 극단적 경우(STT 타임코드 자체가
+            # 순서를 벗어남) — 폭 0으로 축소해 최소한 다음 확정 구간과
+            # 안 겹치게 한다.
+            right_time = left_time
         result.extend(_interpolate_gap(srt_words[i:j], left_time, right_time))
         i = j
 
