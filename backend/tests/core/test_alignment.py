@@ -57,6 +57,36 @@ def test_align_splits_words_across_two_target_cues_by_own_midpoint():
     assert pairs[1].korean.text == "하세요"
 
 
+def test_align_matches_by_overlap_even_when_midpoint_falls_outside_target():
+    """회귀: 한국어 SRT를 STT 대신 쓸 때(korean_words_from_srt) 큐에 단어가
+    하나뿐이면 그 단어 타임코드가 큐 표시 구간 전체로 늘어난다 — 실제 발화
+    보다 길게 잡히는 경우가 흔해서, 중점(midpoint)이 대응하는 대상언어 큐
+    밖으로 새는 실제 사례("맞죠?")를 재현한다. 겹침 기준이면 이런 경우도
+    붙어야 한다."""
+    korean_words = [SegmentText(start=202.70, end=203.54, text="맞죠?")]
+    target = [SegmentText(start=202.16, end=202.95, text="Eres tú.")]
+    pairs = align(korean_words, target)
+    assert len(pairs) == 1
+    assert pairs[0].korean.text == "맞죠?"
+    assert pairs[0].target.text == "Eres tú."
+
+
+def test_align_prefers_true_majority_coverage_over_iou_biased_shorter_cue():
+    """회귀: IoU(교집합/합집합)로 겹침을 판단하면 후보 큐가 짧을수록
+    유리해지는 왜곡이 생긴다 — 단어 시간의 40%(4초)가 겹치는 긴 큐보다
+    30%(3초)만 겹치는 짧은 큐를 IoU는 더 높게 쳐준다(짧은 큐는 합집합이
+    작아서 비율이 부풀려짐: 3/10=0.3 > 4/20=0.2). 실제 사례("광천역에"가
+    긴 큐와 짧은 큐에 걸쳐 있었을 때 IoU가 짧은 큐를 78% 차이로 압도적
+    승리시켰던 것)와 같은 구조다. 단어 자신의 시간 대비 커버리지로
+    판단하면(진짜 더 많이 겹치는 쪽) 긴 큐가 이겨야 한다."""
+    word = SegmentText(start=0.0, end=10.0, text="단어")
+    more_overlap_long = SegmentText(start=-10.0, end=4.0, text="긴 큐")  # 겹침 4.0초(40%)
+    less_overlap_short = SegmentText(start=7.0, end=10.0, text="짧은 큐")  # 겹침 3.0초(30%)
+    pairs = align([word], [more_overlap_long, less_overlap_short])
+    matched = next(p for p in pairs if p.korean is not None)
+    assert matched.target.text == "긴 큐"
+
+
 def test_align_groups_orphan_words_by_gap():
     """어느 큐에도 안 담긴 단어들은 간격 기준으로 묶여야 한다 — 가까운
     단어끼리는 한 발화로 합쳐지고, 간격이 벌어지면 별도 pair가 된다."""

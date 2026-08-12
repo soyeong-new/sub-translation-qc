@@ -6,17 +6,10 @@
 import re
 from typing import List, Optional
 from app.schemas import SegmentText
+from app.core.time_overlap import coverage_ratio
 
 _HE_RE = re.compile(r"\b(he|him|his)\b", re.IGNORECASE)
 _SHE_RE = re.compile(r"\b(she|her|hers)\b", re.IGNORECASE)
-
-
-def _overlap(start: float, end: float, seg: SegmentText) -> float:
-    inter_start = max(start, seg.start)
-    inter_end = min(end, seg.end)
-    inter = max(0.0, inter_end - inter_start)
-    union = max(end, seg.end) - min(start, seg.start)
-    return inter / union if union > 0 else 0.0
 
 
 def find_pronoun_hint(start: float, end: float,
@@ -28,7 +21,7 @@ def find_pronoun_hint(start: float, end: float,
     best: Optional[SegmentText] = None
     best_score = 0.0
     for seg in english_segments:
-        score = _overlap(start, end, seg)
+        score = coverage_ratio(start, end, seg.start, seg.end)
         if score > best_score:
             best_score, best = score, seg
     if best is None:

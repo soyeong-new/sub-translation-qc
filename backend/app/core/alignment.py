@@ -3,6 +3,7 @@
 from bisect import bisect_right
 from typing import List, Optional, Tuple
 from app.schemas import SegmentText, AlignedPair
+from app.core.time_overlap import coverage_ratio
 
 # 자막 큐로 안 흡수된 한국어 단어들(내레이션, 화면 밖 발화 등)을 문장처럼
 # 묶기 위한 간격 기준 — 이 이하 간격이면 같은 발화의 연속으로 보고 하나로
@@ -87,9 +88,27 @@ def detect_global_offset(korean_words: List[SegmentText],
     return best_offset
 
 
-def _midpoint_in(word: SegmentText, target: SegmentText) -> bool:
-    midpoint = (word.start + word.end) / 2
-    return target.start <= midpoint < target.end
+def _best_overlapping_target(word: SegmentText, target_segments: List[SegmentText]) -> Optional[int]:
+    """word 시간의 몇 %가 각 target_segments 안에 들어가는지(coverage_ratio)로
+    가장 많이 겹치는 인덱스를 반환한다 — 한국어/영어/스페인어 SRT는
+    제작처가 각자 타이밍을 잡아 미세하게 어긋나는 경우가 흔해서(design
+    2026-08-11-korean-srt-input-design.md 후속 논의), "중점이 구간 안에
+    있는가"(점 판정)만으로는 짧은 반응 대사처럼 자막 표시 구간이 실제
+    발화보다 긴 경우 인접 구간으로 새거나 아예 못 붙는다.
+
+    IoU(교집합/합집합)가 아니라 word 기준 커버리지를 쓰는 이유: 단어가
+    "쿼리"고 큐가 "후보"인 비대칭 매칭이라, 후보 큐가 짧을수록 유리해지는
+    IoU의 왜곡이 없다(실제 사례: 5초짜리 큐와 1초짜리 큐에 단어 하나가
+    거의 반반씩 걸쳐 있는데도 IoU로는 1초짜리가 압도적으로 이겨버렸음).
+
+    겹치는 구간이 없으면(내레이션, 화면 밖 발화 등) None."""
+    best_index: Optional[int] = None
+    best_score = 0.0
+    for i, target in enumerate(target_segments):
+        score = coverage_ratio(word.start, word.end, target.start, target.end)
+        if score > best_score:
+            best_score, best_index = score, i
+    return best_index
 
 
 def _merge_words(words: List[SegmentText]) -> SegmentText:
@@ -115,31 +134,38 @@ def _group_by_gap(words: List[SegmentText]) -> List[List[SegmentText]]:
 def align(korean_words: List[SegmentText],
           target_segments: List[SegmentText]) -> List[AlignedPair]:
     """대상언어(스페인어) SRT 큐가 시간의 기준이다 — 영상도, 검수 화면의
-    글자수 제약도 이 큐 단위로 움직이기 때문이다. 각 큐의 [start, end) 구간
-    안에 중점(midpoint)이 들어오는 한국어 단어들을 그러모아 그 큐의
-    한국어 텍스트로 삼는다(문장 대 문장 정렬이 아니라 단어를 SRT 큐 안에
+    글자수 제약도 이 큐 단위로 움직이기 때문이다. 각 한국어 단어를 가장
+    많이 겹치는(IoU 기준, _best_overlapping_target) 큐에 배정해 그 큐의
+    한국어 텍스트로 삼는다(문장 대 문장 정렬이 아니라 단어를 SRT 큐에
     담는 방식) — 위스퍼가 침묵 기준으로 끊는 문장 경계와 SRT 큐 경계가
     어긋나 "영상은 스페인어 타이밍인데 한국어 원문은 다른 타이밍"이 되던
-    문제를,애초에 문장 단위로 정렬하지 않음으로써 없앤다.
+    문제를, 애초에 문장 단위로 정렬하지 않음으로써 없앤다.
 
-    어느 큐에도 안 담긴 한국어 단어(내레이션, 화면 밖 발화 등)는 간격
+    "중점이 구간 안에 있는가"가 아니라 "구간이 얼마나 겹치는가"로 판단하는
+    이유: 한국어 SRT를 STT 대신 쓸 때(korean_words_from_srt) 큐 하나에
+    단어가 하나뿐이면 그 단어의 타임코드가 큐 표시 구간 전체로 늘어나는데,
+    표시 구간은 보통 실제 발화보다 길어서 중점이 대응하는 대상언어 큐 밖으로
+    새는 경우가 실제로 있었다(design 2026-08-11-korean-srt-input-design.md
+    후속 논의) — 겹침 기준이면 이런 경우도 정상적으로 붙는다.
+
+    어느 큐와도 안 겹치는 한국어 단어(내레이션, 화면 밖 발화 등)는 간격
     기준으로 묶어 대상언어 없는 반쪽짜리 AlignedPair로 남긴다(design §9,
     '정렬 실패' finding 처리 대상)."""
-    consumed = [False] * len(korean_words)
-    pairs: List[AlignedPair] = []
+    buckets: List[List[SegmentText]] = [[] for _ in target_segments]
+    leftover: List[SegmentText] = []
 
+    for word in korean_words:
+        best_index = _best_overlapping_target(word, target_segments)
+        if best_index is None:
+            leftover.append(word)
+        else:
+            buckets[best_index].append(word)
+
+    pairs: List[AlignedPair] = []
     for j, target in enumerate(target_segments):
-        bucket_indices = [
-            i for i, w in enumerate(korean_words)
-            if not consumed[i] and _midpoint_in(w, target)
-        ]
-        for i in bucket_indices:
-            consumed[i] = True
-        bucket = [korean_words[i] for i in bucket_indices]
-        korean: Optional[SegmentText] = _merge_words(bucket) if bucket else None
+        korean: Optional[SegmentText] = _merge_words(buckets[j]) if buckets[j] else None
         pairs.append(AlignedPair(id=f"pair_{j+1}", korean=korean, target=target))
 
-    leftover = [w for w, used in zip(korean_words, consumed) if not used]
     for k, group in enumerate(_group_by_gap(leftover)):
         pairs.append(AlignedPair(id=f"pair_korean_{k+1}", korean=_merge_words(group), target=None))
 

@@ -209,6 +209,58 @@ def test_korean_words_from_srt_drops_cue_that_is_entirely_parenthetical(tmp_path
     assert korean_words_from_srt(str(srt_path)) == []
 
 
+def test_korean_words_from_srt_strips_dash_prefixed_multi_speaker_lines(tmp_path):
+    """실제 SRT는 한 큐에 화자가 둘 이상이면 줄 앞에 "- "를 붙인다(예:
+    "- (경리) 아닌데요\n- (순모) 어?") — 이 접두어 때문에 화자 괄호가
+    줄 맨 앞에 있다는 가정이 깨져 정제가 안 되던 회귀 테스트."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n- (경리) 아닌데요\n- (순모) 어?\n",
+        encoding="utf-8",
+    )
+    words = korean_words_from_srt(str(srt_path))
+    texts = [w["text"] for w in words]
+    assert texts == ["아닌데요", "어?"]
+    assert not any("경리" in t or "순모" in t or "-" in t for t in texts)
+
+
+def test_korean_words_from_srt_strips_bracket_stage_direction_mid_line(tmp_path):
+    """대괄호 지문이 줄 전체가 아니라 화자 표기와 대사 사이에 붙는 경우
+    (예: "- (순모) [떨리는 목소리로] 현아")도 정제돼야 한다 — 대괄호가
+    줄 전체를 차지할 때만 지우던 이전 정규식으로는 안 걸러졌던 회귀
+    테스트."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n- [안내 방송] 도착하겠습니다\n"
+        "- (순모) [떨리는 목소리로] 현아\n",
+        encoding="utf-8",
+    )
+    words = korean_words_from_srt(str(srt_path))
+    texts = [w["text"] for w in words]
+    assert texts == ["도착하겠습니다", "현아"]
+    assert not any("[" in t or "]" in t or "순모" in t or "안내" in t for t in texts)
+
+
+def test_korean_words_from_srt_gives_each_dash_speaker_the_full_cue_span(tmp_path):
+    """회귀: "- " 다중 화자 줄은 같은 시간대에 겹쳐/따로 말한 것이지 순서대로
+    말한 게 아니다 — 순서대로 큐 구간을 나눠 가지면(글자 수 비례 분할)
+    한쪽 발화에 실제로는 안 맞는 이른/늦은 시각이 강제로 붙어서, 실제
+    대응하는 대상언어 큐를 못 찾고 엉뚱한 인접 큐에 잘못 붙는 사고로
+    이어졌다(design 2026-08-11-korean-srt-input-design.md 후속 논의). 각
+    발화가 큐 전체 [start,end] 구간을 그대로 가져야 한다."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:10,000 --> 00:00:12,000\n- 도착하겠습니다\n- 현아\n",
+        encoding="utf-8",
+    )
+    words = korean_words_from_srt(str(srt_path))
+    by_text = {w["text"]: w for w in words}
+    assert by_text["도착하겠습니다"]["start"] == 10.0
+    assert by_text["도착하겠습니다"]["end"] == 12.0
+    assert by_text["현아"]["start"] == 10.0
+    assert by_text["현아"]["end"] == 12.0
+
+
 def test_korean_words_from_srt_interpolates_timecodes_proportional_to_char_length(tmp_path):
     srt_path = tmp_path / "ko.srt"
     # "안녕"(2자) + "오랜만이야"(5자) + "잘"(1자) + "지냈어?"(4자) = 12자, 4초 구간
