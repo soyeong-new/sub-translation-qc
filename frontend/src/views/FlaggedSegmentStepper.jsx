@@ -25,16 +25,6 @@ const primaryBtnClass =
 const ghostBtnClass =
   `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
 
-// 성별 표시가 문장 속 누구를 가리키는지(1인칭=화자 자신/2인칭=대화 상대/
-// 3인칭=제3자) — spaCy 인칭 태그를 그대로 안내 문구로 옮긴 것. "지금 묻는
-// 성별이 화자 본인 건지, 화자가 얘기하는 다른 사람 건지" 헷갈린다는 피드백이
-// 있어 괄호로 풀어서 설명을 덧붙인다.
-export const PERSON_LABELS = {
-  "1": "화자 자신 (지금 말하는 사람)",
-  "2": "대화 상대 (지금 말을 듣는 사람)",
-  "3": "제3자 (대화에 없는 다른 인물)",
-};
-
 // 성별/격식 각각의 확인 상태를 판단하는 단일 기준점. isSegmentResolved와
 // 컴포넌트 렌더 로직(genderResolved/formalityResolved) 모두 이 두 함수를
 // 그대로 재사용해, "확인됨"의 정의가 여러 곳에서 어긋나지 않게 한다.
@@ -61,13 +51,11 @@ export function isSegmentResolved(segment) {
 }
 
 // 성별 확인 질문 하나를 그린다 — 인물이 하나뿐인 줄은 이 컴포넌트가 한 번만
-// 쓰이고(기존 동작과 동일), 인물이 둘 이상이면(그룹) 인물 수만큼 반복해서
-// 쓰인다. personLabel이 있으면(단일 인물 줄, 인칭 정보가 있을 때) 위에
-// 안내 문구를 보여주고, 없으면(다인물 줄) 생략한다 — 다인물 줄은 대신
-// heading에 몇 번째 인물인지가 이미 표시된다.
+// 쓰이고, 인물이 둘 이상이면(그룹) 인물 수만큼 반복해서 쓰인다. referent가
+// 있으면(LLM이 판단한, 이 그룹이 누구인지에 대한 짧은 설명) 위에 안내
+// 문구를 보여주고, 없으면 생략한다.
 export function GenderQuestion({
-  heading, words, wordMeanings, personLabel, resolvedGender,
-  suggestedNotApplicable, hint, pending, onSelect,
+  heading, words, wordMeanings, referent, resolvedGender, pending, onSelect,
 }) {
   return (
     <div>
@@ -87,14 +75,9 @@ export function GenderQuestion({
           ))}
         </p>
       )}
-      {/* "이게 화자 본인 성별이냐, 화자가 얘기하는 다른 사람 성별이냐"가
-          헷갈린다는 피드백 — 버튼 누르기 전에 누구 얘기인지부터 분명하게
-          밝힌다(버튼 아래 잔글씨로만 있던 걸 위로 올림). 다인물 줄은 인칭
-          만으로 인물을 구분할 수 없어(문법적으로는 같은 3인칭인 경우가
-          흔함) 대신 heading으로 몇 번째 인물인지 이미 밝혔으므로 생략한다. */}
-      {personLabel && (
+      {referent && (
         <p className="mb-3 rounded-md bg-accent/10 px-3 py-2 text-sm text-foreground">
-          이 성별은 <strong>{personLabel}</strong>의 성별입니다.
+          이 성별은 <strong>{referent}</strong>의 성별입니다.
         </p>
       )}
       {/* 이미 확인된 줄이어도 버튼은 계속 눌러서 답을 바꿀 수 있다 — 지금
@@ -116,31 +99,15 @@ export function GenderQuestion({
         </button>
         {/* caro(비싸다)처럼 성별 표시가 걸렸지만 실제로는 사람이 아니라
             사물/상황을 가리키는 단어일 때 쓰는 탈출구 — 뜻풀이를 보고
-            검수자가 판단한다. 이 단어가 다른 프로젝트에서도 "해당 없음"으로
-            만 판정된 이력이 있으면(한 번도 실제 성별로 판정된 적 없으면)
-            추천 표시를 한다 — 그래도 질문 자체는 그대로 뜬다, 숨기지
-            않는다(design §반증 사례를 잡을 창구는 항상 열어둠). */}
+            검수자가 판단한다. */}
         <button
           disabled={pending}
           onClick={() => onSelect("not_applicable")}
-          className={
-            resolvedGender === "not_applicable"
-              ? selectedBtnClass
-              : suggestedNotApplicable
-                ? `${btnBase} border border-accent bg-accent/20 text-accent-foreground hover:bg-accent/30`
-                : binaryBtnClass
-          }
+          className={resolvedGender === "not_applicable" ? selectedBtnClass : binaryBtnClass}
         >
-          해당 없음(사람 아님){suggestedNotApplicable && " · 추천"}
+          해당 없음(사람 아님)
         </button>
       </div>
-      {hint?.text && (
-        <p className="mt-3 text-xs text-muted-foreground">
-          영어 자막 힌트: he {hint.he_count} · she {hint.she_count}
-          <br />
-          &ldquo;{hint.text}&rdquo;
-        </p>
-      )}
     </div>
   );
 }
@@ -294,9 +261,7 @@ export default function FlaggedSegmentStepper({
 
   const genderResolved = isGenderResolved(currentSegment);
   const formalityResolved = isFormalityResolved(currentSegment);
-  const hint = currentSegment.english_pronoun_hint;
-  const genderGroups = currentSegment.resolved_gender_groups_raw;
-  const hasMultipleReferents = genderGroups && genderGroups.length > 0;
+  const genderGroups = currentSegment.resolved_gender_groups_raw || [];
 
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="stepper-heading"
@@ -352,47 +317,30 @@ export default function FlaggedSegmentStepper({
                 <h3 id="stepper-gender-heading" className="text-sm font-semibold text-foreground">성별</h3>
                 {genderResolved && <span className="text-xs text-success">확인됨</span>}
               </div>
-              {hasMultipleReferents ? (
-                // 한 줄에 성별이 다른 인물이 둘 이상 있으면, 확정된 성별
-                // 하나를 문장 전체에 뭉뚱그려 적용할 수 없다(엉뚱한 인물의
-                // 단어까지 잘못 바뀜) — 그래서 인물별로 질문을 따로 나눠
-                // 보여주고 각각 답을 받는다.
-                <div className="space-y-4">
+              <div className="space-y-4">
+                {genderGroups.length > 1 && (
                   <p className="text-xs text-muted-foreground">
                     이 줄엔 성별이 다른 인물이 {genderGroups.length}명 있습니다 — 각각 따로 확인해주세요.
                   </p>
-                  {genderGroups.map((group, index) => (
-                    <div key={index} className="rounded-md border border-border/60 p-3">
-                      <GenderQuestion
-                        heading={group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`}
-                        words={group.words}
-                        wordMeanings={group.word_meanings}
-                        personLabel={
-                          group.person
-                            ? PERSON_LABELS[group.person] ?? "누구인지 확인 필요(영상을 보고 판단)"
-                            : null
-                        }
-                        resolvedGender={group.gender}
-                        suggestedNotApplicable={group.suggested_not_applicable}
-                        hint={null}
-                        pending={pending}
-                        onSelect={(gender) => handleResolveGenderGroup(index, gender)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <GenderQuestion
-                  words={hint?.target_words}
-                  wordMeanings={hint?.word_meanings}
-                  personLabel={PERSON_LABELS[hint?.grammatical_person] ?? "누구인지 확인 필요(영상을 보고 판단)"}
-                  resolvedGender={currentSegment.resolved_gender_raw}
-                  suggestedNotApplicable={hint?.suggested_not_applicable}
-                  hint={hint}
-                  pending={pending}
-                  onSelect={handleResolveGender}
-                />
-              )}
+                )}
+                {genderGroups.map((group, index) => (
+                  <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border/60 p-3" : ""}>
+                    <GenderQuestion
+                      heading={
+                        genderGroups.length > 1
+                          ? (group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`)
+                          : null
+                      }
+                      words={group.words}
+                      wordMeanings={group.word_meanings}
+                      referent={genderGroups.length > 1 ? null : group.referent}
+                      resolvedGender={group.gender}
+                      pending={pending}
+                      onSelect={(gender) => handleResolveGenderGroup(index, gender)}
+                    />
+                  </div>
+                ))}
+              </div>
             </section>
           )}
 

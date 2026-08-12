@@ -13,7 +13,7 @@ import {
   resolveGender,
   resolveGenderGroup,
 } from "../api.js";
-import { GenderQuestion, isGenderResolved, PERSON_LABELS } from "./FlaggedSegmentStepper.jsx";
+import { GenderQuestion, isGenderResolved } from "./FlaggedSegmentStepper.jsx";
 
 // 규칙 기반(사전필터, 자동재배치) finding만 재질문 대상이 아니다 — LLM/안전망은
 // 전부 가능 (backend/app/core/requery.py의 _LLM_REQUERYABLE_MODELS + "안전망"과
@@ -219,14 +219,8 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
                 heading={group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`}
                 words={group.words}
                 wordMeanings={group.word_meanings}
-                personLabel={
-                  group.person
-                    ? PERSON_LABELS[group.person] ?? "누구인지 확인 필요(영상을 보고 판단)"
-                    : null
-                }
+                referent={null}
                 resolvedGender={group.gender}
-                suggestedNotApplicable={group.suggested_not_applicable}
-                hint={null}
                 pending={pending}
                 onSelect={(gender) => onResolveGenderGroup(segment.id, index, gender)}
               />
