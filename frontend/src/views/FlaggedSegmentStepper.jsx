@@ -118,7 +118,7 @@ export function GenderQuestion({
 // 덮어써서 저장된다).
 export default function FlaggedSegmentStepper({
   segments, videoProxyUrl, videoOffsetSeconds = 0,
-  onResolveGender, onResolveGenderGroup, onResolveFormality, onComplete, completePending, onExit,
+  onResolveGenderGroup, onResolveFormality, onComplete, completePending, onExit,
 }) {
   const [currentIndex, setCurrentIndex] = useState(() => {
     const idx = segments.findIndex((s) => !isSegmentResolved(s));
@@ -183,26 +183,6 @@ export default function FlaggedSegmentStepper({
         setCurrentIndex(i);
         return;
       }
-    }
-  }
-
-  async function handleResolveGender(gender) {
-    if (!currentSegment) return;
-    const wasResolved = isSegmentResolved(currentSegment);
-    setPending(true);
-    setError(null);
-    try {
-      const updated = await onResolveGender(currentSegment.id, gender);
-      // 처음 답하는 경우에만 다음 미확인 줄로 자동 이동한다 — 이미 확인된
-      // 줄을 되돌아가 수정한 경우(wasResolved)는 검수자가 일부러 그 줄로
-      // 온 것이므로 제자리에 그대로 둔다.
-      if (!wasResolved && isSegmentResolved({ ...currentSegment, ...updated })) {
-        goToNextUnresolved(currentIndex);
-      }
-    } catch (err) {
-      setError(err.message ?? "요청 중 오류가 발생했습니다.");
-    } finally {
-      setPending(false);
     }
   }
 

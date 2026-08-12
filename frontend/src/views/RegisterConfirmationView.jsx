@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  getFlaggedSegments, getTargetVersion, resolveGender, resolveGenderGroup,
+  getFlaggedSegments, getTargetVersion, resolveGenderGroup,
   resolveFormality, confirmRegisters,
 } from "../api.js";
 import FlaggedSegmentStepper, { isSegmentResolved } from "./FlaggedSegmentStepper.jsx";
@@ -96,12 +96,6 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
     });
   }
 
-  async function handleResolveGender(segmentId, gender) {
-    const updated = await resolveGender(segmentId, gender);
-    setSegments((prev) => prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)));
-    return updated;
-  }
-
   async function handleResolveGenderGroup(segmentId, groupIndex, gender) {
     const updated = await resolveGenderGroup(segmentId, groupIndex, gender);
     setSegments((prev) => prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s)));
@@ -136,7 +130,6 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
         segments={segments}
         videoProxyUrl={videoProxyUrl}
         videoOffsetSeconds={videoOffsetSeconds}
-        onResolveGender={handleResolveGender}
         onResolveGenderGroup={handleResolveGenderGroup}
         onResolveFormality={handleResolveFormality}
         onComplete={handleComplete}
