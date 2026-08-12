@@ -131,6 +131,35 @@ class ModelProvider(ABC):
         폴백한다."""
         ...
 
+    @abstractmethod
+    async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
+        """spaCy가 이미 찾아낸 성별 표시 후보 단어(candidate_words, 문장 속
+        등장 순서)가 실제로 사람을 가리키는지, 누구를 가리키는지(그룹핑),
+        성별이 뭔지 스페인어 문장(target_text) 전체와 한국어 원문
+        (korean_text)을 같이 보고 판단한다. spaCy 통계 모델은 형용사/부사/
+        감탄사 겸용 단어(예: "rápido")나 amod 수식 대상이 사람인지 사물인지
+        안정적으로 구분하지 못해(design 2026-08-12-gender-detection-llm-
+        redesign-design.md), 이 판단을 문맥을 실제로 이해하는 LLM에 맡긴다.
+        인물 그룹핑도 여기서 함께 판단한다 — 미리 계산된 그룹을 프롬프트에
+        "이미 확정된 사실"로 먼저 보여주면 모델이 독립적으로 재도출하기보다
+        그냥 승인하는 앵커링 편향이 생기므로, 원문 그대로만 보고 판단하게
+        한다.
+
+        입력은 [{"id": str, "target_text": str, "korean_text": str,
+        "candidate_words": [str, ...]}, ...] — candidate_words는 문장 속
+        등장 순서 그대로다(인덱스가 곧 이 순서). 반환값은
+        [{"id": str, "words": [
+            {"index": int, "is_person": bool, "group_id": int,
+             "gender": "male"|"female"|None, "referent": str|None}, ...
+        ]}, ...] — words는 입력 candidate_words와 정확히 같은 개수·순서로
+        돌아와야 한다(index는 검증용). is_person=false면 사람 얘기가 아니라는
+        뜻(그 후보는 성별 확인 대상에서 제외됨). 같은 인물을 가리키는 후보는
+        group_id가 같아야 한다(문장 안에서만 의미 있는 임의의 정수). gender는
+        확신이 있을 때만 채우고, 애매하면 None(사람에게 물어봄). referent는
+        그 그룹이 누구를 가리키는지 검수자에게 보여줄 짧은 한국어 설명
+        (예: "화자 자신", "Juan", "제3자")이다."""
+        ...
+
 
 def get_provider() -> ModelProvider:
     name = os.getenv("QC_PROVIDER", "live")

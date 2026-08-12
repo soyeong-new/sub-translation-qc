@@ -103,6 +103,70 @@ _SCENE_SPLIT_SCHEMA = {
     },
 }
 
+_GENDER_RESOLUTION_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "gender_resolution",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "words": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "index": {"type": "integer"},
+                                        "is_person": {"type": "boolean"},
+                                        "group_id": {"type": "integer"},
+                                        "gender": {"type": ["string", "null"], "enum": ["male", "female", None]},
+                                        "referent": {"type": ["string", "null"]},
+                                    },
+                                    "required": ["index", "is_person", "group_id", "gender", "referent"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "required": ["id", "words"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["results"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_GENDER_RESOLUTION_SYSTEM_PREFIX = (
+    "다음은 스페인어 문장(target_text), 그 문장의 한국어 원문(korean_text), "
+    "그리고 그 문장에서 이미 성별 표시 형태(형용사/분사 어미)가 있는 후보 "
+    "단어 목록(candidate_words, 문장 속 등장 순서)이다. 각 후보 단어마다 "
+    "다음을 판단하라: "
+    "(1) is_person — 이 단어가 실제로 특정 인물을 묘사하는가(사람이 "
+    "아니라 사물/추상 개념/상황을 가리키면 false, 예: \"tiempo "
+    "compartido\"의 \"compartido\"). 애매하면(사람 얘기일 가능성이 있으면) "
+    "true로 두고 gender를 null로 남겨 사람에게 확인받게 하라 — 확실히 "
+    "사물/추상 개념일 때만 false로 하라. "
+    "(2) group_id — 같은 인물을 가리키는 후보 단어들은 같은 정수를 써라 "
+    "(문장 안에서만 의미 있는 임의의 값). "
+    "(3) gender — \"male\" 또는 \"female\", 문맥(한국어 원문의 호칭·대명사, "
+    "스페인어 문장의 주어/목적어 관계 등)으로 확신할 수 있을 때만 채우고, "
+    "애매하면 null로 남겨라(사람에게 물어본다 — 억지로 추측하지 마라). "
+    "(4) referent — 이 그룹이 누구를 가리키는지 검수자에게 보여줄 짧은 "
+    "한국어 설명(예: \"화자 자신\", \"Juan\", \"제3자\", \"듣고 있는 "
+    "상대방\"). is_person이 false면 group_id/gender/referent 값은 "
+    "무시되니 아무 값이나 넣어도 된다(단, 스키마상 필드는 항상 채워야 "
+    "한다). words 배열은 candidate_words와 정확히 같은 개수·순서로, "
+    "각 원소의 index는 candidate_words에서의 위치(0부터)와 일치해야 한다."
+)
+
 
 def _language_label(profile: dict) -> str:
     language = profile.get("language") or "대상언어"
@@ -255,6 +319,34 @@ class GptClient:
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             preview = text[:200] if text else "<empty>"
             raise ValueError(f"GPT 씬 분할 응답이 기대한 JSON 형태가 아님: {preview}") from exc
+
+    async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
+        """성별 문맥 판단 전용 콜. split_scenes와 동일하게 json_schema strict
+        모드로 출력 형식을 API 레벨에서 강제한다 — 후보 단어 개수만큼 정확히
+        구조화된 배열이 필요해서, correct_primary/verify_and_refine이 쓰는
+        느슨한 json_object 모드보다 이 형태가 더 안전하다."""
+        language_label = _language_label(profile)
+        system = f"{_GENDER_RESOLUTION_SYSTEM_PREFIX} 스페인어는 {language_label}이다."
+        user = json.dumps(items, ensure_ascii=False)
+        response = await self._sdk_client.chat.completions.create(
+            model=self._model,
+            response_format=_GENDER_RESOLUTION_SCHEMA,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        if not response.choices:
+            raise ValueError("GPT 성별 문맥 판단 응답이 비어 있음")
+        text = response.choices[0].message.content
+        try:
+            results = json.loads(text)["results"]
+            if not isinstance(results, list):
+                raise TypeError("results가 리스트가 아님")
+            return results
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            preview = text[:200] if text else "<empty>"
+            raise ValueError(f"GPT 성별 문맥 판단 응답이 기대한 JSON 형태가 아님: {preview}") from exc
 
     async def transcribe(self, audio_path: str) -> List[dict]:
         """audio_path 하나의 STT 결과를 단어 단위 타임코드 리스트로 반환한다

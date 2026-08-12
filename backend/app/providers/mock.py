@@ -76,3 +76,18 @@ class MockProvider(ModelProvider):
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         return [{"id": i["id"], "corrected_text": f"[{i['formality']}] {i['target_text']}"}
                 for i in items]
+
+    async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
+        """결정론적 테스트 더블: 후보 단어마다 별도 그룹으로 취급하고(사람
+        얘기로 간주), 성별은 항상 None(사람에게 확인받음)으로 돌려준다 —
+        다인물/자동확정 시나리오를 테스트하려는 개별 테스트는 이 메서드를
+        monkeypatch한다. 실제 판단 로직(프롬프트/스키마)은 GptClient 쪽
+        테스트에서 별도로 검증한다."""
+        return [
+            {"id": item["id"], "words": [
+                {"index": idx, "is_person": True, "group_id": idx,
+                 "gender": None, "referent": f"인물{idx + 1}"}
+                for idx in range(len(item["candidate_words"]))
+            ]}
+            for item in items
+        ]

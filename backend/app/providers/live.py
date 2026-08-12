@@ -59,3 +59,6 @@ class LiveModelProvider(ModelProvider):
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.apply_formality(items, profile)
+
+    async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.resolve_gender_from_context(items, profile)

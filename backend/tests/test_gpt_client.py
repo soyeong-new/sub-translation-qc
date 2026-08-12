@@ -180,3 +180,37 @@ async def test_back_translate_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
         await client.back_translate([], {})
+
+
+@pytest.mark.asyncio
+async def test_resolve_gender_from_context_sends_candidate_words_and_returns_results():
+    payload = {"results": [{"id": "p1", "words": [
+        {"index": 0, "is_person": True, "group_id": 0, "gender": "male", "referent": "Juan"},
+    ]}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.resolve_gender_from_context(
+        items=[{"id": "p1", "target_text": "Juan está cansado.",
+                "korean_text": "후안이 피곤해해.", "candidate_words": ["cansado"]}],
+        profile={"language": "es", "variant": "LATAM"},
+    )
+    assert result == payload["results"]
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["response_format"]["json_schema"]["name"] == "gender_resolution"
+    sent_user = call_kwargs["messages"][1]["content"]
+    assert "cansado" in sent_user
+    assert "후안이 피곤해해" in sent_user
+
+
+@pytest.mark.asyncio
+async def test_resolve_gender_from_context_raises_on_malformed_json():
+    client = _make_client_with_fake_sdk("JSON 아님")
+    with pytest.raises(ValueError):
+        await client.resolve_gender_from_context(items=[], profile={})
+
+
+@pytest.mark.asyncio
+async def test_resolve_gender_from_context_raises_on_empty_choices():
+    client = _make_client_with_fake_sdk("무시됨")
+    client._sdk_client.chat.completions.create.return_value.choices = []
+    with pytest.raises(ValueError):
+        await client.resolve_gender_from_context(items=[], profile={})
