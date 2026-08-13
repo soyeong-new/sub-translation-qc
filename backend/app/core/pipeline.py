@@ -684,6 +684,13 @@ async def _run_dual_verification_pass(
     korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in filtered_pairs}
     warnings: list = []
 
+    skipped_without_korean = sum(1 for p in pairs if p.target is not None and p.korean is None)
+    if skipped_without_korean:
+        warnings.append({
+            "stage": "AI 검증",
+            "message": f"한국어 원문이 없어 AI 검증을 건너뛴 줄 {skipped_without_korean}건 — 검수 화면에서 직접 확인하세요.",
+        })
+
     async def _verify_chunk(chunk: list) -> tuple[list, list]:
         chunk_dicts = [_to_dict(p) for p in chunk]
         return await asyncio.gather(

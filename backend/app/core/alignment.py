@@ -120,7 +120,7 @@ def _best_overlapping_target(word: SegmentText, target_segments: List[SegmentTex
 
 def _merge_words(words: List[SegmentText]) -> SegmentText:
     return SegmentText(
-        start=words[0].start, end=words[-1].end,
+        start=words[0].start, end=max(w.end for w in words),
         text=" ".join(w.text for w in words),
     )
 

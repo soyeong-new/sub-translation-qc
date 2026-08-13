@@ -263,3 +263,17 @@ def test_align_by_korean_cue_merges_transitive_chain_with_no_single_hub_node():
 
 def test_align_by_korean_cue_returns_empty_for_empty_inputs():
     assert align_by_korean_cue([], []) == []
+
+
+def test_align_by_korean_cue_merge_uses_max_end_not_last_items_end():
+    """회귀: _merge_words가 마지막 원소의 end를 그대로 쓰면, 정렬 후 뒤에
+    오는 항목의 구간이 앞 항목보다 짧을 때(겹치는 큐) end가 실제보다
+    짧게 잘린다 — 병합된 구간 전체를 덮는 max(end)를 써야 한다."""
+    korean = [SegmentText(start=0.0, end=10.0, text="긴 한국어")]
+    target = [
+        SegmentText(start=0.0, end=10.0, text="Largo"),
+        SegmentText(start=1.0, end=2.0, text="Corto"),
+    ]
+    pairs = align_by_korean_cue(korean, target)
+    assert len(pairs) == 1
+    assert pairs[0].target.end == 10.0

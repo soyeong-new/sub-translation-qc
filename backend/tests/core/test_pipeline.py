@@ -1607,7 +1607,24 @@ async def test_run_dual_verification_pass_skips_pairs_without_korean_text():
         pairs, MockProvider(), {"language": "es", "variant": "LATAM"},
         [], "", "", "tv1", {},
     )
-    assert warnings == []
     segment_ids = {f.segment_id for f in findings}
     assert "p1" in segment_ids
     assert "p2" not in segment_ids
+
+
+@pytest.mark.asyncio
+async def test_run_dual_verification_pass_warns_when_pairs_skipped_for_missing_korean():
+    """한국어 원문이 없어 S2를 건너뛴 pair가 있으면, 왜 그런지 검수자에게
+    보이는 경고가 남아야 한다 — 조용히 사라지면 안 된다."""
+    from app.core.pipeline import _run_dual_verification_pass
+    pairs = [
+        AlignedPair(id="p1", korean=SegmentText(start=0.0, end=1.0, text="안녕"),
+                    target=SegmentText(start=0.0, end=1.0, text="Hola")),
+        AlignedPair(id="p2", korean=None,
+                    target=SegmentText(start=1.0, end=2.0, text="Texto sin coreano")),
+    ]
+    findings, warnings = await _run_dual_verification_pass(
+        pairs, MockProvider(), {"language": "es", "variant": "LATAM"},
+        [], "", "", "tv1", {},
+    )
+    assert any("건너뛴 줄 1건" in w["message"] for w in warnings)
