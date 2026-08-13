@@ -241,5 +241,25 @@ def test_align_by_korean_cue_ignores_negligible_boundary_touch():
     assert matched.target.text == "Primero"
 
 
+def test_align_by_korean_cue_merges_transitive_chain_with_no_single_hub_node():
+    """Union-Find의 전이적 묶음이 실제로 필요한 케이스 — 한국어 큐 하나가
+    스페인어 큐 전부와 직접 겹치는 "허브" 구조가 아니라, 사슬처럼 이어진
+    경우다: K1↔T1, T1↔K2, K2↔T2. K1과 T2는 서로 직접 안 겹치지만, 겹침
+    관계를 따라가면 전부 하나로 묶여야 한다 — 단순히 "각 한국어 큐가
+    직접 겹치는 스페인어 큐만 모으는" 방식으로는 이 케이스를 놓친다."""
+    korean = [
+        SegmentText(start=0.0, end=1.5, text="K1"),
+        SegmentText(start=2.0, end=3.5, text="K2"),
+    ]
+    target = [
+        SegmentText(start=1.0, end=2.5, text="T1"),
+        SegmentText(start=3.0, end=4.5, text="T2"),
+    ]
+    pairs = align_by_korean_cue(korean, target)
+    assert len(pairs) == 1
+    assert pairs[0].korean.text == "K1 K2"
+    assert pairs[0].target.text == "T1 T2"
+
+
 def test_align_by_korean_cue_returns_empty_for_empty_inputs():
     assert align_by_korean_cue([], []) == []
