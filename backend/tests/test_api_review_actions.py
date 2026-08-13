@@ -164,6 +164,48 @@ async def test_pick_returns_404_for_missing_other_finding():
 
 
 @pytest.mark.asyncio
+async def test_reject_pair_rejects_both_and_keeps_original():
+    """회귀(사용자 재현): Claude/GPT 둘 다의 제안보다 원본이 낫다고 판단한
+    경우 — 개별 카드를 하나씩 거부하지 않아도 한 번에 둘 다 거부하고
+    원본을 유지할 수 있어야 한다."""
+    claude_id, gpt_id = await _make_disagreeing_pair()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            f"/findings/{claude_id}/reject-pair",
+            json={"reviewer_name": "김검수", "other_finding_id": gpt_id},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert {item["id"]: item["status"] for item in body["rejected"]} == {
+            claude_id: "rejected", gpt_id: "rejected",
+        }
+
+    async with async_session() as session:
+        claude_f = await session.get(FindingRow, claude_id)
+        gpt_f = await session.get(FindingRow, gpt_id)
+        assert claude_f.status == "rejected"
+        assert claude_f.final_text == ""
+        assert claude_f.reviewer_name == "김검수"
+        assert gpt_f.status == "rejected"
+        assert gpt_f.final_text == ""
+
+
+@pytest.mark.asyncio
+async def test_reject_pair_returns_404_for_missing_other_finding():
+    claude_id, _ = await _make_disagreeing_pair()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            f"/findings/{claude_id}/reject-pair",
+            json={"reviewer_name": "김검수", "other_finding_id": "does-not-exist"},
+        )
+        assert r.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch):
     """회귀: Claude/GPT 단독 제안(pending)은 S4 안전망을 거치지 않아 50자를
     넘는 채로 남을 수 있었다 — 승인 시점에 자동으로 줄여야 한다."""

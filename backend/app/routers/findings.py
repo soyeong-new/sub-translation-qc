@@ -72,6 +72,13 @@ class PickFindingIn(BaseModel):
     final_text: str = ""
 
 
+class RejectPairIn(BaseModel):
+    # Claude/GPT 둘 다의 제안보다 원본이 낫다고 판단했을 때, 두 finding을
+    # 한 트랜잭션으로 같이 거부해 원본을 유지한다 — pick과 대칭되는 액션.
+    reviewer_name: str
+    other_finding_id: str
+
+
 class RequeryIn(BaseModel):
     instruction: str
     reviewer_name: str
@@ -255,6 +262,34 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
         return {
             "picked": {"id": finding.id, "status": finding.status, "final_text": finding.final_text},
             "rejected": {"id": other.id, "status": other.status, "final_text": other.final_text},
+        }
+
+
+@router.post("/findings/{finding_id}/reject-pair")
+async def reject_pair(finding_id: str, payload: RejectPairIn):
+    """Claude/GPT 의견이 갈린 두 후보 중 어느 쪽도 원본보다 낫지 않다고
+    판단했을 때, 원본을 그대로 유지한다. pick_finding과 대칭되는 액션으로
+    — 두 finding을 한 트랜잭션으로 같이 거부해 한쪽만 거부되고 다른 한쪽은
+    아직 pending으로 남는 어중간한 상태를 막는다. 거부된 finding은
+    final_text가 비므로 export._final_text_by_segment가 이 세그먼트를
+    건너뛰고 Segment.target_text(원본)를 그대로 최종 텍스트로 쓴다."""
+    async with async_session() as session:
+        finding = await session.get(FindingRow, finding_id)
+        other = await session.get(FindingRow, payload.other_finding_id)
+        if finding is None or other is None:
+            raise HTTPException(404, "finding not found")
+        now = datetime.now(timezone.utc)
+        for f in (finding, other):
+            f.status = "rejected"
+            f.final_text = ""
+            f.reviewer_name = payload.reviewer_name
+            f.reviewed_at = now
+        await session.commit()
+        return {
+            "rejected": [
+                {"id": finding.id, "status": finding.status},
+                {"id": other.id, "status": other.status},
+            ]
         }
 
 

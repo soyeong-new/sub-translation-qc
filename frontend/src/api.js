@@ -66,6 +66,14 @@ export const pickFinding = (findingId, otherFindingId, reviewerName, finalText =
     }),
   });
 
+// Claude/GPT 둘 다의 제안보다 원본이 낫다고 판단했을 때, 두 finding을 한
+// 트랜잭션으로 같이 거부해 원본을 유지한다 — pickFinding과 대칭.
+export const rejectFindingPair = (findingId, otherFindingId, reviewerName) =>
+  request(`/findings/${findingId}/reject-pair`, {
+    method: "POST",
+    body: JSON.stringify({ other_finding_id: otherFindingId, reviewer_name: reviewerName }),
+  });
+
 export const requeryFinding = (findingId, instruction, reviewerName) =>
   request(`/findings/${findingId}/requery`, {
     method: "POST",

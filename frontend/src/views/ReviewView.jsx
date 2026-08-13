@@ -6,6 +6,7 @@ import {
   submitReviewAction,
   requeryFinding,
   pickFinding,
+  rejectFindingPair,
   exportTargetVersion,
   listSegments,
   getTargetVersion,
@@ -497,7 +498,7 @@ function FindingCard({
 function PairedFindingCard({
   a, b, segment, isPreviewing, onPreview, reviewerName,
   pendingActions, findingErrors, editingId, editText, onEditTextChange,
-  onPick, onReject, onStartEdit, onCancelEdit,
+  onPick, onReject, onRejectBoth, onStartEdit, onCancelEdit,
   requeryingId, requeryText, requeryPendingId, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
@@ -727,7 +728,19 @@ function PairedFindingCard({
       />
 
       <div className="mb-3 rounded-md border border-border bg-muted/40 p-3">
-        <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
+          {/* 둘 다 원본보다 못한 제안일 때 — 개별 카드를 하나씩 거부하지
+              않아도 여기서 한 번에 원본을 유지할 수 있게 한다. */}
+          <button
+            disabled={!reviewerName.trim() || pendingActions[a.id] != null || pendingActions[b.id] != null}
+            onClick={onRejectBoth}
+            className={`${rejectBtnClass} px-2.5 py-1 text-xs`}
+          >
+            {(pendingActions[a.id] === "rejected" || pendingActions[b.id] === "rejected") && <Spinner />}
+            원본 유지 (둘 다 거부)
+          </button>
+        </div>
         <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{a.original_text}</p>
         {originalMeaning && (
           <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
@@ -866,21 +879,27 @@ export default function ReviewView({ targetVersionId, onBack }) {
 
   // finding 카드를 클릭하면 그 구간으로 이동해 자동재생하고, 구간 끝에서
   // 멈춘다 — FlaggedSegmentStepper와 같은 <video> 재사용 패턴(리로드 없이
-  // currentTime만 이동)이지만, 저기는 반복재생이고 여기는 끝에서 정지한다.
+  // currentTime만 이동)이자 같은 경계 처리 방식을 쓴다.
   useEffect(() => {
     const video = previewVideoRef.current;
     if (!video || !previewSegment) return undefined;
     const seekStart = previewSegment.start - videoOffsetSeconds;
     const seekEnd = previewSegment.end - videoOffsetSeconds;
-    // 구간 끝에서 딱 한 번만 멈춘다 — pausedAtEnd 없이 매 timeupdate마다
-    // currentTime >= end를 계속 검사하면, 검수자가 멈춘 뒤 controls로 다시
-    // 재생을 눌러도 currentTime이 여전히 end 이상이라 즉시 재차 멈춰버려서
-    // "재생이 안 된다"로 보이는 버그가 있었다.
-    let pausedAtEnd = false;
+    // 구간 끝에 도달하면 멈춘다. 회귀(사용자 재현): 예전엔 "한 번만 멈춘다"는
+    // 플래그(pausedAtEnd)로 이 재정지를 막았는데, 그 결과 검수자가 자동정지
+    // 후 재생 버튼을 다시 누르면 그 플래그가 계속 true로 남아 있어 구간
+    // 경계를 완전히 무시하고 영상이 끝까지 흘러가 버렸다. "재생하면 그
+    // 구간만 재생된다"는 기대에 맞게, 구간 끝(또는 그 이후)에서 재생이
+    // 시작되면 항상 구간 처음으로 되감아 다시 그 구간만 재생한다 — 구간
+    // 도중에 잠깐 멈췄다 이어보는 정상적인 일시정지/재개는 되감지 않는다.
     function handleTimeUpdate() {
-      if (!pausedAtEnd && video.currentTime >= seekEnd) {
-        pausedAtEnd = true;
+      if (video.currentTime >= seekEnd) {
         video.pause();
+      }
+    }
+    function handlePlay() {
+      if (video.currentTime >= seekEnd) {
+        video.currentTime = seekStart;
       }
     }
     video.currentTime = seekStart;
@@ -892,7 +911,11 @@ export default function ReviewView({ targetVersionId, onBack }) {
       });
     }
     video.addEventListener("timeupdate", handleTimeUpdate);
-    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
+    video.addEventListener("play", handlePlay);
+    return () => {
+      video.removeEventListener("timeupdate", handleTimeUpdate);
+      video.removeEventListener("play", handlePlay);
+    };
   }, [previewSegment?.id, previewSegment?.start, previewSegment?.end, videoOffsetSeconds]);
 
   async function handleAction(findingId, action, finalText = "") {
@@ -940,6 +963,29 @@ export default function ReviewView({ targetVersionId, onBack }) {
       setPendingActions((prev) => {
         const next = { ...prev };
         delete next[findingId];
+        return next;
+      });
+    }
+  }
+
+  // Claude/GPT 짝 카드에서 둘 다 원본보다 못하다고 판단해 원본을 유지한다
+  // — 두 finding을 한 트랜잭션으로 같이 거부한다(handlePick과 대칭).
+  async function handleRejectPair(findingId, otherFindingId) {
+    setFindingErrors((prev) => ({ ...prev, [findingId]: null, [otherFindingId]: null }));
+    setPendingActions((prev) => ({ ...prev, [findingId]: "rejected", [otherFindingId]: "rejected" }));
+    try {
+      await rejectFindingPair(findingId, otherFindingId, reviewerName);
+      setFindings(await getFindings(targetVersionId));
+    } catch (err) {
+      setFindingErrors((prev) => ({
+        ...prev,
+        [findingId]: err.message ?? "요청 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setPendingActions((prev) => {
+        const next = { ...prev };
+        delete next[findingId];
+        delete next[otherFindingId];
         return next;
       });
     }
@@ -1162,6 +1208,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
                             handlePick(findingId, otherId, finalText);
                           }}
                           onReject={(findingId) => handleAction(findingId, "rejected")}
+                          onRejectBoth={() => handleRejectPair(a.id, b.id)}
                           onStartEdit={startEdit}
                           onCancelEdit={() => setEditingId(null)}
                           requeryingId={requeryingId}

@@ -153,15 +153,21 @@ export default function FlaggedSegmentStepper({
     // 그 대사가 나오는 장면으로 seek된다. 오프셋이 없으면(0) 그대로다.
     const seekStart = currentSegment.start - videoOffsetSeconds;
     const seekEnd = currentSegment.end - videoOffsetSeconds;
-    // 구간 끝에서 딱 한 번만 멈춘다 — pausedAtEnd 없이 매 timeupdate마다
-    // currentTime >= end를 계속 검사하면, 검수자가 멈춘 뒤 controls로 다시
-    // 재생을 눌러도 currentTime이 여전히 end 이상이라 즉시 재차 멈춰버려서
-    // "재생이 안 된다"로 보이는 버그가 있었다.
-    let pausedAtEnd = false;
+    // 구간 끝에 도달하면 멈춘다. 회귀(사용자 재현): 예전엔 "한 번만 멈춘다"는
+    // 플래그(pausedAtEnd)로 이 재정지를 막았는데, 그 결과 검수자가 자동정지
+    // 후 재생 버튼을 다시 누르면 그 플래그가 계속 true로 남아 있어 구간
+    // 경계를 완전히 무시하고 영상이 끝까지 흘러가 버렸다. "재생하면 그
+    // 구간만 재생된다"는 기대에 맞게, 구간 끝(또는 그 이후)에서 재생이
+    // 시작되면 항상 구간 처음으로 되감아 다시 그 구간만 재생한다 — 구간
+    // 도중에 잠깐 멈췄다 이어보는 정상적인 일시정지/재개는 되감지 않는다.
     function handleTimeUpdate() {
-      if (!pausedAtEnd && video.currentTime >= seekEnd) {
-        pausedAtEnd = true;
+      if (video.currentTime >= seekEnd) {
         video.pause();
+      }
+    }
+    function handlePlay() {
+      if (video.currentTime >= seekEnd) {
+        video.currentTime = seekStart;
       }
     }
     video.currentTime = seekStart;
@@ -174,7 +180,11 @@ export default function FlaggedSegmentStepper({
       });
     }
     video.addEventListener("timeupdate", handleTimeUpdate);
-    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
+    video.addEventListener("play", handlePlay);
+    return () => {
+      video.removeEventListener("timeupdate", handleTimeUpdate);
+      video.removeEventListener("play", handlePlay);
+    };
   }, [currentSegment?.id, currentSegment?.start, currentSegment?.end, videoOffsetSeconds]);
 
   function goToNextUnresolved(fromIndex) {
