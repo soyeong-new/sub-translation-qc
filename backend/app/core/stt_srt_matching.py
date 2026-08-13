@@ -1,6 +1,6 @@
 """STT의 실측 타이밍과 한국어 SRT의 검증된 텍스트를 매칭해 합치는 모듈.
 
-한국어 SRT가 있어도 STT는 그대로 돌린다(오디오 실측). 한국어 SRT는 큐
+한국어 SRT가 있어도 STT는 그대로 돈다(오디오 실측). 한국어 SRT는 큐
 단위 타임코드만 줘서 단어별 정확한 발화 시각을 모르고, STT는 정확한
 타이밍은 알지만 텍스트를 잘못 들을 수 있다 — 이 둘을 맞바꿔, STT의
 타이밍에 SRT의 검증된 텍스트를 얹는다(design
@@ -11,6 +11,7 @@ import re
 from itertools import groupby
 from typing import List, Optional, Tuple
 from app.core.ingest import load_srt
+from app.schemas import SegmentText
 
 _LEADING_DASH_RE = re.compile(r"^-\s*")
 _BRACKET_RE = re.compile(r"\[[^\]]*\]")
@@ -65,13 +66,17 @@ def _normalize_for_matching(word: str) -> str:
 
 def _srt_words_from_path(korean_srt_path: str) -> List[dict]:
     """한국어 SRT를 단어 단위로 펼친다. 각 단어는 자기 원본 큐의
-    [cue_start,cue_end]를 같이 들고 있다 — STT가 이 단어를 못 찾았을 때
-    보간 폴백 범위로 쓴다."""
+    [cue_start,cue_end]와 큐 인덱스(cue_index, 0부터)를 같이 들고 있다 —
+    cue_start/cue_end는 STT가 이 단어를 못 찾았을 때 보간 폴백 범위로,
+    cue_index는 나중에 큐 단위로 다시 합칠 때(merge_words_by_korean_cue) 쓴다."""
     words: List[dict] = []
-    for cue in load_srt(korean_srt_path):
+    for cue_index, cue in enumerate(load_srt(korean_srt_path)):
         for line_text in _clean_korean_cue_lines(cue.text):
             for w in line_text.split():
-                words.append({"text": w, "cue_start": cue.start, "cue_end": cue.end})
+                words.append({
+                    "text": w, "cue_start": cue.start, "cue_end": cue.end,
+                    "cue_index": cue_index,
+                })
     return words
 
 
@@ -89,15 +94,19 @@ def _interpolate_gap(gap_words: List[dict], left_time: float, right_time: float)
     for w in gap_words:
         share = duration * (len(w["text"]) / total_chars) if total_chars else duration / len(gap_words)
         word_end = cursor + share
-        result.append({"start": cursor, "end": word_end, "text": w["text"]})
+        result.append({"start": cursor, "end": word_end, "text": w["text"], "cue_index": w["cue_index"]})
         cursor = word_end
     return result
 
 
 def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -> List[dict]:
     """STT 결과(실측 타이밍)와 한국어 SRT(검증된 텍스트)를 매칭해 합친다.
-    반환 모양은 STT transcribe()와 동일해([{"start","end","text"}]) 이후
-    align()/detect_global_offset()을 무수정으로 재사용한다.
+    반환 모양은 STT transcribe()에 cue_index 하나가 추가된 형태다
+    ([{"start","end","text","cue_index"}]) — cue_index는 이 단어가 원래
+    어느 한국어 SRT 큐(0부터 시작하는 인덱스)에 속했는지를 담아,
+    merge_words_by_korean_cue가 단어를 다시 큐 단위로 합칠 수 있게 한다.
+    기존 소비자(pipeline.py의 SegmentText(**s))는 이 추가 키를 조용히
+    무시하므로(Pydantic v2 기본 동작) 영향받지 않는다.
 
     difflib.SequenceMatcher(표준 라이브러리)로 두 단어 시퀀스의 일치
     구간을 찾는다 — STT와 SRT는 같은 발화를 각자 다르게 옮겨적은 것이라
@@ -126,7 +135,10 @@ def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -
     while i < n:
         if confirmed[i] is not None:
             start, end = confirmed[i]
-            result.append({"start": start, "end": end, "text": srt_words[i]["text"]})
+            result.append({
+                "start": start, "end": end, "text": srt_words[i]["text"],
+                "cue_index": srt_words[i]["cue_index"],
+            })
             i += 1
             continue
         j = i
@@ -151,16 +163,35 @@ def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -
             # 순서를 벗어남) — 폭 0으로 축소해 최소한 다음 확정 구간과
             # 안 겹치게 한다.
             right_time = left_time
-        for (cue_start, cue_end), cue_group in groupby(
-                srt_words[i:j], key=lambda w: (w["cue_start"], w["cue_end"])):
+        for cue_index, cue_group in groupby(srt_words[i:j], key=lambda w: w["cue_index"]):
             # 갭이 여러 큐에 걸쳐 있으면(STT가 큐 여러 개를 통째로 놓친 경우),
             # 갭 전체 구간에 균등하게 뭉개지 말고 각 큐 자신의 [cue_start,
             # cue_end]를 확정 앵커 구간 안으로 눌러 담아 그 큐 몫만 보간한다
             # — 그래야 서로 다른 큐의 단어가 실제 큐 위치와 무관하게 뒤섞이지
             # 않는다.
+            cue_group = list(cue_group)
+            cue_start, cue_end = cue_group[0]["cue_start"], cue_group[0]["cue_end"]
             lo = min(max(cue_start, left_time), right_time)
             hi = max(min(cue_end, right_time), lo)
-            result.extend(_interpolate_gap(list(cue_group), lo, hi))
+            result.extend(_interpolate_gap(cue_group, lo, hi))
         i = j
 
     return result
+
+
+def merge_words_by_korean_cue(matched_words: List[dict]) -> List["SegmentText"]:
+    """match_stt_words_to_korean_srt가 반환한 단어별 dict(cue_index 포함)를
+    원래 한국어 SRT 큐 단위로 합쳐, 큐 하나당 SegmentText 하나로 만든다.
+    한국어 SRT 큐를 시간 정렬의 기준 단위로 삼는 align_by_korean_cue(design
+    2026-08-13-korean-srt-cue-based-segmentation-design.md)와 짝을 이룬다.
+    matched_words는 원래 SRT 큐 순서대로(cue_index 오름차순, 같은 큐끼리는
+    연속) 들어온다고 가정한다 — match_stt_words_to_korean_srt의 반환 순서가
+    항상 이 조건을 만족한다."""
+    cues: List[SegmentText] = []
+    for _cue_index, group in groupby(matched_words, key=lambda w: w["cue_index"]):
+        group = list(group)
+        cues.append(SegmentText(
+            start=group[0]["start"], end=group[-1]["end"],
+            text=" ".join(w["text"] for w in group),
+        ))
+    return cues

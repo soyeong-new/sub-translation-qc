@@ -1,5 +1,5 @@
 import pytest
-from app.core.stt_srt_matching import match_stt_words_to_korean_srt
+from app.core.stt_srt_matching import match_stt_words_to_korean_srt, merge_words_by_korean_cue
 
 
 def test_match_uses_srt_punctuated_text_with_stt_real_timing(tmp_path):
@@ -12,7 +12,7 @@ def test_match_uses_srt_punctuated_text_with_stt_real_timing(tmp_path):
     )
     stt_words = [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]
     result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
-    assert result == [{"start": 0.0, "end": 2.0, "text": "안녕하세요!"}]
+    assert result == [{"start": 0.0, "end": 2.0, "text": "안녕하세요!", "cue_index": 0}]
 
 
 def test_match_interpolates_word_stt_missed_between_confirmed_anchors(tmp_path):
@@ -46,7 +46,7 @@ def test_match_drops_stt_word_with_no_srt_counterpart(tmp_path):
         {"start": 0.5, "end": 1.0, "text": "안녕"},
     ]
     result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
-    assert result == [{"start": 0.5, "end": 1.0, "text": "안녕"}]
+    assert result == [{"start": 0.5, "end": 1.0, "text": "안녕", "cue_index": 0}]
 
 
 def test_match_falls_back_to_cue_bounds_when_no_confirmed_anchor_exists(tmp_path):
@@ -167,3 +167,63 @@ def test_match_keeps_multi_cue_gap_words_within_their_own_cue_bounds(tmp_path):
     assert (by_text["처음"]["end"] <= by_text["중간에"]["start"]
             <= by_text["중간에"]["end"] <= by_text["놓친"]["start"]
             <= by_text["놓친"]["end"] <= by_text["마지막"]["start"])
+
+
+def test_match_assigns_increasing_cue_index_per_srt_cue(tmp_path):
+    """서로 다른 SRT 큐에서 온 단어는 서로 다른 cue_index를 가져야 하고,
+    같은 큐 안의 단어들은 같은 cue_index를 공유해야 한다 — 확정 매칭과
+    보간 매칭 둘 다에서."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n안녕 친구\n\n"
+        "2\n00:00:10,000 --> 00:00:12,000\n반가워\n",
+        encoding="utf-8",
+    )
+    stt_words = [
+        {"start": 0.0, "end": 0.5, "text": "안녕"},
+        {"start": 0.5, "end": 1.0, "text": "친구"},
+        {"start": 10.0, "end": 10.5, "text": "반가워"},
+    ]
+    result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
+    by_text = {w["text"]: w["cue_index"] for w in result}
+    assert by_text["안녕"] == by_text["친구"] == 0
+    assert by_text["반가워"] == 1
+
+
+def test_match_assigns_cue_index_to_interpolated_gap_words(tmp_path):
+    """보간(interpolation)으로 채워진 단어도 자기 원래 큐의 cue_index를
+    가져야 한다 — 확정 매칭 단어만 cue_index를 갖는 게 아니다."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:10,000\n안녕 반가워 잘가\n", encoding="utf-8",
+    )
+    stt_words = [
+        {"start": 1.0, "end": 1.5, "text": "안녕"},
+        {"start": 8.0, "end": 8.5, "text": "잘가"},
+    ]
+    result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
+    # "반가워"는 STT가 못 들어 보간된 단어다 — cue_index는 여전히 0이어야 한다.
+    middle = next(w for w in result if w["text"] == "반가워")
+    assert middle["cue_index"] == 0
+
+
+def test_merge_words_by_korean_cue_groups_words_into_one_segment_per_cue():
+    from app.core.stt_srt_matching import merge_words_by_korean_cue
+    matched_words = [
+        {"start": 0.0, "end": 0.5, "text": "안녕", "cue_index": 0},
+        {"start": 0.5, "end": 1.0, "text": "친구", "cue_index": 0},
+        {"start": 2.0, "end": 2.5, "text": "반가워", "cue_index": 1},
+    ]
+    cues = merge_words_by_korean_cue(matched_words)
+    assert len(cues) == 2
+    assert cues[0].start == 0.0
+    assert cues[0].end == 1.0
+    assert cues[0].text == "안녕 친구"
+    assert cues[1].start == 2.0
+    assert cues[1].end == 2.5
+    assert cues[1].text == "반가워"
+
+
+def test_merge_words_by_korean_cue_returns_empty_for_empty_input():
+    from app.core.stt_srt_matching import merge_words_by_korean_cue
+    assert merge_words_by_korean_cue([]) == []
