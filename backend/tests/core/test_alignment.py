@@ -1,6 +1,6 @@
 import pytest
 from app.schemas import SegmentText
-from app.core.alignment import align, detect_global_offset
+from app.core.alignment import align, detect_global_offset, align_by_korean_cue
 
 
 def test_align_matches_overlapping_segments():
@@ -149,3 +149,97 @@ def test_detect_global_offset_ignores_coincidental_match_below_minimum():
 def test_detect_global_offset_returns_zero_for_empty_inputs():
     assert detect_global_offset([], []) == 0.0
     assert detect_global_offset([SegmentText(start=0.0, end=1.0, text="k")], []) == 0.0
+
+
+def test_align_by_korean_cue_matches_one_to_one():
+    korean = [SegmentText(start=0.0, end=2.0, text="안녕")]
+    target = [SegmentText(start=0.1, end=2.1, text="Hola")]
+    pairs = align_by_korean_cue(korean, target)
+    assert len(pairs) == 1
+    assert pairs[0].korean.text == "안녕"
+    assert pairs[0].target.text == "Hola"
+
+
+def test_align_by_korean_cue_merges_multiple_target_cues_into_one_korean_cue():
+    """한국어 SRT 한 큐의 번역이 스페인어 큐 두 개로 나뉘어 있으면, 하나의
+    Segment로 합쳐져야 한다(design §반대 상황) — 원래 한국어에서 한 문장
+    이었던 게 스페인어 큐 경계 때문에 잘리는 문제를 막는다."""
+    korean = [SegmentText(start=0.0, end=2.0, text="이게 다 너 때문이야 알아")]
+    target = [
+        SegmentText(start=0.0, end=1.0, text="Es todo tu culpa."),
+        SegmentText(start=1.0, end=2.0, text="¿Lo sabías?"),
+    ]
+    pairs = align_by_korean_cue(korean, target)
+    assert len(pairs) == 1
+    assert pairs[0].korean.text == "이게 다 너 때문이야 알아"
+    assert pairs[0].target.text == "Es todo tu culpa. ¿Lo sabías?"
+
+
+def test_align_by_korean_cue_merges_multiple_korean_cues_into_one_target_cue():
+    """스페인어 큐 하나가 한국어 큐 여러 개에 걸쳐 있으면, 한국어 쪽을 합쳐
+    하나의 Segment로 만들어 스페인어 텍스트 중복을 막는다(design §핵심
+    사례)."""
+    korean = [
+        SegmentText(start=0.0, end=1.0, text="어 그거?"),
+        SegmentText(start=1.0, end=2.0, text="아 맞다"),
+    ]
+    target = [SegmentText(start=0.0, end=2.0, text="Ah, ¿eso? Ah, cierto.")]
+    pairs = align_by_korean_cue(korean, target)
+    assert len(pairs) == 1
+    assert pairs[0].korean.text == "어 그거? 아 맞다"
+    assert pairs[0].target.text == "Ah, ¿eso? Ah, cierto."
+
+
+def test_align_by_korean_cue_leaves_korean_only_orphan_as_half_pair():
+    """겹치는 스페인어 큐가 없는 한국어 큐(배경 잡담 등)는 target=None인
+    반쪽짜리로 남는다."""
+    korean = [SegmentText(start=0.0, end=1.0, text="배경 잡담")]
+    target = [SegmentText(start=50.0, end=51.0, text="Hola")]
+    pairs = align_by_korean_cue(korean, target)
+    assert len(pairs) == 2
+    kinds = {(p.korean is not None, p.target is not None) for p in pairs}
+    assert (True, False) in kinds
+    assert (False, True) in kinds
+
+
+def test_align_by_korean_cue_leaves_target_only_orphan_as_half_pair():
+    """겹치는 한국어 큐가 없는 스페인어 큐(대응하는 한국어를 못 찾은 실제
+    번역 줄)는 korean=None인 반쪽짜리로 남는다."""
+    korean = [SegmentText(start=0.0, end=1.0, text="안녕")]
+    target = [
+        SegmentText(start=0.0, end=1.0, text="Hola"),
+        SegmentText(start=50.0, end=51.0, text="Texto sin coreano"),
+    ]
+    pairs = align_by_korean_cue(korean, target)
+    orphan = next(p for p in pairs if p.target and p.target.text == "Texto sin coreano")
+    assert orphan.korean is None
+
+
+def test_align_by_korean_cue_preserves_chronological_order():
+    korean = [
+        SegmentText(start=10.0, end=11.0, text="나중"),
+        SegmentText(start=0.0, end=1.0, text="먼저"),
+    ]
+    target = [
+        SegmentText(start=10.0, end=11.0, text="Después"),
+        SegmentText(start=0.0, end=1.0, text="Primero"),
+    ]
+    pairs = align_by_korean_cue(korean, target)
+    assert [p.target.text for p in pairs] == ["Primero", "Después"]
+
+
+def test_align_by_korean_cue_ignores_negligible_boundary_touch():
+    """경계가 아주 살짝(문턱값 미만) 스치는 정도는 진짜 겹침으로 보지 않는다
+    — 타이밍 오차로 인접한 무관한 큐가 잘못 묶이는 걸 막는다."""
+    korean = [SegmentText(start=0.0, end=1.02, text="첫줄")]
+    target = [
+        SegmentText(start=0.0, end=1.0, text="Primero"),
+        SegmentText(start=1.0, end=2.0, text="Segundo"),
+    ]
+    pairs = align_by_korean_cue(korean, target)
+    matched = next(p for p in pairs if p.korean is not None)
+    assert matched.target.text == "Primero"
+
+
+def test_align_by_korean_cue_returns_empty_for_empty_inputs():
+    assert align_by_korean_cue([], []) == []

@@ -11,6 +11,13 @@ from app.core.time_overlap import coverage_ratio
 # 다른 발화 사이 침묵(1초 이상)보다는 작게 잡음 — 오탐이 잦아지면 조정.
 ORPHAN_WORD_GAP_SECONDS = 1.0
 
+# align_by_korean_cue에서 두 큐가 "진짜 겹친다"고 볼 최소 겹침 시간(초).
+# ponytail: 고정값. 타이밍 오차로 경계가 수십 밀리초 스치는 정도(예:
+# 0.02초)는 무관한 인접 큐를 잘못 묶는 원인이 될 수 있어, 그보다는 크게
+# 잡는다. 실제 발화 겹침(동시에 여러 명이 말하는 등)은 보통 이보다 훨씬
+# 길다.
+MIN_CUE_OVERLAP_SECONDS = 0.05
+
 # 전역 오프셋 탐색 범위/해상도 — 영상 앞부분을 잘라 올리는 경우(리캡·인트로
 # 제거 등) 보통 초 단위 몇십 초~몇 분 정도가 흔하므로 ±10분까지 본다.
 # 1차로 성긴 간격(1초)으로 훑어 대략적인 위치를 찾고, 2차로 그 근처를
@@ -170,4 +177,68 @@ def align(korean_words: List[SegmentText],
     for k, group in enumerate(_group_by_gap(leftover)):
         pairs.append(AlignedPair(id=f"pair_korean_{k+1}", korean=_merge_words(group), target=None))
 
+    return pairs
+
+
+def _cues_overlap(a: SegmentText, b: SegmentText) -> bool:
+    return min(a.end, b.end) - max(a.start, b.start) > MIN_CUE_OVERLAP_SECONDS
+
+
+def align_by_korean_cue(korean_cues: List[SegmentText],
+                         target_segments: List[SegmentText]) -> List[AlignedPair]:
+    """한국어 SRT가 있을 때 쓰는 정렬 함수(design 2026-08-13-korean-srt-
+    cue-based-segmentation-design.md). 한국어 SRT 큐와 대상언어 SRT 큐를
+    시간 겹침 기준으로 서로 묶는다(Union-Find로 연결 요소를 찾는다) —
+    한쪽이 다른 쪽 여러 개와 겹치면 전부 하나의 그룹으로 합쳐 텍스트를
+    이어붙인다. 이렇게 하면 "원래 한국어에서 한 문장이었던 게 대상언어
+    큐 경계 때문에 잘리는" 문제(한국어 큐 1개 ↔ 대상언어 큐 여러 개)와
+    "대상언어 한 줄이 여러 한국어 큐에 걸쳐 같은 텍스트가 중복되는" 문제
+    (한국어 큐 여러 개 ↔ 대상언어 큐 1개)를 하나의 규칙으로 없앤다.
+
+    korean_srt_path가 없는 경로는 이 함수를 쓰지 않는다 — "한국어 큐"라는
+    단위 자체가 없어(STT가 잡는 문장 경계는 침묵 기준일 뿐 신뢰할 수
+    없음) 기존 align()(단어를 대상언어 큐에 담는 방식)을 그대로 쓴다.
+
+    겹치는 짝이 없는 큐(내레이션, 화면 밖 대사, 대응 원문을 못 찾은
+    번역 줄 등)는 반쪽짜리 AlignedPair로 남는다 — 검수 화면에서 검수자가
+    "제외" 표시를 할 수 있다(design §신규: 제외 표시)."""
+    n_k, n_t = len(korean_cues), len(target_segments)
+    parent = list(range(n_k + n_t))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for ki, k in enumerate(korean_cues):
+        for ti, t in enumerate(target_segments):
+            if _cues_overlap(k, t):
+                union(ki, n_k + ti)
+
+    groups: dict = {}
+    for ki in range(n_k):
+        groups.setdefault(find(ki), {"korean": [], "target": []})["korean"].append(ki)
+    for ti in range(n_t):
+        groups.setdefault(find(n_k + ti), {"korean": [], "target": []})["target"].append(ti)
+
+    def group_start(group: dict) -> float:
+        starts = [korean_cues[ki].start for ki in group["korean"]]
+        starts += [target_segments[ti].start for ti in group["target"]]
+        return min(starts)
+
+    pairs: List[AlignedPair] = []
+    for i, group in enumerate(sorted(groups.values(), key=group_start)):
+        korean = _merge_words(
+            [korean_cues[ki] for ki in sorted(group["korean"], key=lambda ki: korean_cues[ki].start)]
+        ) if group["korean"] else None
+        target = _merge_words(
+            [target_segments[ti] for ti in sorted(group["target"], key=lambda ti: target_segments[ti].start)]
+        ) if group["target"] else None
+        pairs.append(AlignedPair(id=f"pair_{i+1}", korean=korean, target=target))
     return pairs
