@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Optional
 from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
-from app.core.stt_srt_matching import match_stt_words_to_korean_srt
-from app.core.alignment import align, detect_global_offset
+from app.core.stt_srt_matching import match_stt_words_to_korean_srt, merge_words_by_korean_cue
+from app.core.alignment import align, align_by_korean_cue, detect_global_offset
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
 from app.core.safety_net import shrink_violating_lines
 from app.language_profiles.loader import load_profile
@@ -668,9 +668,14 @@ async def _run_dual_verification_pass(
     resolved_gender/resolved_formality를 프롬프트에 실어보내지 않는다.
     "AI에게 반영해달라고 부탁"하는 대신 "이미 반영된 걸 건드리지 말라"고만
     시스템 프롬프트에서 지시한다(design §격식 지시가 무시됨 — 한 프롬프트가
-    여러 일을 하다 부차 지시를 놓치는 문제를 원천적으로 없앰). 반환값은
-    (findings, warnings)."""
-    filtered_pairs = [p for p in pairs if p.target is not None]
+    여러 일을 하다 부차 지시를 놓치는 문제를 원천적으로 없앰).
+    호출 시점 filtered_pairs는 한국어·대상언어가 둘 다 있는 pair만 포함한다
+    (아래 참고). 반환값은 (findings, warnings)."""
+    # 한국어 원문이 없는 Segment(스페인어만 있는 반쪽짜리, design §스페인어만
+    # 있는 경우)는 AI 이중검증에서 건너뛴다 — 비교할 원문이 없는 상태에서
+    # "오역"을 판단하면 근거 없는 오탐만 만든다. 검수자가 직접 보고 판단해야
+    # 하는 항목으로 남는다(검수 화면에 반쪽짜리로 표시됨).
+    filtered_pairs = [p for p in pairs if p.target is not None and p.korean is not None]
 
     def _to_dict(p) -> dict:
         return {"id": p.id, "korean_text": p.korean.text if p.korean else "",
@@ -918,27 +923,38 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     else:
         korean_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
 
-    # transcribe()가 이제 문장이 아니라 단어 단위 타임코드를 반환한다 —
-    # align()이 대상언어 SRT 큐 시간 구간 안에 담기는 단어를 직접 모은다.
+    # transcribe()가 이제 문장이 아니라 단어 단위 타임코드를 반환한다.
     korean_words = [SegmentText(**s) for s in korean_raw]
 
     # 영상 앞부분을 잘라 올렸는데 SRT는 원본(안 잘린) 기준일 때, 한국어
-    # STT와 대상언어 SRT 사이에 상수 시간차가 생긴다 — align()이 아무리
-    # 잘 짝지어도 애초에 시계가 다르면 소용없으므로, 정렬 전에 이 오프셋을
-    # 찾아 한국어 타임코드를 보정한다. 상수 오프셋이 없으면(0.0) 아무것도
-    # 안 바뀐다.
+    # STT와 대상언어 SRT 사이에 상수 시간차가 생긴다 — align()/align_by_
+    # korean_cue()가 아무리 잘 짝지어도 애초에 시계가 다르면 소용없으므로,
+    # 정렬 전에 이 오프셋을 찾아 한국어 타임코드를 보정한다. 상수 오프셋이
+    # 없으면(0.0) 아무것도 안 바뀐다.
     global_offset = detect_global_offset(korean_words, target_segments)
     if global_offset:
-        korean_words = [
-            SegmentText(start=w.start + global_offset, end=w.end + global_offset, text=w.text)
-            for w in korean_words
+        korean_raw = [
+            {**s, "start": s["start"] + global_offset, "end": s["end"] + global_offset}
+            for s in korean_raw
         ]
+        korean_words = [SegmentText(**s) for s in korean_raw]
         warnings.append({
             "stage": "타임코드 자동 보정",
             "message": f"한국어 STT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
         })
 
-    pairs = align(korean_words, target_segments)
+    # 한국어 SRT가 있으면 큐 단위 정렬(design 2026-08-13-korean-srt-cue-
+    # based-segmentation-design.md)을 쓴다 — 스페인어 큐 경계 때문에
+    # 한국어 문장이 잘리는 문제를 없앤다. korean_raw에 cue_index가 없으면
+    # (예: korean_srt_path 없이 만들어진 옛 캐시를 korean_srt_path 있는
+    # 요청에 재사용하는 경우) 안전하게 기존 단어 단위 align()으로 폴백한다
+    # — cue_index가 필수 전제인 merge_words_by_korean_cue가 KeyError로
+    # 죽는 대신, 정확도는 조금 낮아도 항상 동작하는 경로를 택한다.
+    if korean_srt_path and korean_raw and "cue_index" in korean_raw[0]:
+        korean_cues = merge_words_by_korean_cue(korean_raw)
+        pairs = align_by_korean_cue(korean_cues, target_segments)
+    else:
+        pairs = align(korean_words, target_segments)
 
     # 온점 자동보정은 다른 모든 단계보다 먼저 적용한다 — 이후 단계가 보정된
     # 텍스트를 기준으로 작업하도록.

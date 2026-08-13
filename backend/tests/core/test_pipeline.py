@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch
-from app.core.pipeline import run_pipeline
+from app.core.pipeline import run_pipeline, run_pipeline_phase1
 from app.providers.mock import MockProvider
 
 TARGET_SRT = """1
@@ -1517,3 +1517,97 @@ async def test_run_grammar_necessity_check_falls_back_to_unresolved_group_when_l
     groups = resolutions[0]["resolved_gender_groups"]
     assert groups[0]["words"] == ["cansado"]
     assert groups[0]["gender"] is None
+
+
+@pytest.mark.asyncio
+async def test_pipeline_merges_sentence_split_across_target_cues_with_korean_srt(tmp_path):
+    """핵심 회귀(사용자 재현): 한국어 SRT 한 큐의 번역이 스페인어 SRT
+    큐 두 개로 나뉘어 있으면, 지금은(큐 기반 정렬) 하나의 Segment로
+    합쳐져야 한다 — 예전(단어 단위)엔 한국어 문장이 중간에서 잘렸다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nEs todo tu culpa.\n\n"
+        "2\n00:00:01,000 --> 00:00:02,000\n¿Lo sabías?\n",
+        encoding="utf-8",
+    )
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n이게 다 너 때문이야\n", encoding="utf-8",
+    )
+
+    class KoreanMockProvider(MockProvider):
+        async def transcribe(self, audio_path):
+            return [
+                {"start": 0.0, "end": 0.5, "text": "이게"},
+                {"start": 0.5, "end": 1.0, "text": "다"},
+                {"start": 1.0, "end": 1.5, "text": "너"},
+                {"start": 1.5, "end": 2.0, "text": "때문이야"},
+            ]
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=KoreanMockProvider(),
+            korean_srt_path=str(ko_srt_path),
+        )
+
+    korean_pairs = [p for p in result["pairs"] if p.korean is not None]
+    assert len(korean_pairs) == 1
+    # MockProvider가 격식 자동판정 결과를 "[informal] " 접두어로 표시한다
+    # (한국어 "때문이야"가 반말 어미라 자동 확정됨) — 큐 기반 정렬로 두 스페인어
+    # 큐가 하나로 합쳐졌는지가 이 테스트의 핵심이라, 접두어는 그대로 반영한다.
+    assert korean_pairs[0].target.text == "[informal] Es todo tu culpa. ¿Lo sabías?"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_falls_back_to_word_align_when_cached_segments_lack_cue_index(tmp_path):
+    """회귀: korean_srt_path가 주어졌어도, 캐시된 korean_segments가
+    (구버전 캐시 등으로) cue_index를 안 갖고 있으면 크래시 대신 기존
+    단어 단위 align()으로 안전하게 폴백해야 한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n안녕하세요\n", encoding="utf-8",
+    )
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy"):
+        result = await run_pipeline_phase1(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+            cached_korean_segments=[{"start": 0.0, "end": 2.0, "text": "안녕하세요"}],
+            cached_video_proxy_path="/fake/cached_proxy.mp4",
+            korean_srt_path=str(ko_srt_path),
+        )
+
+    mock_extract.assert_not_called()
+    korean_pair = next(p for p in result["pairs"] if p.korean is not None)
+    assert korean_pair.korean.text == "안녕하세요"
+
+
+@pytest.mark.asyncio
+async def test_run_dual_verification_pass_skips_pairs_without_korean_text():
+    """한국어 원문이 없는 pair(스페인어만 있는 반쪽짜리)는 S2 AI 검증
+    자체를 건너뛰어야 한다 — 비교할 원문이 없는 상태에서 오역 여부를
+    판단하면 근거 없는 오탐만 만든다(design §스페인어만 있는 경우)."""
+    from app.core.pipeline import _run_dual_verification_pass
+    pairs = [
+        AlignedPair(id="p1", korean=SegmentText(start=0.0, end=1.0, text="안녕"),
+                    target=SegmentText(start=0.0, end=1.0, text="BAD_TRANSLATION uno")),
+        AlignedPair(id="p2", korean=None,
+                    target=SegmentText(start=1.0, end=2.0, text="BAD_TRANSLATION dos")),
+    ]
+    findings, warnings = await _run_dual_verification_pass(
+        pairs, MockProvider(), {"language": "es", "variant": "LATAM"},
+        [], "", "", "tv1", {},
+    )
+    assert warnings == []
+    segment_ids = {f.segment_id for f in findings}
+    assert "p1" in segment_ids
+    assert "p2" not in segment_ids

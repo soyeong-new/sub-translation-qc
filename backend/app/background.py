@@ -32,7 +32,7 @@ ANALYSIS_TIMEOUT_SECONDS = 3600
 # 반환 단위가 바뀌면(문장→단어 전환이 그 예) 이 값을 올려서, 옛 형태로
 # 저장된 캐시를 자동으로 무효화한다 — 사람이 DB를 직접 안 지워도 다음
 # 분석 때 알아서 다시 STT를 돈다.
-STT_CACHE_GRANULARITY = "word"
+STT_CACHE_GRANULARITY = "word_with_korean_cue_index"
 
 
 async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None:
