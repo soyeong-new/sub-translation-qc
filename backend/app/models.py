@@ -93,6 +93,14 @@ class Segment(Base):
     # 확정된 성별을 그 토큰에만 정확히 재적용할 수 있게 한다. 채워져 있으면
     # resolved_gender_raw는 쓰지 않는다.
     resolved_gender_groups_raw: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # 검수자가 "이 줄은 최종 자막에서 뺀다"고 결정했는지(design
+    # 2026-08-13-korean-srt-cue-based-segmentation-design.md §신규: 제외
+    # 표시). 겹치는 짝이 없는 반쪽짜리 Segment(내레이션, 화면 밖 대사,
+    # 대응 원문을 못 찾은 번역 줄 등)에 쓰인다. 대상언어 텍스트가 있는
+    # Segment가 제외되면 최종 SRT에서 그 큐가 통째로 빠진다(export.py).
+    # 대상언어가 없는 Segment는 원래도 최종 SRT에 안 나가므로, 이 값은
+    # 검수 화면에서 "처리됨" 표시 용도로만 쓰인다.
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class FindingRow(Base):
