@@ -27,7 +27,10 @@ async def export_target_version(target_version_id: str):
             select(FindingRow).where(FindingRow.target_version_id == target_version_id)
         )).scalars().all()
 
-    segments = [{"id": s.id, "start": s.start, "end": s.end, "text": s.target_text} for s in seg_rows]
+    segments = [
+        {"id": s.id, "start": s.start, "end": s.end, "text": s.target_text, "excluded": s.excluded}
+        for s in seg_rows
+    ]
     # reviewed_at도 함께 넘긴다: 같은 세그먼트에 자동보정과 검수자 판단이 동시에
     # 걸린 경우 어느 쪽이 최종 텍스트가 되는지 결정하는 데 쓰인다 (검수자 우선).
     findings = [{"segment_id": f.segment_id, "status": f.status,

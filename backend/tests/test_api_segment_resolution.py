@@ -174,3 +174,48 @@ async def test_list_flagged_segments_returns_404_for_nonexistent_target_version(
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.get("/target-versions/does-not-exist/flagged-segments")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_exclude_segment_sets_excluded_true():
+    _tv_id, seg_id = await _make_segment()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/segments/{seg_id}/exclude", json={"excluded": True})
+        assert r.status_code == 200
+        assert r.json()["excluded"] is True
+
+    async with async_session() as session:
+        seg = await session.get(Segment, seg_id)
+        assert seg.excluded is True
+
+
+@pytest.mark.asyncio
+async def test_exclude_segment_can_be_toggled_back_off():
+    _tv_id, seg_id = await _make_segment(excluded=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/segments/{seg_id}/exclude", json={"excluded": False})
+        assert r.status_code == 200
+        assert r.json()["excluded"] is False
+
+
+@pytest.mark.asyncio
+async def test_exclude_segment_returns_404_for_missing_segment():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post("/segments/does-not-exist/exclude", json={"excluded": True})
+        assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_segments_includes_excluded_field():
+    tv_id, _seg_id = await _make_segment(excluded=True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/segments")
+        assert r.status_code == 200
+        assert r.json()[0]["excluded"] is True

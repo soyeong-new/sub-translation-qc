@@ -32,7 +32,16 @@ ANALYSIS_TIMEOUT_SECONDS = 3600
 # 반환 단위가 바뀌면(문장→단어 전환이 그 예) 이 값을 올려서, 옛 형태로
 # 저장된 캐시를 자동으로 무효화한다 — 사람이 DB를 직접 안 지워도 다음
 # 분석 때 알아서 다시 STT를 돈다.
-STT_CACHE_GRANULARITY = "word"
+STT_CACHE_GRANULARITY = "word_with_korean_cue_index"
+# 원본 영상은 첫 분석 성공 직후 삭제된다(재업로드 경로 없음) — 그래서
+# granularity 태그가 안 맞는다고 캐시를 무조건 버리면, 이미 분석된
+# 에피소드는 재분석/다른 언어 추가 시 STT를 다시 돌릴 소스 자체가 없어서
+# 그대로 실패한다. 새로 쓰는 태그는 이 값 그대로 유지하되(새 캐시는 계속
+# cue_index를 포함하게), "읽을 때 유효하다고 인정하는" 태그 집합은 옛
+# 태그도 같이 받아준다 — cue_index 없는 옛 캐시는 pipeline.py의 기존
+# 폴백이 단어 단위 align()으로 안전하게 처리한다(개선은 못 받지만 실패는
+# 안 한다).
+READABLE_STT_CACHE_GRANULARITIES = ("word", STT_CACHE_GRANULARITY)
 
 
 async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None:
@@ -47,13 +56,14 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             episode = await session.get(Episode, tv.episode_id)
 
         provider = get_provider()
-        # 캐시가 지금 기대하는 형태(단어 단위)로 저장된 게 아니면 무시하고
-        # 다시 STT를 돈다 — granularity 태그 없는(옛 문장 단위) 캐시는
-        # align()에 그대로 넣으면 여전히 동작은 하지만(문장 하나짜리 "단어"로
-        # 취급됨) 이번에 고친 정밀 정렬의 이득을 못 본다.
+        # READABLE_STT_CACHE_GRANULARITIES에 속한 형태(옛 "word" 단위든 새
+        # cue_index 포함 단위든)의 캐시는 재사용한다 — 원본 영상이 이미
+        # 삭제됐을 수 있어(재업로드 경로 없음) 캐시가 유일한 STT 소스인
+        # 경우가 흔하다. "word" 캐시는 cue_index가 없어 pipeline.py가 옛
+        # 단어 단위 align()으로 폴백한다(개선은 못 받지만 실패는 안 한다).
         cached_segments = (
             episode.stt_cache.get("segments")
-            if episode.stt_cache and episode.stt_cache.get("granularity") == STT_CACHE_GRANULARITY
+            if episode.stt_cache and episode.stt_cache.get("granularity") in READABLE_STT_CACHE_GRANULARITIES
             else None
         )
         phase1 = await asyncio.wait_for(

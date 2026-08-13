@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from app.core.export import assemble_final_srt, compute_stats
+from app.core.export import assemble_final_srt, compute_stats, safety_net_check
 
 
 def test_assemble_final_srt_uses_final_text_for_approved_findings():
@@ -95,3 +95,28 @@ def test_reviewer_modified_rule_finding_beats_auto_applied_rule_fix():
         srt = assemble_final_srt(segments, findings)
         assert "texto acortado" in srt
         assert "BAD aquí..." not in srt
+
+
+def test_assemble_final_srt_skips_excluded_segments():
+    segments = [
+        {"id": "p1", "start": 0.0, "end": 2.0, "text": "hola", "excluded": False},
+        {"id": "p2", "start": 2.0, "end": 4.0, "text": "texto sin coreano", "excluded": True},
+    ]
+    srt = assemble_final_srt(segments, [])
+    assert "hola" in srt
+    assert "texto sin coreano" not in srt
+    assert srt.count("-->") == 1
+
+
+def test_assemble_final_srt_includes_segment_when_excluded_is_false_or_missing():
+    """excluded 필드가 아예 없는(레거시) segment dict도 안전하게 처리해야
+    한다 — .get()으로 접근하므로 KeyError 없이 기본적으로 포함된다."""
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "hola"}]
+    srt = assemble_final_srt(segments, [])
+    assert "hola" in srt
+
+
+def test_safety_net_check_skips_excluded_segments():
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "a" * 100, "excluded": True}]
+    violations = safety_net_check(segments, [])
+    assert violations == []

@@ -16,14 +16,19 @@ from app.main import app
 from app.db import engine, async_session
 from app.models import Base, Segment, ExportRow
 from app.core.uploads import MEDIA_ROOT
+from app.providers.mock import MockProvider
 
-# MockProvider.transcribe는 한국어 세그먼트를 [0.0, 2.0] 하나만 돌려준다.
-# 아래 SRT의 대상언어 큐는 어느 것도 그 구간과 겹치지 않으므로:
-#   - 한국어 세그먼트는 짝을 못 찾아 target_text가 빈 "고아" 세그먼트가 된다
-#     (Fix 3: 이건 export에서 빈 큐로 나가면 안 된다)
-#   - 두 대상언어 큐는 짝 없는 target-only 세그먼트로 뒤에 붙는다
-# 1번 큐의 온점 4개는 자동보정 대상이라 formatting finding을 만들고,
-# 2번 큐는 두 줄짜리라 Fix 2(줄바꿈 보존)를 전 구간에서 검증한다.
+# MockProvider.transcribe는 기본적으로 한국어 세그먼트를 [0.0, 2.0] 하나만
+# 돌려주는데, 이 테스트는 patch(_transcribe_with_extra_korean_word)로 BAD_
+# TRANSLATION 큐([3,5])와 겹치는 단어를 하나 더 추가한다 — 한국어 원문이
+# 없는 pair는 S2(AI 이중검증)를 건너뛰므로, 오역 finding 흐름을 검증하려면
+# 그 pair에 한국어가 있어야 한다.
+#   - [0.0, 2.0] 단어는 그대로 짝을 못 찾아 target_text가 빈 "고아"
+#     세그먼트가 된다(Fix 3: 이건 export에서 빈 큐로 나가면 안 된다)
+#   - [3.0, 4.0] 단어는 1번 큐(BAD_TRANSLATION)와 짝지어져 그 pair가
+#     한국어 원문을 갖게 되고, S2가 정상적으로 오역을 지적한다
+#   - 2번 큐(두 줄짜리)는 짝 없는 target-only 세그먼트로 남아 Fix 2
+#     (줄바꿈 보존)와 반쪽짜리 처리를 전 구간에서 검증한다
 TARGET_SRT = """1
 00:00:03,000 --> 00:00:05,000
 BAD_TRANSLATION aquí....
@@ -33,6 +38,20 @@ BAD_TRANSLATION aquí....
 Primera línea corta
 Segunda línea corta
 """
+
+
+async def _transcribe_with_extra_korean_word(self, audio_path):
+    """기본 MockProvider.transcribe([0.0,2.0] 한 단어)에 하나를 더해 —
+    BAD_TRANSLATION 큐([3,5])와 겹치는 한국어 단어를 만든다. 한국어 원문이
+    없는 pair는 S2(AI 이중검증)에서 건너뛰므로(design 2026-08-13-korean-
+    srt-cue-based-segmentation-design.md §스페인어만 있는 경우), 이 테스트가
+    검증하려는 "오역 finding 흐름"이 실제로 발생하려면 그 pair에 한국어
+    텍스트가 있어야 한다. [0.0,2.0] 단어는 그대로 둬 한국어 전용 고아
+    세그먼트 커버리지를 유지한다."""
+    return [
+        {"start": 0.0, "end": 2.0, "text": "안녕하세요"},
+        {"start": 3.0, "end": 4.0, "text": "hola"},
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +74,8 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
     transport = ASGITransport(app=app)
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value=fake_proxy_path), \
-         patch("app.background.delete_original_video", return_value=None):
+         patch("app.background.delete_original_video", return_value=None), \
+         patch.object(MockProvider, "transcribe", _transcribe_with_extra_korean_word):
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1) 작품
             r = await client.post("/titles", json={"name": "The Peach Tree", "type": "movie"})
@@ -118,7 +138,7 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             r = await client.get(f"/target-versions/{tv_id}/segments")
             assert r.status_code == 200
             segments = r.json()
-            # 한국어 고아 1개 + 대상언어 전용 2개
+            # 한국어 고아 1개 + 한국어와 짝지어진 세그먼트 1개 + 대상언어 전용 1개
             assert len(segments) == 3
             assert sum(1 for s in segments if s["target_text"] == "") == 1
             # Fix 2: 두 줄 큐의 줄바꿈이 DB까지 살아 있어야 한다.

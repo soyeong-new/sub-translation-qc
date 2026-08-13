@@ -57,6 +57,10 @@ class ResolveFormalityIn(BaseModel):
     formality_level: Literal["formal", "informal"]
 
 
+class ExcludeSegmentIn(BaseModel):
+    excluded: bool
+
+
 class ReviewActionIn(BaseModel):
     action: Literal["approved", "rejected", "modified"]
     reviewer_name: str
@@ -117,7 +121,8 @@ async def list_segments(target_version_id: str):
              # isGenderResolved와 같은 필드).
              "gender_check_needed": s.gender_check_needed,
              "resolved_gender_raw": s.resolved_gender_raw,
-             "resolved_gender_groups_raw": s.resolved_gender_groups_raw}
+             "resolved_gender_groups_raw": s.resolved_gender_groups_raw,
+             "excluded": s.excluded}
             for s in rows
         ]
 
@@ -141,7 +146,8 @@ async def list_flagged_segments(target_version_id: str):
              "formality_check_needed": s.formality_check_needed,
              "resolved_gender_raw": s.resolved_gender_raw,
              "resolved_formality_raw": s.resolved_formality_raw,
-             "resolved_gender_groups_raw": s.resolved_gender_groups_raw}
+             "resolved_gender_groups_raw": s.resolved_gender_groups_raw,
+             "excluded": s.excluded}
             for s in rows
         ]
 
@@ -198,6 +204,23 @@ async def resolve_formality(segment_id: str, payload: ResolveFormalityIn):
         seg.resolved_formality_raw = payload.formality_level
         await session.commit()
         return {"id": seg.id, "resolved_formality_raw": seg.resolved_formality_raw}
+
+
+@router.post("/segments/{segment_id}/exclude")
+async def exclude_segment(segment_id: str, payload: ExcludeSegmentIn):
+    """검수자가 겹치는 짝이 없는 반쪽짜리 Segment를 최종 자막에서 뺄지
+    결정한다(design 2026-08-13-korean-srt-cue-based-segmentation-design.md
+    §신규: 제외 표시). 대상언어 텍스트가 있는 Segment를 제외하면 최종 SRT
+    에서 그 구간이 통째로 빠진다(export.py의 assemble_final_srt). 대상언어가
+    없는 Segment는 원래도 최종 SRT에 안 나가므로, 이 값은 검수 화면에서
+    "처리됨" 표시 용도로만 쓰인다."""
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        seg.excluded = payload.excluded
+        await session.commit()
+        return {"id": seg.id, "excluded": seg.excluded}
 
 
 @router.post("/findings/{finding_id}/review-action")

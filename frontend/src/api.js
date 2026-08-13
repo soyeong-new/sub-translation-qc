@@ -107,6 +107,13 @@ export const resolveFormality = (segmentId, formalityLevel) =>
     body: JSON.stringify({ formality_level: formalityLevel }),
   });
 
+// 겹치는 짝이 없는 반쪽짜리 Segment를 최종 자막에서 뺄지 결정한다.
+export const excludeSegment = (segmentId, excluded) =>
+  request(`/segments/${segmentId}/exclude`, {
+    method: "POST",
+    body: JSON.stringify({ excluded }),
+  });
+
 export const correctStt = (segmentId, correctedText, reviewerName) =>
   request(`/segments/${segmentId}/correct-stt`, {
     method: "POST",

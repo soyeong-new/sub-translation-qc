@@ -13,6 +13,7 @@ import {
   correctStt,
   resolveGender,
   resolveGenderGroup,
+  excludeSegment,
 } from "../api.js";
 import { GenderQuestion, isGenderResolved } from "./FlaggedSegmentStepper.jsx";
 
@@ -825,6 +826,8 @@ export default function ReviewView({ targetVersionId, onBack }) {
   // finding 카드에 STT 한국어 원문을 참고용으로 보여주고 미리보기 재생
   // 구간(start/end)을 얻기 위한 세그먼트 목록.
   const [segments, setSegments] = useState(null);
+  const [excludePendingId, setExcludePendingId] = useState(null);
+  const [excludeErrors, setExcludeErrors] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -991,6 +994,24 @@ export default function ReviewView({ targetVersionId, onBack }) {
     }
   }
 
+  // 겹치는 짝이 없는 반쪽짜리 Segment를 최종 자막에서 뺄지(또는 되돌릴지)
+  // 검수자가 결정한다.
+  async function handleToggleExclude(segmentId, nextExcluded) {
+    setExcludeErrors((prev) => ({ ...prev, [segmentId]: null }));
+    setExcludePendingId(segmentId);
+    try {
+      await excludeSegment(segmentId, nextExcluded);
+      setSegments(await listSegments(targetVersionId));
+    } catch (err) {
+      setExcludeErrors((prev) => ({
+        ...prev,
+        [segmentId]: err.message ?? "요청 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setExcludePendingId(null);
+    }
+  }
+
   function startEdit(finding) {
     setEditingId(finding.id);
     // 이미 한 번 수정 저장된 finding을 다시 열 때는 검수자의 직전 편집(final_text)을
@@ -1115,6 +1136,13 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const segmentsById = segments
     ? Object.fromEntries(segments.map((s) => [s.id, s]))
     : {};
+
+  // 겹치는 짝이 없는 반쪽짜리 Segment(한국어만 있거나 대상언어만 있는
+  // 경우) — 시간 순으로 보여준다.
+  const halfPairSegments = segments
+    ? segments.filter((s) => !s.korean_text?.trim() || !s.target_text?.trim())
+        .sort((a, b) => a.start - b.start)
+    : [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -1289,6 +1317,66 @@ export default function ReviewView({ targetVersionId, onBack }) {
                 </ul>
               )}
             </section>
+
+            {halfPairSegments.length > 0 && (
+              <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
+                <div className="mb-4">
+                  <h2 className="text-lg font-semibold text-card-foreground">
+                    확인 필요 (짝 없는 줄) {halfPairSegments.length}건
+                  </h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    한국어와 대상언어 중 한쪽만 있어 자동으로 짝을 못 찾은 줄입니다.
+                    필요 없는 줄은 제외할 수 있습니다.
+                  </p>
+                </div>
+                <ul className="space-y-3">
+                  {halfPairSegments.map((seg) => {
+                    const hasTarget = Boolean(seg.target_text?.trim());
+                    const pending = excludePendingId === seg.id;
+                    return (
+                      <li
+                        key={seg.id}
+                        className={`rounded-md border p-3 ${
+                          seg.excluded ? "border-border bg-muted/30 opacity-60" : "border-border bg-muted/10"
+                        }`}
+                      >
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                            {hasTarget ? "대상언어만 있음 (최종 자막에 포함됨)" : "한국어만 있음 (최종 자막에 영향 없음)"}
+                          </span>
+                          {seg.excluded && (
+                            <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                              제외됨
+                            </span>
+                          )}
+                        </div>
+                        {seg.korean_text && (
+                          <p className="whitespace-pre-wrap text-sm text-foreground">{seg.korean_text}</p>
+                        )}
+                        {seg.target_text && (
+                          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{seg.target_text}</p>
+                        )}
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            disabled={pending}
+                            onClick={() => handleToggleExclude(seg.id, !seg.excluded)}
+                            className={`${btnBase} border border-input bg-background px-2.5 py-1 text-xs text-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50`}
+                          >
+                            {pending && <Spinner />}
+                            {seg.excluded ? "제외 취소" : "제외"}
+                          </button>
+                          {excludeErrors[seg.id] && (
+                            <span role="status" aria-live="polite" className="text-xs text-destructive">
+                              {excludeErrors[seg.id]}
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
 
             <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">

@@ -269,7 +269,7 @@ async def test_analyze_and_save_persists_stt_cache_on_first_success(tmp_path, mo
         episode = await session.get(Episode, tv.episode_id)
         assert episode.stt_cache == {
             "segments": [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}],
-            "granularity": "word",
+            "granularity": background.STT_CACHE_GRANULARITY,
         }
         assert episode.video_proxy_path == "/fake/proxy.mp4"
 
@@ -287,7 +287,7 @@ async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, 
         episode = await session.get(Episode, tv.episode_id)
         episode.stt_cache = {
             "segments": [{"start": 0.0, "end": 1.0, "text": "캐시된 단어"}],
-            "granularity": "word",
+            "granularity": background.STT_CACHE_GRANULARITY,
         }
         episode.video_proxy_path = "/fake/cached_proxy.mp4"
         await session.commit()
@@ -334,7 +334,7 @@ async def test_analyze_and_save_ignores_stale_stt_cache_missing_granularity_tag(
     async with async_session() as session:
         tv = await session.get(TargetVersion, tv_id)
         episode = await session.get(Episode, tv.episode_id)
-        assert episode.stt_cache["granularity"] == "word"
+        assert episode.stt_cache["granularity"] == background.STT_CACHE_GRANULARITY
         segs = (await session.execute(
             select(Segment).where(Segment.target_version_id == tv_id)
         )).scalars().all()
@@ -399,7 +399,7 @@ async def test_analyze_and_save_persists_detected_video_offset(tmp_path, monkeyp
                 {"start": e["start"] - 55.0 + 1.0, "end": e["start"] - 55.0 + 1.5, "text": f"단어{i}"}
                 for i, e in enumerate(entries)
             ],
-            "granularity": "word",
+            "granularity": background.STT_CACHE_GRANULARITY,
         }
         episode.video_proxy_path = "/fake/cached_proxy.mp4"
         await session.commit()
