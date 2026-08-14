@@ -9,10 +9,13 @@ from app.providers.gpt_client import GptClient
 class LiveModelProvider(ModelProvider):
     def __init__(self, claude_api_key: str, claude_model: str,
                  gpt_api_key: str, gpt_model: str,
+                 gpt_light_model: str = None,
                  gpt_transcribe_model: str = "gpt-4o-mini-transcribe"):
         self._claude = ClaudeClient(api_key=claude_api_key, model=claude_model)
         self._gpt = GptClient(api_key=gpt_api_key, model=gpt_model,
+                               light_model=gpt_light_model,
                                transcribe_model=gpt_transcribe_model)
+
 
     async def transcribe(self, audio_path: str) -> List[dict]:
         return await self._gpt.transcribe(audio_path)

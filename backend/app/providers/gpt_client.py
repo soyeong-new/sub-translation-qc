@@ -175,14 +175,16 @@ def _language_label(profile: dict) -> str:
 
 
 class GptClient:
-    def __init__(self, api_key: str, model: str, transcribe_model: str = "whisper-1"):
+    def __init__(self, api_key: str, model: str, light_model: str = None, transcribe_model: str = "whisper-1"):
         self._model = model
+        self._light_model = light_model or model
         self._transcribe_model = transcribe_model
         self._sdk_client = AsyncOpenAI(api_key=api_key)
 
-    async def _call(self, system: str, user: str, key: str = "findings", label: str = "") -> List[dict]:
+    async def _call(self, system: str, user: str, key: str = "findings", label: str = "", model_override: str = None) -> List[dict]:
+        target_model = model_override or self._model
         response = await self._sdk_client.chat.completions.create(
-            model=self._model,
+            model=target_model,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system},
@@ -254,7 +256,7 @@ class GptClient:
             "전달하는 것을 우선하라.\n" + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="역번역")
+        return await self._call(system, user, key="results", label="역번역", model_override=self._light_model)
 
     async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -265,7 +267,7 @@ class GptClient:
             + _EQUIVALENCE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="동등성 확인")
+        return await self._call(system, user, key="results", label="동등성 확인", model_override=self._light_model)
 
     async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -276,7 +278,7 @@ class GptClient:
             "알려줘라.\n" + _GLOSS_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="단어 뜻풀이")
+        return await self._call(system, user, key="results", label="단어 뜻풀이", model_override=self._light_model)
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -291,20 +293,15 @@ class GptClient:
             "조정하는 게 유일한 임무다.\n" + _FORMALITY_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="격식 반영")
+        return await self._call(system, user, key="results", label="격식 반영", model_override=self._light_model)
 
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
-        """씬 분할 전용 콜. json_schema strict 모드로 출력 형식을 API 레벨에서
-        강제한다 — correct_primary/verify_and_refine이 쓰는 json_object 모드보다
-        한 단계 더 강한 보장이다(스키마를 벗어난 키/누락이 애초에 생성되지
-        않음). Claude와 교차검증하지 않는 이유는 씬 경계 판단이 두 모델의
-        일치 여부로 신뢰도를 매길 "정답 있는 판정"이 아니라 기계적 전처리라서다
-        (호출자가 경계 유효성 자체는 별도로 검증한다)."""
+        """씬 분할 전용 콜."""
         language_label = _language_label(profile)
         system = f"{_SCENE_SPLIT_SYSTEM_PREFIX} 대상언어는 {language_label}이다."
         user = json.dumps(pairs, ensure_ascii=False)
         response = await self._sdk_client.chat.completions.create(
-            model=self._model,
+            model=self._light_model,
             response_format=_SCENE_SPLIT_SCHEMA,
             messages=[
                 {"role": "system", "content": system},
@@ -324,15 +321,12 @@ class GptClient:
             raise ValueError(f"GPT 씬 분할 응답이 기대한 JSON 형태가 아님: {preview}") from exc
 
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
-        """성별 문맥 판단 전용 콜. split_scenes와 동일하게 json_schema strict
-        모드로 출력 형식을 API 레벨에서 강제한다 — 후보 단어 개수만큼 정확히
-        구조화된 배열이 필요해서, correct_primary/verify_and_refine이 쓰는
-        느슨한 json_object 모드보다 이 형태가 더 안전하다."""
+        """성별 문맥 판단 전용 콜."""
         language_label = _language_label(profile)
         system = f"{_GENDER_RESOLUTION_SYSTEM_PREFIX} 스페인어는 {language_label}이다."
         user = json.dumps(items, ensure_ascii=False)
         response = await self._sdk_client.chat.completions.create(
-            model=self._model,
+            model=self._light_model,
             response_format=_GENDER_RESOLUTION_SCHEMA,
             messages=[
                 {"role": "system", "content": system},
@@ -350,6 +344,7 @@ class GptClient:
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             preview = text[:200] if text else "<empty>"
             raise ValueError(f"GPT 성별 문맥 판단 응답이 기대한 JSON 형태가 아님: {preview}") from exc
+
 
     async def transcribe(self, audio_path: str) -> List[dict]:
         """audio_path 하나의 STT 결과를 단어 단위 타임코드 리스트로 반환한다
