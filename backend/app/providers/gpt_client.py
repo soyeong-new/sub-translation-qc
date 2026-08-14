@@ -207,27 +207,29 @@ class GptClient:
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
                                  extra_instruction: str = "") -> List[dict]:
-        """correct_primary(Claude)와 대칭적으로 원본을 처음부터 독립적으로
-        검토한다. Claude가 이 텍스트를 이미 봤는지, 뭘 고쳤는지는 전혀 모른다
-        — 이전 교정 여부를 알려주면 앵커링 편향으로 독립적 재판단보다 그냥
-        승인하는 쪽으로 기울어 정확도가 떨어진다(파이프라인이 두 모델의
-        일치/불일치를 이후 단계에서 병합해 신뢰도 신호로 쓴다)."""
         language_label = _language_label(profile)
         naturalness_instruction = (profile.get("naturalness_check") or {}).get("llm_instruction", "")
 
         system = (
-            f"너는 한국어-{language_label} 자막의 검증자다. korean_text(원문)와 "
-            "target_text를 나란히 놓고 다음 기준으로 처음부터 독립적으로 검증·"
-            "교정하라: 사전에 없는 애매한 비속어, 번역정확성, 문화맥락, 뉘앙스어조, "
-            "자연스러운흐름(직역 지양, 한국어 어순을 그대로 따라간 부분을 찾아 "
-            "고칠 것), 함축의미, 로컬라이제이션(그 나라 문화에 맞는 표현인지). "
-            "성별 표시 형용사/분사의 형태나 격식(존댓말·반말)은 이미 앞 단계"
-            "(파이썬의 결정론적 문법 반영 + 격식 전담 호출)에서 확정되어 "
-            "target_text에 반영된 상태다 — 이 값을 판단하거나 새로 바꾸는 "
-            "건 네 역할이 아니다. 다른 문제(오역/뉘앙스/직역투 등)를 고칠 "
-            "때 이미 반영된 성별 형태와 격식을 절대 건드리지 마라(그대로 "
-            "유지). 새 인물 이름의 표기 통일도 다루지 마라(별도 사전으로 "
-            "관리). "
+            f"너는 한국어-{language_label} 자막의 전문 번역 검수자다. "
+            "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(스페인어 번역문)를 검증하라. "
+            "각 세그먼트에 대해 아래 [5단계 순차 검증 체크리스트]를 1번부터 5번까지 순서대로 하나씩 독립적으로 검토하여 교정 사항(findings)을 작성하라.\n\n"
+            "[5단계 순차 검증 체크리스트]\n"
+            "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
+            "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
+            "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
+            "2. 오역 및 핵심 의미 누락 (category: \"mistranslation\"):\n"
+            "   - 기준: korean_text의 실제 의미와 target_text의 번역 의미가 다르게 와전되었거나, 문장의 핵심 의미가 생략되었는가?\n"
+            "   - 교정 지침: 원문의 뜻을 왜곡 없이 정확하게 전달하도록 교정하라.\n"
+            "3. 어색한 어조 및 직역투 (category: \"unnatural_style\" 또는 \"nuance_tone\"):\n"
+            "   - 기준: 문법은 맞지만 한국어 어순/표현을 그대로 따라간 직역투라 스페인어로서 어색하거나, 캐릭터 어조가 원문과 안 맞는가?\n"
+            "   - 교정 지침: 스페인어권 현지인이 실제로 사용하는 자연스러운 구어체로 교정하라.\n"
+            "4. 문화 맥락 및 로컬라이제이션 (category: \"locale_convention\"):\n"
+            "   - 기준: 스페인어권 문화 관습, 관용 표현, 단위 표기(미터법/화폐 등)에 안 맞는 번역이 있는가?\n"
+            "   - 교정 지침: 해당 언어권의 문화적 관습과 로컬라이제이션 관례에 맞게 교정하라.\n"
+            "5. 성별 및 격식 지정 파라미터 준수:\n"
+            "   - 기준: 각 입력 항목에 gender (male/female) 또는 formality (formal/informal) 값이 제공된 경우,\n"
+            "   - 교정 지침: 교정된 문장(`corrected_text`)에서도 지정된 성별 어미(-o/-a)와 격식(존댓말/반말)을 100% 완벽히 유지하여 작성하라.\n\n"
             f"{format_constraint} 참고 지식베이스: {knowledge}\n"
         )
         system += (
@@ -241,6 +243,7 @@ class GptClient:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
         return await self._call(system, user)
+
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)

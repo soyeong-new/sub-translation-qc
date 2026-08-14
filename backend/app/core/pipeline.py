@@ -679,8 +679,15 @@ async def _run_dual_verification_pass(
     filtered_pairs = [p for p in pairs if p.target is not None and p.korean is not None]
 
     def _to_dict(p) -> dict:
-        return {"id": p.id, "korean_text": p.korean.text if p.korean else "",
-                "target_text": p.target.text}
+        reg = resolved_registers.get(p.id) or {}
+        return {
+            "id": p.id,
+            "korean_text": p.korean.text if p.korean else "",
+            "target_text": p.target.text,
+            "gender": reg.get("gender"),
+            "formality": reg.get("formality"),
+        }
+
 
     korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in filtered_pairs}
     warnings: list = []
