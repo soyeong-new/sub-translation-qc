@@ -589,11 +589,10 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
 
 
 @pytest.mark.asyncio
-async def test_pipeline_runs_stt_even_when_korean_srt_path_given(tmp_path):
-    """핵심 회귀: korean_srt_path가 있어도 이제 STT(extract_audio)가 항상
-    실행돼야 한다 — 이전 "생략" 동작은 완전히 제거됐다. 결과 텍스트는
-    SRT 원문(문장부호 포함)을 쓰되, 타이밍은 STT(MockProvider가 반환하는
-    [0.0,2.0])를 써야 한다 — SRT 큐 자체의 타임코드([5.0,7.0])가 아니다."""
+async def test_pipeline_uses_embedding_dp_when_korean_srt_path_given(tmp_path):
+    """korean_srt_path가 주어지면 STT(extract_audio)를 거치지 않고,
+    OpenAI text-embedding-3-small + DP 알고리즘으로 한국어 SRT와 대상언어 SRT를 직접 정렬한다.
+    결과 텍스트와 타이밍은 한국어 SRT 큐([5.0, 7.0])의 값을 그대로 사용한다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     ko_srt_path = tmp_path / "ko.srt"
@@ -611,22 +610,15 @@ async def test_pipeline_runs_stt_even_when_korean_srt_path_given(tmp_path):
             korean_srt_path=str(ko_srt_path),
         )
 
-    mock_extract.assert_called_once_with("/fake/video.mp4")
+    mock_extract.assert_not_called()
     korean_pair = next(p for p in result["pairs"] if p.korean is not None)
     assert korean_pair.korean.text == "안녕하세요!"
-    assert korean_pair.korean.start == 0.0
-    assert korean_pair.korean.end == 2.0
+    assert korean_pair.korean.start == 5.0
+    assert korean_pair.korean.end == 7.0
 
 
 @pytest.mark.asyncio
 async def test_pipeline_reports_real_video_offset_with_korean_srt_path(tmp_path):
-    """회귀: 이전 수정(final-review Finding 1)은 korean_srt_path가 있으면
-    STT를 아예 안 돌렸기 때문에 video_offset_seconds를 강제로 None으로
-    감췄다. 이제 korean_srt_path가 있어도 STT가 항상 돌아서 그 특수
-    처리가 필요 없어졌다 — detect_global_offset()의 실제 반환값(항상
-    float, 절대 None이 아님)을 그대로 돌려줘야 한다. 이 테스트는 그
-    None 강제 처리가 되살아나지 않는지만 확인한다(오프셋 값 자체가
-    0.0이어도 상관없다 — None이냐 아니냐가 핵심)."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     ko_srt_path = tmp_path / "ko.srt"
@@ -644,7 +636,8 @@ async def test_pipeline_reports_real_video_offset_with_korean_srt_path(tmp_path)
             korean_srt_path=str(ko_srt_path),
         )
 
-    assert result["video_offset_seconds"] is not None
+    assert result["video_offset_seconds"] == 0.0
+
 
 
 @pytest.mark.asyncio

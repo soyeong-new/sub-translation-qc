@@ -62,3 +62,7 @@ class LiveModelProvider(ModelProvider):
 
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.resolve_gender_from_context(items, profile)
+
+    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        return await self._gpt.get_embeddings(texts)
+

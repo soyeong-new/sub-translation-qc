@@ -207,6 +207,46 @@ def test_match_assigns_cue_index_to_interpolated_gap_words(tmp_path):
     assert middle["cue_index"] == 0
 
 
+def test_match_falls_back_to_cue_bounds_when_duplicate_text_confirms_wrong_cue(tmp_path):
+    """회귀(실제 데이터로 재현): SRT에 같은 대사("맞죠?")가 연달아 두 번
+    나오는데 STT가 한 번만 들으면, difflib가 그 실측 지점을 앞쪽이 아니라
+    뒤쪽 큐에 붙이는 경우가 있다 — 그러면 앞쪽 큐는 확정 안 된 채로
+    남는데, 그 보간 범위의 오른쪽 앵커(뒤쪽 큐의 실측 시각)가 앞쪽 큐
+    자신의 SRT 시작 시각보다 이르다. 이걸 그대로 앵커 구간에 욱여넣으면
+    폭 0인(사실상 안 보이는) 구간이 되고, 뒤쪽 큐와 시작 시각이 거의
+    같아져 리뷰 화면에서 "같은 문구가 중복된 것처럼" 보인다. 이럴 땐
+    큐 자신의 SRT 타이밍으로 폴백해야 한다."""
+    srt_path = tmp_path / "ko.srt"
+    srt_path.write_text(
+        "1\n00:03:10,000 --> 00:03:10,800\n저기 음\n\n"
+        "2\n00:03:15,000 --> 00:03:16,000\n맞죠?\n\n"
+        "3\n00:03:19,000 --> 00:03:20,000\n맞죠?\n\n"
+        "4\n00:03:21,000 --> 00:03:21,600\n아니요\n",
+        encoding="utf-8",
+    )
+    stt_words = [
+        {"start": 190.2, "end": 190.8, "text": "저기"},
+        # "맞죠"는 STT가 한 번만 듣는다 — difflib는 이걸 (아래에서
+        # 확인하듯) 앞쪽이 아니라 뒤쪽 SRT 큐(2번째 "맞죠?")에 확정으로
+        # 붙인다.
+        {"start": 193.0, "end": 193.6, "text": "맞죠"},
+        {"start": 201.5, "end": 202.0, "text": "아니요"},
+    ]
+    result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
+    by_cue = {w["cue_index"]: w for w in result if w["text"] == "맞죠?"}
+    first_matgyo = by_cue[1]  # 확정 안 된 앞쪽 큐 — 보간/폴백 대상
+    second_matgyo = by_cue[2]  # difflib가 실측으로 확정한 뒤쪽 큐
+    # 폭 0(사실상 안 보이는 구간)이면 안 된다.
+    assert first_matgyo["end"] > first_matgyo["start"]
+    # 뒤쪽 큐의 실측 확정 시각과 겹치거나 똑같아지면 안 된다(리뷰 화면에서
+    # 중복처럼 보이는 원인) — 큐 자신의 SRT 타이밍(15~16초)으로 폴백해야
+    # 한다.
+    assert first_matgyo["start"] == pytest.approx(195.0)
+    assert first_matgyo["end"] == pytest.approx(196.0)
+    assert second_matgyo["start"] == pytest.approx(193.0)
+    assert second_matgyo["end"] == pytest.approx(193.6)
+
+
 def test_merge_words_by_korean_cue_groups_words_into_one_segment_per_cue():
     from app.core.stt_srt_matching import merge_words_by_korean_cue
     matched_words = [

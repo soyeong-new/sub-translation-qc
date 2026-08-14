@@ -375,3 +375,13 @@ class GptClient:
         return [{"start": w.start, "end": w.end, "text": w.word}
                 for w in response.words]
 
+    async def get_embeddings(self, texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
+        """OpenAI text-embedding-3-small 모델로 문장 배치 임베딩 벡터 목록을 반환한다."""
+        if not texts:
+            return []
+        response = await self._sdk_client.embeddings.create(
+            input=texts,
+            model=model,
+        )
+        return [item.embedding for item in response.data]
+

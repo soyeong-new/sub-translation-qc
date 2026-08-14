@@ -91,3 +91,15 @@ class MockProvider(ModelProvider):
             ]}
             for item in items
         ]
+
+    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        # 테스트용 결정론적 16차원 가짜 임베딩 벡터 생성
+        res = []
+        for t in texts:
+            vec = [0.0] * 16
+            length = len(t)
+            vec[0] = length / 100.0
+            vec[1] = (hash(t) % 100) / 100.0
+            res.append(vec)
+        return res
+

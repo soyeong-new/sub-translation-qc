@@ -173,6 +173,19 @@ def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -
             cue_start, cue_end = cue_group[0]["cue_start"], cue_group[0]["cue_end"]
             lo = min(max(cue_start, left_time), right_time)
             hi = max(min(cue_end, right_time), lo)
+            if hi <= lo and j < n and srt_norm[j] == _normalize_for_matching(cue_group[-1]["text"]):
+                # 확정 앵커 구간이 이 큐 자신의 SRT 구간과 아예 안 겹치는데,
+                # 하필 그 오른쪽 앵커(j번째 단어)가 이 큐 마지막 단어와 같은
+                # 텍스트다 — 같은 대사가 SRT에 두 번 나오는데 STT가 한 번만
+                # 잡았을 때, difflib가 그 실측 지점을 앞쪽이 아니라 뒤쪽
+                # (텍스트가 같은) 큐에 붙이면서 생긴다. 이 앵커는 사실 이 큐
+                # 것이 아니라 저 뒤쪽 큐 것이므로 못 믿는 게 맞다 — 억지로
+                # 욱여넣으면 폭 0인(사실상 안 보이는) 구간이 되고, 뒤쪽 큐와
+                # 시작 시각이 같아져 리뷰 화면에 중복처럼 보인다. 큐 자신의
+                # SRT 타이밍으로 폴백한다. (텍스트가 다르면 — 예: SRT 큐
+                # 타임코드 자체가 실측과 어긋난 경우 — 이 폴백을 안 쓴다,
+                # 그때는 실측 앵커 쪽을 믿는 게 맞다.)
+                lo, hi = cue_start, cue_end
             result.extend(_interpolate_gap(cue_group, lo, hi))
         i = j
 

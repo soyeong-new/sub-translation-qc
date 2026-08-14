@@ -132,6 +132,11 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
+    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """문장 리스트를 받아서 OpenAI text-embedding-3-small 기반 다국어 임베딩 벡터 목록을 반환한다."""
+        ...
+
+    @abstractmethod
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
         """spaCy가 이미 찾아낸 성별 표시 후보 단어(candidate_words, 문장 속
         등장 순서)가 실제로 사람을 가리키는지, 누구를 가리키는지(그룹핑),

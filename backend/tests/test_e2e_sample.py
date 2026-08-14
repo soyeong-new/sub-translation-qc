@@ -10,11 +10,13 @@ SAMPLE_SRT = (
 )
 
 
+@pytest.mark.skipif(not SAMPLE_SRT.exists(), reason="샘플 SRT 파일이 없는 환경")
 @pytest.mark.asyncio
 async def test_pipeline_runs_end_to_end_on_real_sample_file(monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
     assert SAMPLE_SRT.exists(), "샘플 SRT 파일이 존재해야 함"
+
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
          patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):

@@ -307,6 +307,43 @@ async def test_analyze_and_save_reuses_stt_cache_and_skips_transcribe(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_reused_old_cache_is_not_relabeled_as_new_shape(tmp_path, monkeypatch):
+    """회귀(실제 데이터로 재현): 옛 "word" 태그 캐시를 재사용했을 때, STT를
+    실제로 새로 돌리지 않았으므로 캐시를 새 태그로 다시 쓰면 안 된다 —
+    다시 쓰면 cue_index 없는 옛 데이터가 "새 형식"이라고 영구히 잘못
+    표시돼, 이후 분석마다 이 잘못된 표시를 믿고 옛 데이터를 계속 재사용
+    하며 한국어 큐 기반 정렬 개선을 영영 못 받는다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        episode.stt_cache = {
+            "segments": [{"start": 0.0, "end": 1.0, "text": "옛 단어 단위 캐시"}],
+            "granularity": "word",
+        }
+        episode.video_proxy_path = "/fake/cached_proxy.mp4"
+        await session.commit()
+
+    with patch("app.core.pipeline.extract_audio") as mock_extract, \
+         patch("app.core.pipeline.generate_video_proxy") as mock_proxy, \
+         patch("app.background.delete_original_video"):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    mock_extract.assert_not_called()
+    mock_proxy.assert_not_called()
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        episode = await session.get(Episode, tv.episode_id)
+        assert episode.stt_cache["granularity"] == "word"
+        assert episode.stt_cache["segments"] == [{"start": 0.0, "end": 1.0, "text": "옛 단어 단위 캐시"}]
+
+
+@pytest.mark.asyncio
 async def test_analyze_and_save_ignores_stale_stt_cache_missing_granularity_tag(tmp_path, monkeypatch):
     """캐시 형식이 바뀌면(문장→단어 단위) 옛 형식으로 저장된 캐시를 그대로
     믿으면 안 된다 — granularity 태그가 없는(옛) 캐시는 무시하고 다시
@@ -365,7 +402,7 @@ async def test_analyze_and_save_runs_stt_and_uses_korean_srt_text(
          patch("app.background.delete_original_video"):
         await background.analyze_and_save(tv_id, str(srt_path))
 
-    mock_extract.assert_called_once()
+    mock_extract.assert_not_called()
     async with async_session() as session:
         segs = (await session.execute(
             select(Segment).where(Segment.target_version_id == tv_id)

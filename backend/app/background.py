@@ -66,6 +66,10 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             if episode.stt_cache and episode.stt_cache.get("granularity") in READABLE_STT_CACHE_GRANULARITIES
             else None
         )
+        # run_pipeline_phase1이 실제로 캐시를 재사용할지는 이 두 값이 둘 다
+        # 있어야 하는 것과 정확히 같은 조건이다(그 함수 내부의 분기와
+        # 반드시 일치해야 한다 — 아래 캐시 쓰기 판단이 이 값에 의존한다).
+        cache_will_be_reused = cached_segments is not None and episode.video_proxy_path is not None
         phase1 = await asyncio.wait_for(
             run_pipeline_phase1(
                 video_path=episode.video_path,
@@ -89,11 +93,17 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
             tv.video_offset_seconds = phase1.get("video_offset_seconds") or None
             tv.warnings = phase1.get("warnings") or None
             episode_row = await session.get(Episode, tv.episode_id)
-            # 캐시가 아예 없거나, 있어도 옛 형태(granularity 불일치/누락)면
-            # 새로 채운다 — 유효한 같은 형태 캐시가 이미 있으면(다른
-            # target_version이 먼저 채웠거나 재시도인 경우) 덮어쓰지 않는다.
-            if (episode_row.stt_cache is None
-                    or episode_row.stt_cache.get("granularity") != STT_CACHE_GRANULARITY):
+            # 이번 실행이 캐시를 재사용하지 않고 STT를 실제로 새로 돌렸을
+            # 때만 캐시를 (다시) 쓴다. 회귀(실제 데이터로 재현): 이전 버전은
+            # "기존 캐시의 태그가 최신과 다르면 새로 쓴다"는 조건만 봤는데,
+            # 캐시를 재사용한 실행에서는 phase1의 korean_segments_raw가
+            # 재사용한 옛 데이터(cue_index 없음) 그대로다 — 그런데도 태그는
+            # 최신으로 다시 써버려서, 실제로는 여전히 옛 데이터인데 "이미
+            # cue_index 있음"으로 영구히 잘못 표시되는 사고가 났다(그 뒤로는
+            # 매번 이 잘못 표시된 캐시를 신뢰해 재사용하며 새 정렬 알고리즘을
+            # 영영 못 받음). 캐시가 아예 없는 경우(cache_will_be_reused=False)
+            # 는 항상 새로 쓴다.
+            if not cache_will_be_reused:
                 episode_row.stt_cache = {
                     "segments": phase1.get("korean_segments_raw", []),
                     "granularity": STT_CACHE_GRANULARITY,

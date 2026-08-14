@@ -88,7 +88,8 @@ def generate_video_proxy(video_path: str, out_dir: Optional[str] = None) -> str:
     out = str(out_dir_p / f"{stem}_proxy.mp4")
     subprocess.run(
         ["ffmpeg", "-i", video_path, "-vf", "scale=-2:480",
-         "-c:v", "libx264", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-y", out],
+         "-c:v", "libx264", "-preset", "ultrafast", "-threads", "1",
+         "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-y", out],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
     )
     return out

@@ -8,6 +8,7 @@ from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
 from app.core.stt_srt_matching import match_stt_words_to_korean_srt, merge_words_by_korean_cue
 from app.core.alignment import align, align_by_korean_cue, detect_global_offset
+from app.core.embedding_dp_alignment import align_by_embedding_dp
 from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
 from app.core.safety_net import shrink_violating_lines
 from app.language_profiles.loader import load_profile
@@ -908,60 +909,52 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     warnings: list = []
     target_segments = load_srt(target_srt_path)
 
+    global_offset = 0.0
+
     if cached_korean_segments is not None and cached_video_proxy_path is not None:
-        # Episode 단위 캐시 재사용 — 같은 화를 다른 대상언어로 다시 분석하거나
-        # 재시도할 때, 이미 든 STT 비용을 또 쓰지 않는다. 최초 성공 후에는
-        # 원본 영상이 삭제되므로(background.py), 캐시가 없으면 재시도 자체가
-        # 불가능해질 수 있다는 점에서도 중요하다.
+        # Episode 단위 캐시 재사용
         korean_raw = cached_korean_segments
         video_proxy_path = cached_video_proxy_path
-    elif korean_srt_path:
-        # 한국어 SRT가 있어도 STT는 그대로 돌린다 — SRT 큐 단위 타임코드만
-        # 으로는 단어별 실제 발화 시각을 알 수 없어(design
-        # 2026-08-12-korean-srt-stt-timing-match-design.md), 그 시각을
-        # STT로 실측하고 텍스트만 검증된 SRT로 교체한다.
-        stt_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
-        korean_raw = match_stt_words_to_korean_srt(stt_raw, korean_srt_path)
-        if not korean_raw:
-            warnings.append({
-                "stage": "한국어 SRT",
-                "message": "한국어 SRT와 STT 결과를 매칭하지 못했습니다 — 파일 형식을 확인하세요.",
-            })
-    else:
-        korean_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
-
-    # transcribe()가 이제 문장이 아니라 단어 단위 타임코드를 반환한다.
-    korean_words = [SegmentText(**s) for s in korean_raw]
-
-    # 영상 앞부분을 잘라 올렸는데 SRT는 원본(안 잘린) 기준일 때, 한국어
-    # STT와 대상언어 SRT 사이에 상수 시간차가 생긴다 — align()/align_by_
-    # korean_cue()가 아무리 잘 짝지어도 애초에 시계가 다르면 소용없으므로,
-    # 정렬 전에 이 오프셋을 찾아 한국어 타임코드를 보정한다. 상수 오프셋이
-    # 없으면(0.0) 아무것도 안 바뀐다.
-    global_offset = detect_global_offset(korean_words, target_segments)
-    if global_offset:
-        korean_raw = [
-            {**s, "start": s["start"] + global_offset, "end": s["end"] + global_offset}
-            for s in korean_raw
-        ]
         korean_words = [SegmentText(**s) for s in korean_raw]
-        warnings.append({
-            "stage": "타임코드 자동 보정",
-            "message": f"한국어 STT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
-        })
 
-    # 한국어 SRT가 있으면 큐 단위 정렬(design 2026-08-13-korean-srt-cue-
-    # based-segmentation-design.md)을 쓴다 — 스페인어 큐 경계 때문에
-    # 한국어 문장이 잘리는 문제를 없앤다. korean_raw에 cue_index가 없으면
-    # (예: korean_srt_path 없이 만들어진 옛 캐시를 korean_srt_path 있는
-    # 요청에 재사용하는 경우) 안전하게 기존 단어 단위 align()으로 폴백한다
-    # — cue_index가 필수 전제인 merge_words_by_korean_cue가 KeyError로
-    # 죽는 대신, 정확도는 조금 낮아도 항상 동작하는 경로를 택한다.
-    if korean_srt_path and korean_raw and "cue_index" in korean_raw[0]:
-        korean_cues = merge_words_by_korean_cue(korean_raw)
-        pairs = align_by_korean_cue(korean_cues, target_segments)
-    else:
+        global_offset = detect_global_offset(korean_words, target_segments)
+        if global_offset:
+            korean_raw = [
+                {**s, "start": s["start"] + global_offset, "end": s["end"] + global_offset}
+                for s in korean_raw
+            ]
+            korean_words = [SegmentText(**s) for s in korean_raw]
+            warnings.append({
+                "stage": "타임코드 자동 보정",
+                "message": f"한국어 STT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
+            })
         pairs = align(korean_words, target_segments)
+
+    elif korean_srt_path:
+        # 한국어 SRT가 지정된 경우: 한국어 STT를 거치지 않고, 영상 저화질 프록시만 생성 후
+        # OpenAI text-embedding-3-small + DP 알고리즘으로 한국어 SRT와 스페인어 SRT를 직접 정렬한다.
+        video_proxy_path = await asyncio.to_thread(generate_video_proxy, video_path)
+        korean_cues = load_srt(korean_srt_path)
+        korean_raw = [{"start": c.start, "end": c.end, "text": c.text} for c in korean_cues]
+        pairs = await align_by_embedding_dp(korean_cues, target_segments, provider)
+    else:
+        # 한국어 SRT가 없는 경우: 기존 오디오 STT 실행 후 단어 단위 정렬을 수행한다.
+        korean_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
+        korean_words = [SegmentText(**s) for s in korean_raw]
+
+        global_offset = detect_global_offset(korean_words, target_segments)
+        if global_offset:
+            korean_raw = [
+                {**s, "start": s["start"] + global_offset, "end": s["end"] + global_offset}
+                for s in korean_raw
+            ]
+            korean_words = [SegmentText(**s) for s in korean_raw]
+            warnings.append({
+                "stage": "타임코드 자동 보정",
+                "message": f"한국어 STT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
+            })
+        pairs = align(korean_words, target_segments)
+
 
     # 온점 자동보정은 다른 모든 단계보다 먼저 적용한다 — 이후 단계가 보정된
     # 텍스트를 기준으로 작업하도록.
