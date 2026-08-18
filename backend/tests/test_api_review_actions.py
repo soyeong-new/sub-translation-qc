@@ -33,7 +33,9 @@ async def _make_finding_row(finding_id: str) -> None:
         tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
         session.add(tv)
         await session.flush()
-        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=1.0)
+        # end를 넉넉히 줘서(5초) 읽기 속도 제약이 이 테스트들의 실제 관심사
+        # (승인/거부/pick 트랜잭션)를 방해하지 않게 한다.
+        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=5.0)
         session.add(segment)
         await session.flush()
         f = FindingRow(id=finding_id, target_version_id=tv.id, segment_id="p1",
@@ -84,7 +86,9 @@ async def _make_disagreeing_pair() -> tuple[str, str]:
         tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
         session.add(tv)
         await session.flush()
-        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=1.0)
+        # end를 넉넉히 줘서(5초) 읽기 속도 제약이 이 테스트들의 실제 관심사
+        # (승인/거부/pick 트랜잭션)를 방해하지 않게 한다.
+        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=5.0)
         session.add(segment)
         await session.flush()
         claude_f = FindingRow(
@@ -228,6 +232,40 @@ async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch)
     final_text = r.json()["final_text"]
     assert len(final_text) <= 50
     assert final_text != "a" * 70
+
+
+@pytest.mark.asyncio
+async def test_approving_finding_auto_shrinks_for_reading_speed(monkeypatch):
+    """회귀(사용자 재현): pending 제안은 검수자가 승인하는 이 시점까지 S4
+    안전망을 안 거친다 — 줄당 50자 제약은 통과해도 큐 노출 시간이 짧으면
+    (여기선 1.2초) 읽기 속도 기준으로는 여전히 너무 길 수 있으므로, 승인
+    시점에도 그 세그먼트의 실제 노출 시간을 반영해서 줄여야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=1.2)
+        session.add(segment); await session.flush()
+        finding = FindingRow(
+            id="f1", target_version_id=tv.id, segment_id="p1",
+            category="mistranslation", description="d",
+            original_text="a", suggested_text="Ahora hasta se le caen los palillos pequeños.",
+            confidence=0.9, model="claude", status="pending",
+        )
+        session.add(finding)
+        await session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/findings/f1/review-action",
+            json={"action": "approved", "reviewer_name": "김검수"},
+        )
+    assert r.status_code == 200
+    final_text = r.json()["final_text"]
+    assert len(final_text.replace("\n", "")) <= 24  # int(1.2초 × 초당 20자)
 
 
 @pytest.mark.asyncio

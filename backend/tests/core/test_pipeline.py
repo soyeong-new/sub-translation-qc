@@ -618,6 +618,77 @@ async def test_pipeline_uses_embedding_dp_when_korean_srt_path_given(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pipeline_drops_pure_stage_direction_korean_cue(tmp_path):
+    """회귀: 한국어 SRT 큐가 지문/효과음뿐이라 정제 후 대사가 하나도 안
+    남으면(예: "[침을 퉤퉤 뱉는다] [웃음]"), 브라켓 원본을 그대로 되살려
+    노출하면 안 된다 — 그런 큐는 버려야 한다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n[침을 퉤퉤 뱉는다] [웃음]\n\n"
+        "2\n00:00:01,500 --> 00:00:03,500\n안녕하세요!\n",
+        encoding="utf-8",
+    )
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+            korean_srt_path=str(ko_srt_path),
+        )
+
+    korean_texts = [p.korean.text for p in result["pairs"] if p.korean is not None]
+    assert not any("[" in t for t in korean_texts)
+
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_corrects_constant_offset_with_korean_srt_path(tmp_path):
+    """회귀: korean_srt_path 경로는 STT(실측 오디오)를 안 거쳐서, 한국어 SRT와
+    대상언어 SRT가 각자 적어놓은 타임코드를 그대로 믿는다 — 그래서 둘 사이에
+    상수 오프셋이 있어도(서로 다른 인트로 길이 기준 등) video_offset_seconds가
+    항상 0으로 나가 검토 화면 영상 미리보기가 실제 영상과 안 맞는 문제가
+    있었다. 한국어 SRT 자체의 타임코드를 STT 대신 기준 삼아 오프셋을
+    찾아내야 한다."""
+    from app.core.ingest import build_srt
+
+    starts = [0.0, 13.0, 41.0, 68.0, 100.0, 155.0]
+    # 대상언어 SRT는 한국어 SRT보다 55초 늦게(뒤로 밀려) 찍혀 있다.
+    target_entries = [
+        {"start": s + 55.0, "end": s + 55.0 + 3.0, "text": f"Linea {i}"}
+        for i, s in enumerate(starts)
+    ]
+    target_srt_path = tmp_path / "target.srt"
+    target_srt_path.write_text(build_srt(target_entries), encoding="utf-8")
+
+    korean_entries = [
+        {"start": s, "end": s + 3.0, "text": f"대사 {i}"} for i, s in enumerate(starts)
+    ]
+    ko_srt_path = tmp_path / "ko.srt"
+    ko_srt_path.write_text(build_srt(korean_entries), encoding="utf-8")
+
+    with patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(target_srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=MockProvider(),
+            korean_srt_path=str(ko_srt_path),
+        )
+
+    # 오프셋 탐색은 1초 단위 coarse step으로 하니(app/core/alignment.py) 정확히
+    # 55.0은 아닐 수 있다 — 0(보정 안 됨)과는 확실히 구분되는 근사값인지만 본다.
+    assert result["video_offset_seconds"] == pytest.approx(55.0, abs=1.5)
+    assert any(w["stage"] == "타임코드 자동 보정" for w in result["warnings"])
+    matched = {p.target.text: p.korean.text for p in result["pairs"] if p.target and p.korean}
+    assert matched["Linea 0"] == "대사 0"
+    assert matched["Linea 3"] == "대사 3"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_reports_real_video_offset_with_korean_srt_path(tmp_path):
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")

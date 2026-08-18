@@ -88,7 +88,12 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
         async with async_session() as session:
             await save_phase1_result(session, target_version_id, phase1)
             tv = await session.get(TargetVersion, target_version_id)
-            tv.status = "awaiting_confirmation" if needs_confirmation else "review"
+            # "review"가 아니라 "verifying"이다 — 이 시점엔 아직 S2(AI 검증,
+            # findings을 실제로 만드는 단계)가 시작 전이다. 여기서 곧장
+            # "review"로 표시하면 검토 화면이 findings 0개인 채로 "다 됐다"고
+            # 뜨는 경쟁 상태가 생긴다(프론트는 이미 "verifying"을 계속
+            # 폴링하도록 처리돼 있다 — api.js pollTargetVersionStatus).
+            tv.status = "awaiting_confirmation" if needs_confirmation else "verifying"
             tv.video_proxy_path = phase1.get("video_proxy_path")
             tv.video_offset_seconds = phase1.get("video_offset_seconds") or None
             tv.warnings = phase1.get("warnings") or None

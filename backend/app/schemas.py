@@ -41,7 +41,7 @@ class Finding(BaseModel):
 
 class FormatViolation(BaseModel):
     segment_id: str
-    rule: Literal["line_length", "ellipsis"]
+    rule: Literal["line_length", "ellipsis", "reading_speed"]
     detail: str
     auto_fixed: bool = False
     fixed_text: str = ""

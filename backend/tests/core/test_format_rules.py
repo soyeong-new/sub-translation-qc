@@ -1,5 +1,7 @@
 from app.schemas import AlignedPair, SegmentText
-from app.core.format_rules import check_line_length, check_ellipsis, fix_ellipsis, rewrap_line
+from app.core.format_rules import (
+    check_line_length, check_ellipsis, fix_ellipsis, rewrap_line, check_reading_speed,
+)
 
 
 def _pair(pid, text):
@@ -23,6 +25,26 @@ def test_check_line_length_allows_two_short_lines():
     text = "línea corta\notra línea corta"
     violations = check_line_length([_pair("p1", text)])
     assert violations == []
+
+
+def test_check_reading_speed_flags_short_cue_with_long_text():
+    """회귀(사용자 재현): 줄당 50자 제약은 통과해도, 1.2초짜리 짧은 큐에
+    문장 두 개 분량이 들어가면 읽기 속도 기준으로는 위반이어야 한다."""
+    pair = AlignedPair(id="p1", target=SegmentText(
+        start=0.0, end=1.2, text="Ahora hasta se le caen los palillos pequeños."))
+    violations = check_reading_speed([pair])
+    assert len(violations) == 1
+    assert violations[0].rule == "reading_speed"
+
+
+def test_check_reading_speed_allows_short_text_in_short_cue():
+    pair = AlignedPair(id="p1", target=SegmentText(start=0.0, end=1.2, text="Hola."))
+    assert check_reading_speed([pair]) == []
+
+
+def test_check_reading_speed_ignores_pairs_without_target():
+    pair = AlignedPair(id="p1", korean=SegmentText(start=0.0, end=1.2, text="긴 한국어 문장" * 5))
+    assert check_reading_speed([pair]) == []
 
 
 def test_fix_ellipsis_collapses_four_dots_to_three():

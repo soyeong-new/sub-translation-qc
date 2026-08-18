@@ -1,12 +1,11 @@
 """작품(Title) 등록, 에피소드 등록, 목록 조회/삭제 엔드포인트."""
 
+from datetime import datetime, timezone
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from app.db import async_session
-from app.models import (
-    Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection, ExportRow,
-)
+from app.models import Title, Episode, TargetVersion
 from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
 from app.language_profiles.loader import list_profiles
@@ -63,7 +62,7 @@ async def list_titles():
     등록 순으로 정렬한다."""
     async with async_session() as session:
         titles = (await session.execute(
-            select(Title).order_by(Title.created_at.desc())
+            select(Title).where(Title.deleted_at.is_(None)).order_by(Title.created_at.desc())
         )).scalars().all()
         episodes = (await session.execute(select(Episode))).scalars().all()
         target_versions = (await session.execute(select(TargetVersion))).scalars().all()
@@ -90,19 +89,20 @@ async def list_titles():
 
 @router.delete("/titles/{title_id}")
 async def delete_title(title_id: str):
-    """title과 그 아래 episode/target_version/segment/finding 등을 전부
-    지운다. 원본 영상(성공 후엔 이미 지워져 있음)·프록시 영상 파일도 같이
-    지운다 — 안 지우면 디스크만 계속 쌓인다."""
+    """title을 소프트 삭제한다(deleted_at만 세팅) — episode/target_version/
+    segment/finding/SttCorrection 등 교정 이력은 DB에 그대로 남긴다(나중에
+    QC 이력 재활용 용도로 쓰기 위해). 목록 조회(list_titles)에서만 안 보이게
+    걸러진다. 용량만 차지하는 원본/프록시 영상 파일은 디스크에서 실제로
+    지운다."""
     async with async_session() as session:
         title = await session.get(Title, title_id)
-        if title is None:
+        if title is None or title.deleted_at is not None:
             raise HTTPException(404, "title not found")
 
         episodes = (await session.execute(
             select(Episode).where(Episode.title_id == title_id)
         )).scalars().all()
         episode_ids = [ep.id for ep in episodes]
-        target_version_ids: list = []
         files_to_delete: list = []
         for ep in episodes:
             if ep.video_path:
@@ -114,26 +114,9 @@ async def delete_title(title_id: str):
             tvs = (await session.execute(
                 select(TargetVersion).where(TargetVersion.episode_id.in_(episode_ids))
             )).scalars().all()
-            target_version_ids = [tv.id for tv in tvs]
             files_to_delete += [tv.video_proxy_path for tv in tvs if tv.video_proxy_path]
 
-        if target_version_ids:
-            await session.execute(delete(FindingRow).where(
-                FindingRow.target_version_id.in_(target_version_ids)))
-            await session.execute(delete(SttCorrection).where(
-                SttCorrection.segment_id.in_(
-                    select(Segment.id).where(Segment.target_version_id.in_(target_version_ids))
-                )
-            ))
-            await session.execute(delete(Segment).where(
-                Segment.target_version_id.in_(target_version_ids)))
-            await session.execute(delete(ExportRow).where(
-                ExportRow.target_version_id.in_(target_version_ids)))
-            await session.execute(delete(TargetVersion).where(
-                TargetVersion.id.in_(target_version_ids)))
-        if episode_ids:
-            await session.execute(delete(Episode).where(Episode.id.in_(episode_ids)))
-        await session.delete(title)
+        title.deleted_at = datetime.now(timezone.utc)
         await session.commit()
 
     for path in files_to_delete:

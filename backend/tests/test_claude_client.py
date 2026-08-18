@@ -6,7 +6,8 @@ from app.providers.claude_client import ClaudeClient
 
 def _make_client_with_fake_sdk(response_text: str) -> ClaudeClient:
     client = ClaudeClient(api_key="fake", model="claude-test")
-    fake_block = MagicMock()
+    fake_block = MagicMock(spec=["type", "text"])
+    fake_block.type = "text"
     fake_block.text = response_text
     fake_response = MagicMock()
     fake_response.content = [fake_block]
@@ -44,6 +45,32 @@ async def test_correct_primary_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
         await client.correct_primary([], {}, [], "", "")
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_skips_thinking_block_before_text_block():
+    """Claude Sonnet 5+는 thinking 파라미터를 안 주면 적응형 사고가 기본으로
+    켜져, 복잡한 프롬프트에서 content[0]이 ThinkingBlock(.text 없음)이고
+    실제 텍스트는 그 다음 블록에 온다. content[0]을 무조건 읽으면 깨진다."""
+    payload = [{"segment_id": "p1", "category": "sensitivity",
+                "corrected_text": "está feliz", "description": "비속어 교정"}]
+    client = ClaudeClient(api_key="fake", model="claude-test")
+    thinking_block = MagicMock(spec=["type", "thinking"])
+    thinking_block.type = "thinking"
+    thinking_block.thinking = ""
+    text_block = MagicMock(spec=["type", "text"])
+    text_block.type = "text"
+    text_block.text = json.dumps(payload)
+    fake_response = MagicMock()
+    fake_response.content = [thinking_block, text_block]
+    client._sdk_client.messages.create = AsyncMock(return_value=fake_response)
+
+    result = await client.correct_primary(
+        pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "esta feliz"}],
+        profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="줄당 50자 이내",
+    )
+    assert result == payload
 
 
 @pytest.mark.asyncio

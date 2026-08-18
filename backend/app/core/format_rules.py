@@ -7,6 +7,10 @@ from app.schemas import AlignedPair, FormatViolation
 
 MAX_LINE_CHARS = 50
 MAX_LINES = 2
+# 자막 한 줄을 초당 몇 자까지 읽을 수 있다고 볼지 — 정적인 줄당 글자수
+# 제약만으로는 큐 노출 시간이 아주 짧을 때(예: 1.2초) 읽기엔 너무 많은
+# 글자가 통과할 수 있다(실제로 발견됨: 짧은 큐에 두 문장이 합쳐져 들어감).
+READING_SPEED_CPS = 20
 _ELLIPSIS_RE = re.compile(r"\.{4,}")
 # 문장/절 경계 우선순위 — 단어 경계보다 이 지점에서 끊는 게 자연스럽다
 # ("홍길동" / "입니다"처럼 의미 단위가 잘리는 걸 피함). 마침표류를 먼저
@@ -73,6 +77,48 @@ def check_line_length(pairs: List[AlignedPair]) -> List[FormatViolation]:
             violations.append(FormatViolation(
                 segment_id=pair.id, rule="line_length",
                 detail=f"{len(lines)}줄, 최대 줄 길이 {max(len(ln) for ln in lines)}자",
+                original_text=pair.target.text,
+            ))
+    return violations
+
+
+def reading_speed_char_budget(duration_seconds: float) -> int:
+    """큐 노출 시간(초) 안에 읽을 수 있다고 볼 최대 글자수(공백 제외 안 함,
+    줄바꿈 포함 전체 텍스트 기준)."""
+    return max(1, int(duration_seconds * READING_SPEED_CPS))
+
+
+def effective_max_chars(duration_seconds: float) -> int:
+    """줄당 정적 글자수 제약(MAX_LINE_CHARS)과, 노출 시간 기준 읽기 속도
+    예산을 줄 수(MAX_LINES)로 나눈 값 중 더 엄격한(작은) 쪽 — 자동 축약이
+    실제로 적용할 줄당 글자수 한도다. 이 값을 쓰는 모든 곳(안전망 S4,
+    검수자가 pending 제안을 승인하는 시점)이 같은 계산을 쓰게 해서, 어느
+    경로로 최종 확정되든 읽기 속도 위반이 새어나가지 않게 한다."""
+    if duration_seconds <= 0:
+        return MAX_LINE_CHARS
+    speed_max_chars = max(1, reading_speed_char_budget(duration_seconds) // MAX_LINES)
+    return min(MAX_LINE_CHARS, speed_max_chars)
+
+
+def check_reading_speed(pairs: List[AlignedPair]) -> List[FormatViolation]:
+    """줄당 글자수 제약(check_line_length)과 별개로, 큐가 화면에 떠 있는
+    시간 대비 글자수가 너무 많아 읽을 수 없는 경우를 잡는다 — 두 문장을
+    합친 교정문이 1초짜리 큐 하나에 통째로 들어가는 사고가 실제로
+    있었다(줄당 50자 제약은 통과하지만 읽을 시간이 부족한 경우)."""
+    violations = []
+    for pair in pairs:
+        if pair.target is None:
+            continue
+        duration = pair.target.end - pair.target.start
+        if duration <= 0:
+            continue
+        text_chars = len(pair.target.text.replace("\n", ""))
+        budget = reading_speed_char_budget(duration)
+        if text_chars > budget:
+            violations.append(FormatViolation(
+                segment_id=pair.id, rule="reading_speed",
+                detail=f"{duration:.1f}초 노출에 {text_chars}자 (권장 최대 {budget}자, "
+                       f"초당 {READING_SPEED_CPS}자 기준)",
                 original_text=pair.target.text,
             ))
     return violations

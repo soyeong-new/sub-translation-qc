@@ -122,7 +122,10 @@ async def test_list_titles_includes_nested_episodes_and_target_versions():
 
 
 @pytest.mark.asyncio
-async def test_delete_title_removes_title_and_children(tmp_path):
+async def test_delete_title_soft_deletes_and_keeps_children(tmp_path):
+    """title 삭제는 소프트 삭제다 — finding/STT수정이력 같은 교정 데이터는
+    나중에 재활용하려고 DB에 그대로 남긴다. 목록에서만 안 보이면 되고,
+    용량 큰 영상 파일만 실제로 지운다."""
     from app.models import Episode, TargetVersion, Segment, FindingRow
 
     video_path = tmp_path / "video.mp4"
@@ -150,15 +153,20 @@ async def test_delete_title_removes_title_and_children(tmp_path):
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.delete(f"/titles/{title_id}")
-    assert r.status_code == 200
+        assert r.status_code == 200
+
+        # 목록에서는 안 보여야 한다
+        list_res = await client.get("/titles")
+        assert title_id not in [t["id"] for t in list_res.json()]
 
     assert not video_path.exists()
     async with async_session() as session:
-        assert await session.get(Title, title_id) is None
-        assert await session.get(Episode, episode_id) is None
-        assert await session.get(TargetVersion, tv_id) is None
-        assert await session.get(Segment, "seg1") is None
-        assert await session.get(FindingRow, "f1") is None
+        title = await session.get(Title, title_id)
+        assert title is not None and title.deleted_at is not None
+        assert await session.get(Episode, episode_id) is not None
+        assert await session.get(TargetVersion, tv_id) is not None
+        assert await session.get(Segment, "seg1") is not None
+        assert await session.get(FindingRow, "f1") is not None
 
 
 @pytest.mark.asyncio
@@ -167,3 +175,15 @@ async def test_delete_title_returns_404_for_missing_title():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.delete("/titles/does-not-exist")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_title_returns_404_when_already_deleted():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "movie"})
+        title_id = title_res.json()["id"]
+        first = await client.delete(f"/titles/{title_id}")
+        assert first.status_code == 200
+        second = await client.delete(f"/titles/{title_id}")
+        assert second.status_code == 404

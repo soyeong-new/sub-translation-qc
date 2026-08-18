@@ -20,6 +20,10 @@ class Title(Base):
     name: Mapped[str] = mapped_column(String)
     type: Mapped[str] = mapped_column(String)  # movie | series
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # 삭제는 이 컬럼만 세팅하는 소프트 삭제다 — finding/SttCorrection 같은
+    # 교정 이력을 나중에 다시 쓰려고(예: 자주 나는 실수 모음) DB에서 실제로
+    # 지우지 않는다. 영상 원본/프록시 파일만 디스크에서 지운다(용량 문제).
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
 
 class Episode(Base):

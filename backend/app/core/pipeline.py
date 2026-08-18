@@ -8,8 +8,11 @@ from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
 from app.core.stt_srt_matching import match_stt_words_to_korean_srt, merge_words_by_korean_cue
 from app.core.alignment import align, align_by_korean_cue, detect_global_offset
-from app.core.embedding_dp_alignment import align_by_embedding_dp
-from app.core.format_rules import check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES
+from app.core.embedding_dp_alignment import align_by_embedding_dp, _clean_text_for_embedding
+
+from app.core.format_rules import (
+    check_line_length, check_ellipsis, check_reading_speed, MAX_LINE_CHARS, MAX_LINES,
+)
 from app.core.safety_net import shrink_violating_lines
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import (
@@ -133,8 +136,9 @@ async def _run_grammar_necessity_check(
     grammar_pairs = [
         {"id": p.id, "target_text": p.target.text if p.target else "",
          "korean_text": p.korean.text if p.korean else ""}
-        for p in pairs if p.target is not None
+        for p in pairs if p.target is not None and p.korean is not None
     ]
+
     segment_resolutions: list = []
     warnings: list = []
     try:
@@ -730,8 +734,19 @@ async def _run_dual_verification_pass(
     all_claude_only = claude_only + disputed_claude
     all_gpt_only = gpt_only + disputed_gpt
 
+    # 단일 모델의 가벼운 어조/스타일 다듬기(unnatural_style, nuance_tone)는 과잉 교정 소음이므로 필터링한다.
+    # 양쪽 모델 합의(true_agreed)이거나 중요 지적(sensitivity, mistranslation, locale_convention)인 항목만 유지한다.
+    filtered_claude_only = [
+        c for c in all_claude_only
+        if c.get("category") not in ("unnatural_style", "nuance_tone")
+    ]
+    filtered_gpt_only = [
+        c for c in all_gpt_only
+        if c.get("category") not in ("unnatural_style", "nuance_tone")
+    ]
+
     backtranslation_by_id, backtranslation_warnings = await _back_translate_proposals(
-        provider, profile, true_agreed, all_claude_only, all_gpt_only, target_version_id)
+        provider, profile, true_agreed, filtered_claude_only, filtered_gpt_only, target_version_id)
     warnings.extend(backtranslation_warnings)
 
     entries = [
@@ -739,9 +754,10 @@ async def _run_dual_verification_pass(
         # GPT 문구로 통일 — _check_equivalence 참고) — 그래서 역번역 출처도
         # "gpt_authored"다.
         *((c, "approved", "claude+gpt", True, "gpt_authored") for c in true_agreed),
-        *((c, "pending", "claude", False, "claude_authored") for c in all_claude_only),
-        *((c, "pending", "gpt", False, "gpt_authored") for c in all_gpt_only),
+        *((c, "pending", "claude", False, "claude_authored") for c in filtered_claude_only),
+        *((c, "pending", "gpt", False, "gpt_authored") for c in filtered_gpt_only),
     ]
+
     await _reapply_resolved_gender_to_corrections(entries, profile, resolved_registers)
 
     pair_by_id = {p.id: p for p in pairs}
@@ -762,12 +778,16 @@ async def _run_dual_verification_pass(
 
 async def _run_final_safety_net(
     pairs: list, provider: ModelProvider, target_version_id: str,
+    dual_verification_findings: list,
 ) -> tuple[list, list]:
     """S4 최종 안전망: 모든 교정이 끝난 텍스트를 기준으로 글자수·온점을 마지막
     으로 다시 검사한다 — GPT 패스가 문장을 늘리면서 새 위반을 만들 수 있어
     앞에서 한 번만 걸러서는 안 된다(design §핵심 설계 포인트: "앞에서 한 번만
     걸러선 안 됨"). 온점은 규칙 기반 자동보정이라 여기서도 LLM 없이 바로
-    재적용한다. 반환값은 (final_ellipsis_violations, safety_net_findings)."""
+    재적용한다. dual_verification_findings(S2 결과)를 넘겨서, 이미 자동
+    승인된 finding과 같은 세그먼트면 새 카드를 또 만들지 않고 그 카드를
+    갱신한다(검수자에게 같은 문장이 카드 두 개로 보이지 않게). 반환값은
+    (final_ellipsis_violations, safety_net_findings)."""
     final_ellipsis_violations = check_ellipsis(pairs)
     final_fixed_by_segment = {v.segment_id: v.fixed_text for v in final_ellipsis_violations}
     for pair in pairs:
@@ -775,8 +795,10 @@ async def _run_final_safety_net(
             pair.target.text = final_fixed_by_segment[pair.id]
 
     line_length_violations = check_line_length(pairs)
+    reading_speed_violations = check_reading_speed(pairs)
     safety_net_findings = await shrink_violating_lines(
-        pairs, line_length_violations, provider, target_version_id)
+        pairs, line_length_violations + reading_speed_violations, provider, target_version_id,
+        existing_findings=dual_verification_findings)
     return final_ellipsis_violations, safety_net_findings
 
 
@@ -918,8 +940,48 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
 
     global_offset = 0.0
 
-    if cached_korean_segments is not None and cached_video_proxy_path is not None:
-        # Episode 단위 캐시 재사용
+    if korean_srt_path:
+        # 한국어 SRT가 지정된 경우: STT 캐시보다 지문 정제 + 임베딩 DP 정렬이 우선한다.
+        if cached_video_proxy_path:
+            video_proxy_path = cached_video_proxy_path
+        elif video_path:
+            video_proxy_path = await asyncio.to_thread(generate_video_proxy, video_path)
+        else:
+            video_proxy_path = None
+
+        raw_cues = load_srt(korean_srt_path)
+        korean_cues = []
+        for c in raw_cues:
+            cleaned = _clean_text_for_embedding(c.text)
+            # cleaned가 빈 문자열이면 지문/효과음뿐인 큐다(순수 대사가 없음) —
+            # 원본을 그대로 되살리면 브라켓 지문이 그대로 노출되므로 버린다.
+            if cleaned:
+                korean_cues.append(SegmentText(start=c.start, end=c.end, text=cleaned))
+
+        # 한국어 SRT 경로는 STT(실측 오디오 타이밍)를 안 거치므로, 한국어 SRT와
+        # 대상언어 SRT가 각자 스스로 적어놓은 타임코드를 그대로 믿는다 — 둘
+        # 사이에 상수 오프셋이 있어도(예: 서로 다른 인트로 길이 기준으로
+        # 작업됨) 못 잡아낸다. 한국어 SRT는 검증된 원문으로 간주하므로(다른
+        # 분기의 STT와 같은 역할), 이걸 기준 삼아 대상언어 SRT와 비교해 같은
+        # 방식으로 오프셋을 찾는다 — 새로 오디오를 분석할 필요 없이 이미 가진
+        # 두 SRT의 타임코드만으로 계산된다.
+        global_offset = detect_global_offset(korean_cues, target_segments)
+        if global_offset:
+            korean_cues = [
+                SegmentText(start=c.start + global_offset, end=c.end + global_offset, text=c.text)
+                for c in korean_cues
+            ]
+            warnings.append({
+                "stage": "타임코드 자동 보정",
+                "message": f"한국어 SRT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
+            })
+
+        korean_raw = [{"start": c.start, "end": c.end, "text": c.text} for c in korean_cues]
+        pairs = await align_by_embedding_dp(
+            korean_cues, target_segments, provider, korean_raw_cues=raw_cues)
+
+    elif cached_korean_segments is not None and cached_video_proxy_path is not None:
+        # Episode 단위 캐시 재사용 (한국어 SRT가 없는 STT 전용 경로)
         korean_raw = cached_korean_segments
         video_proxy_path = cached_video_proxy_path
         korean_words = [SegmentText(**s) for s in korean_raw]
@@ -937,13 +999,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
             })
         pairs = align(korean_words, target_segments)
 
-    elif korean_srt_path:
-        # 한국어 SRT가 지정된 경우: 한국어 STT를 거치지 않고, 영상 저화질 프록시만 생성 후
-        # OpenAI text-embedding-3-small + DP 알고리즘으로 한국어 SRT와 스페인어 SRT를 직접 정렬한다.
-        video_proxy_path = await asyncio.to_thread(generate_video_proxy, video_path)
-        korean_cues = load_srt(korean_srt_path)
-        korean_raw = [{"start": c.start, "end": c.end, "text": c.text} for c in korean_cues]
-        pairs = await align_by_embedding_dp(korean_cues, target_segments, provider)
+
     else:
         # 한국어 SRT가 없는 경우: 기존 오디오 STT 실행 후 단어 단위 정렬을 수행한다.
         korean_raw, video_proxy_path = await _run_stt_and_proxy(provider, video_path)
@@ -1084,7 +1140,7 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
     )
 
     final_ellipsis_violations, safety_net_findings = await _run_final_safety_net(
-        pairs, provider, target_version_id,
+        pairs, provider, target_version_id, dual_verification_findings,
     )
     # line_length_violations는 여기 담아 반환하지 않는다 — shrink_violating_lines가
     # 이미 텍스트를 줄이고 그 결과를 category="formatting" Finding으로 반환했다.

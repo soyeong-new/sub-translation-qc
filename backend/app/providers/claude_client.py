@@ -10,11 +10,18 @@ _CODE_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
 def _strip_code_fence(text: str) -> str:
     """"반드시 JSON만 출력하라"고 지시해도 Claude는 종종 ```json ... ```
-    코드펜스로 감싸서 응답한다. json.loads가 그대로 실패하지 않도록 벗겨낸다."""
+    코드펜스로 감싸거나 앞뒤에 설명 텍스트를 붙인다. 정규식으로 순수 JSON 영역만 안전하게 추출한다."""
     stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = _CODE_FENCE_RE.sub("", stripped)
-    return stripped.strip()
+    fence_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', stripped, re.IGNORECASE)
+    if fence_match:
+        return fence_match.group(1).strip()
+
+    json_match = re.search(r'(\[[\s\S]*\]|\{[\s\S]*\})', stripped)
+    if json_match:
+        return json_match.group(1).strip()
+
+    return stripped
+
 
 _JSON_INSTRUCTION = (
     "반드시 JSON 배열만 출력하라. 다른 설명 텍스트를 붙이지 마라. "
@@ -69,37 +76,42 @@ def _language_label(profile: dict) -> str:
 
 
 class ClaudeClient:
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, light_model: str = None):
         self._model = model
+        self._light_model = light_model or model
         self._sdk_client = AsyncAnthropic(api_key=api_key)
 
     def _extract_text(self, response) -> str:
-        # content가 빈 리스트면 (모델이 콘텐츠 블록을 생성하지 않은 경우)
-        # response.content[0]에서 바로 IndexError가 나므로, 의도한 ValueError로
-        # 먼저 막아준다.
-        if not response.content:
-            raise ValueError("Claude 응답이 비어 있음")
-        return response.content[0].text
+        # Sonnet 5 이상은 thinking 파라미터를 안 주면 적응형 사고가 기본으로
+        # 켜져, 복잡한 프롬프트에서 content[0]이 ThinkingBlock(.text 없음)일
+        # 수 있다 — 반드시 type == "text"인 블록을 찾아서 읽어야 한다.
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        raise ValueError("Claude 응답에 텍스트 블록이 없음")
 
-    async def _call_array(self, system: str, user: str) -> List[dict]:
+    async def _call_array(self, system: str, user: str, model: str = None,
+                           temperature: float = None) -> List[dict]:
+        target_model = model or self._model
+        kwargs = {"temperature": temperature} if temperature is not None else {}
         response = await self._sdk_client.messages.create(
-            model=self._model, max_tokens=4096, system=system,
-            messages=[{"role": "user", "content": user}],
+            model=target_model, max_tokens=8192, system=system,
+            messages=[{"role": "user", "content": user}], **kwargs,
         )
+
         text = self._extract_text(response)
         try:
             parsed = json.loads(_strip_code_fence(text))
             if not isinstance(parsed, list):
-                # Claude가 GPT식으로 {"findings": [...]}처럼 최상위를 객체로
-                # 감싸서 응답할 가능성에 대비한다.
                 raise TypeError("응답이 JSON 배열이 아님")
             return parsed
         except (json.JSONDecodeError, TypeError) as exc:
             raise ValueError(f"Claude 응답이 JSON 배열이 아님: {text[:200]}") from exc
 
-    async def _call_object(self, system: str, user: str) -> dict:
+    async def _call_object(self, system: str, user: str, model: str = None) -> dict:
+        target_model = model or self._model
         response = await self._sdk_client.messages.create(
-            model=self._model, max_tokens=1024, system=system,
+            model=target_model, max_tokens=1024, system=system,
             messages=[{"role": "user", "content": user}],
         )
         text = self._extract_text(response)
@@ -112,15 +124,25 @@ class ClaudeClient:
             raise ValueError(f"Claude 응답이 JSON 객체가 아님: {text[:200]}") from exc
 
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               pending_sensitive_hits: List[dict],
-                               knowledge: str, format_constraint: str,
-                               extra_instruction: str = "") -> List[dict]:
+                                pending_sensitive_hits: List[dict],
+                                knowledge: str, format_constraint: str,
+                                extra_instruction: str = "") -> List[dict]:
         language_label = _language_label(profile)
 
         system = (
             f"너는 한국어-{language_label} 자막의 전문 번역 검수자다. "
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(스페인어 번역문)를 검증하라. "
             "각 세그먼트에 대해 아래 [5단계 순차 검증 체크리스트]를 1번부터 5번까지 순서대로 하나씩 독립적으로 검토하여 교정 사항(findings)을 작성하라.\n\n"
+            "⚠️ [검수 범위 및 교정 원칙]\n"
+            "1. 반드시 교정해야 하는 대상:\n"
+            "   - 오역 및 핵심 의미 누락/와전 (category: \"mistranslation\")\n"
+            "   - 방송/미디어 심의 위반 비속어 (category: \"sensitivity\")\n"
+            "   - 한국어 구조를 그대로 따라가 현지인이 읽기에 어색한 직역투 (category: \"unnatural_style\")\n"
+            "   - 현지 문화권 관습, 관용구, 단위 표기 오류 (category: \"locale_convention\")\n"
+            "   - 지정된 성별(-o/-a) 및 격식(존댓말/반말) 파라미터 위반\n"
+            "2. 교정 금지 대상 (취향 차이의 다듬기):\n"
+            "   - 의미 왜곡이 없고 현지 구어체로 이미 타당한 번역인데, 단순히 AI 개인 선호 어휘나 동의어로 다듬는 수정은 제안하지 마라.\n"
+            "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n\n"
             "[5단계 순차 검증 체크리스트]\n"
             "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
             "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
@@ -137,18 +159,21 @@ class ClaudeClient:
             "5. 성별 및 격식 지정 파라미터 준수:\n"
             "   - 기준: 각 입력 항목에 gender (male/female) 또는 formality (formal/informal) 값이 제공된 경우,\n"
             "   - 교정 지침: 교정된 문장(`corrected_text`)에서도 지정된 성별 어미(-o/-a)와 격식(존댓말/반말)을 100% 완벽히 유지하여 작성하라.\n\n"
-            f"{format_constraint} 참고 지식베이스: {knowledge}\n"
+            f"⚠️ [자막 형태 및 글자수 절대 제약 - HARD CONSTRAINT]\n"
+            f"- 모든 교정문(corrected_text)은 반드시 다음 제약을 엄격히 지켜서 작성하라: {format_constraint}\n"
+            "- 각 줄의 글자수를 실제로 세어보고 제약 글자수를 초과하면 절/쉼표 경계에서 자연스럽게 줄바꿈(\\n)을 넣거나 표현을 다듬어 글자수 한도 내로 들어오게 작성하라.\n\n"
+            f"참고 지식베이스: {knowledge}\n"
         )
         system += (
             f"사전에 없어 애매한 비속어 후보(참고용): "
             f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
             + _JSON_INSTRUCTION + "\n" + _PRIMARY_SCHEMA_INSTRUCTION
         )
+
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
-        return await self._call_array(system, user)
-
+        return await self._call_array(system, user, model=self._model, temperature=0)
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
                            extra_instruction: str = "") -> str:
@@ -164,7 +189,7 @@ class ClaudeClient:
         )
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
-        result = await self._call_object(system, text)
+        result = await self._call_object(system, text, model=self._light_model)
         return result["shrunk_text"]
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
@@ -176,7 +201,7 @@ class ClaudeClient:
             "전달하는 것을 우선하라.\n" + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        return await self._call_array(system, user)
+        return await self._call_array(system, user, model=self._light_model)
 
     async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -187,4 +212,4 @@ class ClaudeClient:
             + _EQUIVALENCE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call_array(system, user)
+        return await self._call_array(system, user, model=self._light_model, temperature=0)

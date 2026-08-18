@@ -60,6 +60,25 @@ const STATUS_BADGE_CLASS = {
   modified: "bg-warning/10 text-warning border-warning/30",
 };
 
+// 카드 테두리에 처리 상태를 반영한다 — 승인/거부/수정해도 카드가 목록에서
+// 사라지지 않고 계속 보이니(다시 바꿀 수도 있어야 하므로), 눌렀는지 안
+// 눌렀는지는 이 색으로 구분한다.
+const CARD_BORDER_CLASS = {
+  pending: "border-border",
+  approved: "border-success/50",
+  rejected: "border-destructive/50",
+  modified: "border-warning/50",
+};
+
+// reviewed_at이 없으면(=검수자가 아직 review-action/pick을 누른 적 없음)
+// status가 이미 "approved"여도(Claude+GPT 합의 자동 적용, 안전망 자동
+// 축약 등 파이프라인이 스스로 승인한 경우) 색을 칠하지 않는다 — 처음부터
+// 초록색으로 보이면 검수자가 이미 뭔가 판단한 것처럼 헷갈린다.
+function cardBorderClass(finding) {
+  if (!finding.reviewed_at) return "border-border";
+  return CARD_BORDER_CLASS[finding.status] || "border-border";
+}
+
 const inputClass =
   "block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground " +
   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 " +
@@ -181,9 +200,13 @@ function groupFindingsForDisplay(findings) {
   const items = [];
   for (const f of findings) {
     if (paired.has(f.id)) continue;
-    if (f.status === "pending" && (f.model === "claude" || f.model === "gpt")) {
+    // 상태(status)는 안 본다 — 처리 후에도(승인/거부됨) 같은 짝 카드로 계속
+    // 묶여 보여야 한다. 여기서 status를 조건에 넣으면 결정한 순간 짝이
+    // 풀려 카드 두 개로 갈라지는데, 그건 검수자가 보기엔 "처리했더니 새
+    // 카드가 또 생겼다"로 보인다.
+    if (f.model === "claude" || f.model === "gpt") {
       const sibling = bySegment[f.segment_id].find(
-        (g) => g.id !== f.id && !paired.has(g.id) && g.status === "pending"
+        (g) => g.id !== f.id && !paired.has(g.id)
           && (g.model === "claude" || g.model === "gpt") && g.model !== f.model
       );
       if (sibling) {
@@ -268,9 +291,9 @@ function FindingCard({
   return (
     <li
       onClick={handleCardClick}
-      className={`rounded-lg border bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
-        isPreviewing ? "border-primary ring-1 ring-primary" : "border-border"
-      }`}
+      className={`rounded-lg border-2 bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
+        isPreviewing ? "ring-1 ring-primary" : ""
+      } ${cardBorderClass(finding)}`}
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${categoryClass}`}>
@@ -304,7 +327,7 @@ function FindingCard({
         <div className="mb-3 rounded-md border border-dashed border-accent/40 bg-accent/5 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <p className="text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
-              STT 한국어 원문 (참고용)
+              한국어 원문
             </p>
             {/* STT가 잘못 알아들은 게 원인이면, 검수자가 그 자리에서 바로
                 고칠 수 있어야 한다 — 오역 finding만 승인/거부해서는 STT
@@ -527,11 +550,14 @@ function PairedFindingCard({
     const categoryClass = CATEGORY_BADGE_CLASS[finding.category] || FALLBACK_BADGE_CLASS;
 
     return (
-      <div className="rounded-md border border-border bg-muted/20 p-3">
+      <div className={`rounded-md border-2 bg-muted/20 p-3 ${cardBorderClass(finding)}`}>
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-semibold text-foreground">{label}</span>
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${categoryClass}`}>
             {CATEGORY_LABELS[finding.category] || finding.category}
+          </span>
+          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE_CLASS[finding.status] || FALLBACK_BADGE_CLASS}`}>
+            {STATUS_LABELS[finding.status] || finding.status}
           </span>
         </div>
 
@@ -664,7 +690,9 @@ function PairedFindingCard({
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-semibold text-accent-foreground">
-          Claude/GPT 의견 다름 — 하나를 선택해주세요
+          {a.status === "pending" && b.status === "pending"
+            ? "Claude/GPT 의견 다름 — 하나를 선택해주세요"
+            : "Claude/GPT 의견 다름 — 처리됨 (테두리 색으로 확인, 다시 바꿀 수 있음)"}
         </span>
       </div>
 
@@ -672,7 +700,7 @@ function PairedFindingCard({
         <div className="mb-3 rounded-md border border-dashed border-accent/40 bg-accent/5 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <p className="text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
-              STT 한국어 원문 (참고용)
+              한국어 원문
             </p>
             {segment && !sttEditing && (
               <button
@@ -1106,6 +1134,21 @@ export default function ReviewView({ targetVersionId, onBack }) {
     }
   }
 
+  // 내보내기 결과(srt 문자열)를 실제 .srt 파일로 다운로드한다 — 지금까지는
+  // 화면에 텍스트만 보여주고 파일을 만들어주지 않아서, 검수자가 직접
+  // 복사해서 파일로 저장해야 했다.
+  function downloadSrtFile(srtText) {
+    const blob = new Blob([srtText], { type: "application/x-subrip;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${targetVersionId.slice(0, 8)}.srt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   async function handleExport() {
     setExportStatus({ kind: "loading" });
     try {
@@ -1122,6 +1165,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
         }
       }
       setExportResult(result);
+      downloadSrtFile(result.srt);
       setExportStatus({ kind: "idle" });
     } catch (err) {
       setExportStatus({ kind: "error", message: err.message ?? "내보내기 중 오류가 발생했습니다." });

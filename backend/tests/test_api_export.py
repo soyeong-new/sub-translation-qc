@@ -91,7 +91,9 @@ async def test_export_format_warnings_flags_line_length_violation_with_no_findin
         episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
         tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
         session.add(tv); await session.flush()
-        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=2.0,
+        # duration을 넉넉히 줘서(20초) 읽기 속도 위반은 안 걸리고 줄 길이
+        # 위반만 걸리게 한다 — 이 테스트는 line_length 단독 감지를 검증한다.
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=20.0,
                       korean_text="", target_text=long_text)
         session.add(seg); await session.flush()
         await session.commit()
@@ -220,7 +222,11 @@ async def test_export_returns_404_for_unknown_target_version():
 
 
 @pytest.mark.asyncio
-async def test_export_deletes_video_proxy_file(tmp_path):
+async def test_export_keeps_video_proxy_file(tmp_path):
+    """회귀(사용자 재현): export는 더 이상 영상 프록시를 지우지 않는다 —
+    export 후에도 계속 검토/재수정하는 흐름이 흔한데, 한 번 내보냈다고
+    미리보기가 영구히 사라지면 안 된다(원본 영상은 이미 삭제된 뒤라
+    복구 불가능하다). 삭제는 title을 실제로 지울 때만 한다."""
     proxy_path = tmp_path / "proxy.mp4"
     proxy_path.write_bytes(b"fake video bytes")
     async with async_session() as session:
@@ -237,7 +243,7 @@ async def test_export_deletes_video_proxy_file(tmp_path):
         r = await client.get(f"/target-versions/{tv_id}/export")
         assert r.status_code == 200
 
-    assert not proxy_path.exists()
+    assert proxy_path.exists()
     async with async_session() as session:
         tv = await session.get(TargetVersion, tv_id)
-        assert tv.video_proxy_path is None
+        assert tv.video_proxy_path == str(proxy_path)

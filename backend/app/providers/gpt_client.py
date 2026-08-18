@@ -174,6 +174,11 @@ def _language_label(profile: dict) -> str:
     return f"{language}({variant})" if variant else language
 
 
+# findings을 만드는 호출들의 재실행 변동을 줄이기 위한 고정 seed(재현성용,
+# temperature를 못 쓰는 모델의 대체 수단) — 값 자체엔 의미 없음.
+_SEED = 42
+
+
 class GptClient:
     def __init__(self, api_key: str, model: str, light_model: str = None, transcribe_model: str = "whisper-1"):
         self._model = model
@@ -181,8 +186,13 @@ class GptClient:
         self._transcribe_model = transcribe_model
         self._sdk_client = AsyncOpenAI(api_key=api_key)
 
-    async def _call(self, system: str, user: str, key: str = "findings", label: str = "", model_override: str = None) -> List[dict]:
+    async def _call(self, system: str, user: str, key: str = "findings", label: str = "",
+                     model_override: str = None, seed: int = None) -> List[dict]:
+        # ponytail: gpt-5.6 계열은 temperature 커스텀 값을 거부한다(400
+        # unsupported_value) — 기본값(1)만 허용, Claude와 달리 여기선 조절 불가.
+        # 대신 seed로 재실행 시 결과 변동을 줄인다(완벽한 결정성 보장은 아님).
         target_model = model_override or self._model
+        kwargs = {"seed": seed} if seed is not None else {}
         response = await self._sdk_client.chat.completions.create(
             model=target_model,
             response_format={"type": "json_object"},
@@ -190,6 +200,7 @@ class GptClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            **kwargs,
         )
         if not response.choices:
             raise ValueError("GPT 응답이 비어 있음")
@@ -216,7 +227,19 @@ class GptClient:
             f"너는 한국어-{language_label} 자막의 전문 번역 검수자다. "
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(스페인어 번역문)를 검증하라. "
             "각 세그먼트에 대해 아래 [5단계 순차 검증 체크리스트]를 1번부터 5번까지 순서대로 하나씩 독립적으로 검토하여 교정 사항(findings)을 작성하라.\n\n"
+            "⚠️ [검수 범위 및 교정 원칙]\n"
+            "1. 반드시 교정해야 하는 대상:\n"
+            "   - 오역 및 핵심 의미 누락/와전 (category: \"mistranslation\")\n"
+            "   - 방송/미디어 심의 위반 비속어 (category: \"sensitivity\")\n"
+            "   - 한국어 구조를 그대로 따라가 현지인이 읽기에 어색한 직역투 (category: \"unnatural_style\")\n"
+            "   - 현지 문화권 관습, 관용구, 단위 표기 오류 (category: \"locale_convention\")\n"
+            "   - 지정된 성별(-o/-a) 및 격식(존댓말/반말) 파라미터 위반\n"
+            "2. 교정 금지 대상 (취향 차이의 다듬기):\n"
+            "   - 의미 왜곡이 없고 현지 구어체로 이미 타당한 번역인데, 단순히 AI 개인 선호 어휘나 동의어로 다듬는 수정은 제안하지 마라.\n"
+            "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n\n"
+
             "[5단계 순차 검증 체크리스트]\n"
+
             "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
             "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
             "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
@@ -232,8 +255,12 @@ class GptClient:
             "5. 성별 및 격식 지정 파라미터 준수:\n"
             "   - 기준: 각 입력 항목에 gender (male/female) 또는 formality (formal/informal) 값이 제공된 경우,\n"
             "   - 교정 지침: 교정된 문장(`corrected_text`)에서도 지정된 성별 어미(-o/-a)와 격식(존댓말/반말)을 100% 완벽히 유지하여 작성하라.\n\n"
-            f"{format_constraint} 참고 지식베이스: {knowledge}\n"
+            f"⚠️ [자막 형태 및 글자수 절대 제약 - HARD CONSTRAINT]\n"
+            f"- 모든 교정문(corrected_text)은 반드시 다음 제약을 엄격히 지켜서 작성하라: {format_constraint}\n"
+            "- 각 줄의 글자수를 실제로 세어보고 제약 글자수를 초과하면 절/쉼표 경계에서 자연스럽게 줄바꿈(\\n)을 넣거나 표현을 다듬어 글자수 한도 내로 들어오게 작성하라.\n\n"
+            f"참고 지식베이스: {knowledge}\n"
         )
+
         system += (
             f"사전에 없어 애매한 비속어 후보(참고용): "
             f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
@@ -244,7 +271,7 @@ class GptClient:
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
-        return await self._call(system, user)
+        return await self._call(system, user, seed=_SEED)
 
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
@@ -267,7 +294,8 @@ class GptClient:
             + _EQUIVALENCE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="동등성 확인", model_override=self._light_model)
+        return await self._call(system, user, key="results", label="동등성 확인",
+                                 model_override=self._light_model, seed=_SEED)
 
     async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -303,6 +331,7 @@ class GptClient:
         response = await self._sdk_client.chat.completions.create(
             model=self._light_model,
             response_format=_SCENE_SPLIT_SCHEMA,
+            seed=_SEED,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

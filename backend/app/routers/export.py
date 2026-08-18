@@ -1,6 +1,5 @@
 """검수 완료된 내용을 최종 SRT로 조립해 내보내는 엔드포인트."""
 
-from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
@@ -44,17 +43,16 @@ async def export_target_version(target_version_id: str):
     warnings = safety_net_check(segments, findings)
 
     # export 이력/감사 기록 (exports 테이블). 응답으로 내려준 통계와 정확히 같은
-    # 값을 남긴다.
+    # 값을 남긴다. 영상 프록시는 여기서 지우지 않는다 — export 후에도 계속
+    # 검토/재수정하는 흐름이 흔해서, 한 번 내보냈다고 미리보기가 영구히
+    # 사라지면 안 된다(원본 영상은 이미 삭제된 뒤라 복구 불가). 삭제는
+    # title을 실제로 지울 때만 한다(titles.py delete_title).
     async with async_session() as session:
         session.add(ExportRow(
             target_version_id=target_version_id,
             finding_count=stats.finding_count,
             reflection_rate=stats.reflection_rate,
         ))
-        tv = await session.get(TargetVersion, target_version_id)
-        if tv is not None and tv.video_proxy_path:
-            Path(tv.video_proxy_path).unlink(missing_ok=True)
-            tv.video_proxy_path = None
         await session.commit()
 
     return {

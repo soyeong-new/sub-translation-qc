@@ -186,6 +186,7 @@ def get_provider() -> ModelProvider:
             required[key] = value
         return LiveModelProvider(
             claude_api_key=required["ANTHROPIC_API_KEY"], claude_model=required["CLAUDE_MODEL"],
+            claude_light_model=os.getenv("CLAUDE_LIGHT_MODEL", "claude-haiku-4-5"),
             gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
             gpt_light_model=os.getenv("GPT_LIGHT_MODEL", "gpt-5.6-luna"),
             gpt_transcribe_model=os.getenv("GPT_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),

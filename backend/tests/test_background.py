@@ -104,6 +104,37 @@ async def test_analyze_and_save_sets_status_review_on_success(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_analyze_and_save_does_not_mark_review_before_phase2_runs(tmp_path, monkeypatch):
+    """회귀: phase1이 끝난 시점(AI 검증/findings 생성 전)에 곧장 status를
+    "review"로 찍으면, 검토 화면이 findings 0개인 채로 "검토 가능"이라고
+    뜨는 경쟁 상태가 생긴다(실사용에서 재현됨). phase2(_run_phase2_and_save)가
+    시작되는 시점엔 아직 "verifying"이어야 한다 — 프론트는 이미 이 값을
+    계속 폴링하도록 처리돼 있다(api.js pollTargetVersionStatus)."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    tv_id = await _make_target_version()
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+
+    status_when_phase2_started = {}
+    original_run_phase2 = background._run_phase2_and_save
+
+    async def spy(target_version_id, provider):
+        async with async_session() as session:
+            tv = await session.get(TargetVersion, target_version_id)
+            status_when_phase2_started["status"] = tv.status
+        await original_run_phase2(target_version_id, provider)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"), \
+         patch("app.background.delete_original_video"), \
+         patch("app.background._run_phase2_and_save", side_effect=spy):
+        await background.analyze_and_save(tv_id, str(srt_path))
+
+    assert status_when_phase2_started["status"] == "verifying"
+
+
+@pytest.mark.asyncio
 async def test_analyze_and_save_does_not_delete_original_video_when_pipeline_fails(
         tmp_path, monkeypatch):
     """C2 회귀: run_pipeline_phase1이 실패하면(예: 타임아웃, 예외) 원본 영상이 지워지면

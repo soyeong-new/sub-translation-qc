@@ -16,7 +16,7 @@ from app.core.requery import (
     apply_resolved_gender_to_text, flag_new_gender_ambiguity, gloss_new_gender_words,
     reapply_gender_to_pending_findings,
 )
-from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length
+from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length, effective_max_chars
 from app.core.safety_net import enforce_line_length
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
@@ -101,7 +101,13 @@ async def list_findings(target_version_id: str):
             {"id": r.id, "segment_id": r.segment_id, "category": r.category,
              "description": r.description, "original_text": r.original_text,
              "suggested_text": r.suggested_text, "status": r.status,
-             "model": r.model, "final_text": r.final_text}
+             "model": r.model, "final_text": r.final_text,
+             # 검수자가 실제로 review-action/pick을 눌렀는지 구분하는 값 — 이게
+             # None이면 status가 "approved"여도 사람이 아니라 파이프라인이
+             # 자동으로 승인한 것이다(예: Claude+GPT 합의 자동 적용, 안전망
+             # 자동 축약). 프론트가 카드 테두리 색을 "검수자가 판단했는지"로만
+             # 표시하려면 status가 아니라 이 값을 봐야 한다.
+             "reviewed_at": r.reviewed_at}
             for r in rows
         ]
 
@@ -241,8 +247,13 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
         elif payload.action == "approved":
             # AI 제안은 검수자의 문구가 아니라서, 제약을 넘으면 자동으로
             # 줄인다(승인 시점까지는 S4 안전망을 안 거치는 pending 제안이라
-            # 여기서 처음 걸러진다).
-            finding.final_text, _ = await enforce_line_length(finding.suggested_text, get_provider())
+            # 여기서 처음 걸러진다). 줄당 정적 제약뿐 아니라 이 세그먼트의
+            # 노출 시간 기준 읽기 속도도 같이 본다.
+            segment = await session.get(Segment, finding.segment_id)
+            max_chars = (
+                effective_max_chars(segment.end - segment.start) if segment else MAX_LINE_CHARS)
+            finding.final_text, _ = await enforce_line_length(
+                finding.suggested_text, get_provider(), max_chars, MAX_LINES)
         await session.commit()
         return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
 
@@ -271,8 +282,13 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
             finding.final_text = payload.final_text
         else:
             finding.status = "approved"
-            # 그대로 채택한 AI 제안은 제약을 넘으면 자동으로 줄인다.
-            finding.final_text, _ = await enforce_line_length(finding.suggested_text, get_provider())
+            # 그대로 채택한 AI 제안은 제약(줄당 글자수 + 노출 시간 기준
+            # 읽기 속도)을 넘으면 자동으로 줄인다.
+            segment = await session.get(Segment, finding.segment_id)
+            max_chars = (
+                effective_max_chars(segment.end - segment.start) if segment else MAX_LINE_CHARS)
+            finding.final_text, _ = await enforce_line_length(
+                finding.suggested_text, get_provider(), max_chars, MAX_LINES)
         finding.reviewer_name = payload.reviewer_name
         finding.reviewed_at = now
 

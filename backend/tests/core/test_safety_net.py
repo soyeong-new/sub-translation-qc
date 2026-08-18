@@ -1,11 +1,36 @@
 import pytest
 from app.core.safety_net import shrink_violating_lines, enforce_line_length
-from app.schemas import AlignedPair, SegmentText, FormatViolation
+from app.schemas import AlignedPair, SegmentText, FormatViolation, Finding
 from app.providers.mock import MockProvider
 
 
 def _pair(id_, text):
     return AlignedPair(id=id_, target=SegmentText(start=0.0, end=1.0, text=text))
+
+
+@pytest.mark.asyncio
+async def test_violation_merges_into_existing_approved_finding_instead_of_new_card(monkeypatch):
+    """회귀(사용자 재현): Claude+GPT가 합의해 자동 승인된 finding의 문구가
+    글자수 제약도 위반하면, 안전망이 새 카드를 또 만들면 안 된다 — 검수자
+    눈엔 "방금 승인한 문장이랑 거의 똑같은 문장"이 카드 두 개로 보인다.
+    기존 finding 하나를 그대로 갱신해서 카드가 하나만 남아야 한다."""
+    long_text = "가" * 60
+    pairs = [_pair("p1", long_text)]
+    violations = [FormatViolation(segment_id="p1", rule="line_length", detail="60자")]
+    existing = Finding(
+        id="finding_p1_claude+gpt_mistranslation", target_version_id="tv1", segment_id="p1",
+        category="mistranslation", description="오역 교정",
+        original_text="원본", suggested_text=long_text, confidence=1.0,
+        source="llm", model="claude+gpt", status="approved", final_text=long_text,
+    )
+
+    findings = await shrink_violating_lines(
+        pairs, violations, MockProvider(), "tv1", existing_findings=[existing])
+
+    assert findings == []  # 새 카드를 안 만듦
+    assert len(existing.suggested_text) <= 50
+    assert existing.final_text == existing.suggested_text
+    assert existing.status == "approved"  # 기존 카드 그대로
 
 
 @pytest.mark.asyncio
@@ -27,6 +52,19 @@ async def test_violation_shrinks_text_and_updates_pair_in_place():
     assert findings[0].status == "approved"
     assert pairs[0].target.text == findings[0].suggested_text
     assert len(pairs[0].target.text) <= 50
+
+
+@pytest.mark.asyncio
+async def test_reading_speed_violation_uses_tighter_budget_than_line_length():
+    """회귀(사용자 재현): 큐 노출 시간이 아주 짧으면(1.2초) 줄당 50자 제약은
+    통과하는 텍스트도 읽기엔 너무 길 수 있다 — reading_speed 위반으로 들어온
+    경우, 노출 시간 기준(초당 20자) 예산이 정적 50자 제약보다 우선한다."""
+    text = "가" * 40  # 줄당 50자 제약은 통과
+    pair = AlignedPair(id="p1", target=SegmentText(start=0.0, end=1.2, text=text))
+    violations = [FormatViolation(segment_id="p1", rule="reading_speed", detail="1.2초 노출에 40자")]
+    findings = await shrink_violating_lines([pair], violations, MockProvider(), "tv1")
+    assert len(findings) == 1
+    assert len(pair.target.text) <= 12  # int(1.2 * 20) // 2 (MAX_LINES)
 
 
 @pytest.mark.asyncio
