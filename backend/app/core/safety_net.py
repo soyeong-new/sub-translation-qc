@@ -4,7 +4,7 @@ from typing import List, Tuple
 from app.schemas import AlignedPair, Finding, FormatViolation
 from app.providers.base import ModelProvider
 from app.core.format_rules import (
-    MAX_LINE_CHARS, MAX_LINES, rewrap_line, violates_line_length, effective_max_chars,
+    MAX_LINE_CHARS, MAX_LINES, rewrap_line, violates_line_length,
 )
 
 
@@ -58,12 +58,8 @@ async def shrink_violating_lines(pairs: List[AlignedPair],
     해결됐는지(규칙 기반) LLM까지 갔는지에 따라 finding의 source/model이
     갈린다(검수자가 "왜 바뀌었는지" 구분할 수 있게).
 
-    실제로 적용하는 max_chars는 정적 줄당 글자수 제약과, (reading_speed
-    위반으로 여기 들어온 세그먼트에 한해) 큐 노출 시간 기준 읽기 속도
-    제약 중 더 엄격한 쪽이다 — line_length 위반만으로 들어온 세그먼트는
-    duration을 신경 쓰지 않는다(pair.target의 start/end가 실제 노출 시간을
-    반영한다는 보장이 없는 호출자도 있어, reading_speed 위반이 실제로
-    감지된 경우에만 그 값을 신뢰한다).
+    최대 글자수는 정적 줄당 글자수 제약(MAX_LINE_CHARS)을 사용한다.
+    읽기 속도는 화면에 실제로 입혀서 확인하므로 여기서는 고려하지 않는다.
 
     existing_findings에 같은 세그먼트를 가리키는 자동 승인된(status
     "approved") S2 finding이 정확히 하나 있으면, 새 finding을 또 만들지
@@ -74,7 +70,6 @@ async def shrink_violating_lines(pairs: List[AlignedPair],
     pending일 때는 pair.target.text가 아직 그 제안을 반영하지 않은
     상태라 여기서 만드는 축약이 그 제안과 무관하다)는 지금처럼 새
     finding을 만든다."""
-    reading_speed_segment_ids = {v.segment_id for v in violations if v.rule == "reading_speed"}
     violations = _dedupe_by_segment(violations)
     if not violations:
         return []
@@ -97,8 +92,6 @@ async def shrink_violating_lines(pairs: List[AlignedPair],
         if pair is None or pair.target is None:
             continue
         max_chars = MAX_LINE_CHARS
-        if v.segment_id in reading_speed_segment_ids:
-            max_chars = effective_max_chars(pair.target.end - pair.target.start)
 
         original_text = pair.target.text
         rewrapped = rewrap_line(original_text, max_chars, MAX_LINES)
@@ -111,10 +104,15 @@ async def shrink_violating_lines(pairs: List[AlignedPair],
         pair.target.text = shrunk_text
 
         existing = mergeable_by_segment.get(v.segment_id)
-        if existing is not None:
+        if existing is not None and shrunk_text != original_text:
+            # 실제로 텍스트가 변경된 경우만 업데이트. description은 안 건드린다
+            # — 프론트(splitDescription)가 "(원본 뜻 참고: ...)"/"(한국어 역번역
+            # 참고: ...)" 같은 태그를 문자열 끝(정규식 $)에서 잘라내는 방식이라,
+            # 여기서 뒤에 뭘 덧붙이면 그 파싱이 전부 깨져서 원본 뜻/역번역이
+            # 안 보이게 된다("제안" 박스의 글자수 표시만으로 축약됐다는 건
+            # 알 수 있으니 충분하다).
             existing.suggested_text = shrunk_text
             existing.final_text = shrunk_text
-            existing.description += f" [{note}]"
             continue
 
         findings.append(Finding(

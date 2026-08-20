@@ -16,7 +16,7 @@ from app.core.requery import (
     apply_resolved_gender_to_text, flag_new_gender_ambiguity, gloss_new_gender_words,
     reapply_gender_to_pending_findings,
 )
-from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length, effective_max_chars
+from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length
 from app.core.safety_net import enforce_line_length
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
@@ -85,6 +85,7 @@ class RejectPairIn(BaseModel):
 
 class RequeryIn(BaseModel):
     instruction: str
+    context: str = ""
     reviewer_name: str
 
 
@@ -247,13 +248,9 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
         elif payload.action == "approved":
             # AI 제안은 검수자의 문구가 아니라서, 제약을 넘으면 자동으로
             # 줄인다(승인 시점까지는 S4 안전망을 안 거치는 pending 제안이라
-            # 여기서 처음 걸러진다). 줄당 정적 제약뿐 아니라 이 세그먼트의
-            # 노출 시간 기준 읽기 속도도 같이 본다.
-            segment = await session.get(Segment, finding.segment_id)
-            max_chars = (
-                effective_max_chars(segment.end - segment.start) if segment else MAX_LINE_CHARS)
+            # 여기서 처음 걸러진다). 줄당 글자수 제약(50자, 최대 2줄)을 검사한다.
             finding.final_text, _ = await enforce_line_length(
-                finding.suggested_text, get_provider(), max_chars, MAX_LINES)
+                finding.suggested_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
         await session.commit()
         return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
 
@@ -282,13 +279,10 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
             finding.final_text = payload.final_text
         else:
             finding.status = "approved"
-            # 그대로 채택한 AI 제안은 제약(줄당 글자수 + 노출 시간 기준
-            # 읽기 속도)을 넘으면 자동으로 줄인다.
-            segment = await session.get(Segment, finding.segment_id)
-            max_chars = (
-                effective_max_chars(segment.end - segment.start) if segment else MAX_LINE_CHARS)
+            # 그대로 채택한 AI 제안은 줄당 글자수 제약(50자, 최대 2줄)을
+            # 넘으면 자동으로 줄인다.
             finding.final_text, _ = await enforce_line_length(
-                finding.suggested_text, get_provider(), max_chars, MAX_LINES)
+                finding.suggested_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
         finding.reviewer_name = payload.reviewer_name
         finding.reviewed_at = now
 
@@ -349,7 +343,7 @@ async def requery(finding_id: str, payload: RequeryIn):
 
         try:
             new_suggested_text = await requery_finding(
-                finding, segment, payload.instruction, provider, knowledge, profile)
+                finding, segment, payload.instruction, provider, knowledge, profile, payload.context)
         except RequeryNotSupportedError as exc:
             raise HTTPException(400, str(exc))
 
@@ -434,6 +428,19 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
                 description += f" (원본 뜻 참고: {original_meaning})"
             if original_backtranslation:
                 description += f" (원본 한국어 역번역 참고: {original_backtranslation})"
+
+            # 제안의 역번역도 생성 (검수자가 제안을 판단할 때 참고하도록)
+            proposal_backtranslation = None
+            try:
+                backtranslated = await provider.back_translate_with_claude(
+                    [{"id": segment_id, "text": correction["corrected_text"]}], profile)
+                if backtranslated:
+                    proposal_backtranslation = backtranslated[0]["korean_text"]
+            except Exception:
+                logger.exception(
+                    "제안 역번역 실패, 역번역 없이 계속 진행 (segment_id=%s)", segment_id)
+            if proposal_backtranslation:
+                description += f" (제안 한국어 역번역 참고: {proposal_backtranslation})"
 
             # 이 세그먼트에 finding이 이미 정확히 하나뿐이면(가장 흔한 경우 —
             # 이전에 승인/거부까지 끝난 상태) 새 카드를 또 만들지 않고 그

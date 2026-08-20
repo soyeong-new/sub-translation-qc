@@ -2,7 +2,7 @@
 
 from typing import List
 from app.core.ingest import build_srt
-from app.core.format_rules import check_line_length, check_reading_speed
+from app.core.format_rules import check_line_length
 from app.schemas import AlignedPair, SegmentText, ExportStats
 
 
@@ -58,7 +58,7 @@ def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
 
 def safety_net_check(segments: List[dict], findings: List[dict]) -> list:
     """export 직전 안전망 (design §5-1의 3번 지점). 검수자의 직접 수정 텍스트
-    까지 포함한 최종 텍스트를 대상으로 줄 길이·읽기 속도 규칙을 마지막으로
+    까지 포함한 최종 텍스트를 대상으로 줄 길이 규칙(50자, 최대 2줄)을 마지막으로
     한 번 더 검사한다. 제외된(excluded) 세그먼트는 최종 SRT에 안 나가므로
     검사할 이유가 없다."""
     final_by_segment = _final_text_by_segment(findings)
@@ -69,7 +69,7 @@ def safety_net_check(segments: List[dict], findings: List[dict]) -> list:
         ))
         for seg in segments if not seg.get("excluded")
     ]
-    return check_line_length(pairs) + check_reading_speed(pairs)
+    return check_line_length(pairs)
 
 
 def compute_stats(findings: List[dict]) -> ExportStats:

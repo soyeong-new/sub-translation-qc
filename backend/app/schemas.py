@@ -20,6 +20,8 @@ class AlignedPair(BaseModel):
     id: str
     korean: Optional[SegmentText] = None
     target: Optional[SegmentText] = None
+    gender: Optional[str] = None
+    formality: Optional[str] = None
 
 
 class Finding(BaseModel):

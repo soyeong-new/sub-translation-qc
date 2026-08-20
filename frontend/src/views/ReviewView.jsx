@@ -17,10 +17,9 @@ import {
 } from "../api.js";
 import { GenderQuestion, isGenderResolved } from "./FlaggedSegmentStepper.jsx";
 
-// 규칙 기반(사전필터, 자동재배치) finding만 재질문 대상이 아니다 — LLM/안전망은
-// 전부 가능 (backend/app/core/requery.py의 _LLM_REQUERYABLE_MODELS + "안전망"과
-// 대칭). 자동재배치는 줄바꿈만 기계적으로 바꾼 것이라 다시 물어볼 "판단"이 없다.
-const NOT_REQUERYABLE_MODELS = ["사전필터", "자동재배치"];
+// 재질문은 GPT만 가능하다 (backend/app/core/requery.py의 requery_finding 참고).
+// Claude finding은 재질문 불가능.
+const NOT_REQUERYABLE_MODELS = ["사전필터", "자동재배치", "claude"];
 function isRequeryable(finding) {
   return Boolean(finding.model) && !NOT_REQUERYABLE_MODELS.includes(finding.model);
 }
@@ -152,13 +151,19 @@ function CharCount({ text }) {
 // ponytail: description 포맷 문자열에 결합됨 — 문구가 바뀌면 조용히 안 걸릴
 // 뿐 깨지진 않는다(그냥 설명 안에 남아 보임).
 function splitDescription(rawDescription) {
-  // 원본 역번역은 STT 재검증 경로(findings.py의 correct_stt)가 "(한국어
-  // 역번역 참고: ...)" 뒤에 덧붙이므로, 그 태그보다 먼저 떼어내야 한다 —
-  // 순서가 바뀌면 뒤쪽 정규식이 앞쪽 태그까지 통째로 삼켜버린다.
-  const originalBackTranslationMatch = rawDescription.match(/ \(원본 한국어 역번역 참고: (.+)\)$/s);
-  const withoutOriginalBackTranslation = originalBackTranslationMatch
-    ? rawDescription.slice(0, originalBackTranslationMatch.index)
+  // 역번역 태그들을 떼어낸다. STT 재검증 경로는 원본/제안 역번역을 둘 다 붙이므로
+  // 순서가 중요하다 — 더 구체적인(긴) 태그부터 떼어야 뒤쪽 정규식이 앞쪽까지
+  // 삼켜버리지 않는다.
+  const proposalBackTranslationMatch = rawDescription.match(/ \(제안 한국어 역번역 참고: (.+)\)$/s);
+  const withoutProposalBackTranslation = proposalBackTranslationMatch
+    ? rawDescription.slice(0, proposalBackTranslationMatch.index)
     : rawDescription;
+  const proposalBackTranslation = proposalBackTranslationMatch ? proposalBackTranslationMatch[1] : null;
+
+  const originalBackTranslationMatch = withoutProposalBackTranslation.match(/ \(원본 한국어 역번역 참고: (.+)\)$/s);
+  const withoutOriginalBackTranslation = originalBackTranslationMatch
+    ? withoutProposalBackTranslation.slice(0, originalBackTranslationMatch.index)
+    : withoutProposalBackTranslation;
   const originalBackTranslation = originalBackTranslationMatch ? originalBackTranslationMatch[1] : null;
 
   const backTranslationMatch = withoutOriginalBackTranslation.match(/ \(한국어 역번역 참고: (.+)\)$/s);
@@ -183,7 +188,7 @@ function splitDescription(rawDescription) {
     ? withoutOriginalMeaning.slice(requeryMatch[0].length)
     : withoutOriginalMeaning;
   const requeryInstruction = requeryMatch ? requeryMatch[1] : null;
-  return { description, backTranslation, originalBackTranslation, originalMeaning, requeryInstruction };
+  return { description, backTranslation, originalBackTranslation, proposalBackTranslation, originalMeaning, requeryInstruction };
 }
 
 // Claude/GPT가 같은 세그먼트에 대해 서로 다르게 제안했을 때(둘 다 pending)
@@ -268,12 +273,12 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
 
 function FindingCard({
   finding, segment, isPreviewing, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
-  requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
+  requerying, requeryText, requeryContext, requeryPending, onRequeryTextChange, onRequeryContextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
   const koreanText = segment?.korean_text;
-  const { description, backTranslation, originalBackTranslation, originalMeaning, requeryInstruction } =
+  const { description, backTranslation, originalBackTranslation, proposalBackTranslation, originalMeaning, requeryInstruction } =
     splitDescription(finding.description);
   const busy = pending != null;
   const canAct = Boolean(reviewerName.trim()) && !busy;
@@ -408,9 +413,9 @@ function FindingCard({
             <CharCount text={finding.suggested_text} />
           </div>
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
-          {backTranslation && (
+          {(proposalBackTranslation || backTranslation) && (
             <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
-              역번역 참고: {backTranslation}
+              역번역 참고: {proposalBackTranslation || backTranslation}
             </p>
           )}
         </div>
@@ -483,6 +488,17 @@ function FindingCard({
 
       {requerying && (
         <div className="mt-3 space-y-2 rounded-md border border-border bg-background p-3">
+          <Field id={`requery-context-${finding.id}`} label="상황 설명 (선택사항)">
+            <textarea
+              id={`requery-context-${finding.id}`}
+              value={requeryContext}
+              onChange={(e) => onRequeryContextChange(e.target.value)}
+              rows={2}
+              disabled={requeryPending}
+              placeholder="예: 남편이 아내에게 화내며 말하는 장면, 격식 높은 상황"
+              className={inputClass}
+            />
+          </Field>
           <Field id={`requery-${finding.id}`} label="AI에게 다시 지시할 내용">
             <textarea
               id={`requery-${finding.id}`}
@@ -523,7 +539,7 @@ function PairedFindingCard({
   a, b, segment, isPreviewing, onPreview, reviewerName,
   pendingActions, findingErrors, editingId, editText, onEditTextChange,
   onPick, onReject, onRejectBoth, onStartEdit, onCancelEdit,
-  requeryingId, requeryText, requeryPendingId, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
+  requeryingId, requeryText, requeryContext, requeryPendingId, onRequeryTextChange, onRequeryContextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
@@ -539,7 +555,7 @@ function PairedFindingCard({
   }
 
   function renderCandidate(finding, label) {
-    const { description, backTranslation, requeryInstruction } = splitDescription(finding.description);
+    const { description, backTranslation, proposalBackTranslation, requeryInstruction } = splitDescription(finding.description);
     const pending = pendingActions[finding.id] ?? null;
     const error = findingErrors[finding.id];
     const editing = editingId === finding.id;
@@ -577,9 +593,9 @@ function PairedFindingCard({
           </div>
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
         </div>
-        {backTranslation && (
+        {(proposalBackTranslation || backTranslation) && (
           <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-muted-foreground">
-            역번역 참고: {backTranslation}
+            역번역 참고: {proposalBackTranslation || backTranslation}
           </p>
         )}
 
@@ -651,6 +667,17 @@ function PairedFindingCard({
 
         {requerying && (
           <div className="mt-2 space-y-2 rounded-md border border-border bg-background p-2">
+            <Field id={`requery-context-${finding.id}`} label="상황 설명 (선택사항)">
+              <textarea
+                id={`requery-context-${finding.id}`}
+                value={requeryContext}
+                onChange={(e) => onRequeryContextChange(e.target.value)}
+                rows={2}
+                disabled={requeryPending}
+                placeholder="예: 남편이 아내에게 화내며 말하는 장면, 격식 높은 상황"
+                className={inputClass}
+              />
+            </Field>
             <Field id={`requery-${finding.id}`} label="AI에게 다시 지시할 내용">
               <textarea
                 id={`requery-${finding.id}`}
@@ -827,6 +854,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [editText, setEditText] = useState("");
   const [requeryingId, setRequeryingId] = useState(null);
   const [requeryText, setRequeryText] = useState("");
+  const [requeryContext, setRequeryContext] = useState("");
   const [requeryPendingId, setRequeryPendingId] = useState(null);
   // STT 원문 수정은 finding이 아니라 segment 단위라 별도 state로 관리한다
   // (editingId/requeryingId는 finding.id 기준이라 재사용하면 segment.id와
@@ -1055,9 +1083,10 @@ export default function ReviewView({ targetVersionId, onBack }) {
   async function handleRequery(findingId) {
     setRequeryPendingId(findingId);
     try {
-      await requeryFinding(findingId, requeryText, reviewerName);
+      await requeryFinding(findingId, requeryText, reviewerName, requeryContext);
       setFindings(await getFindings(targetVersionId));
       setRequeryingId((cur) => (cur === findingId ? null : cur));
+      setRequeryContext("");
     } catch (err) {
       setFindingErrors((prev) => ({
         ...prev,
@@ -1285,13 +1314,19 @@ export default function ReviewView({ targetVersionId, onBack }) {
                           onCancelEdit={() => setEditingId(null)}
                           requeryingId={requeryingId}
                           requeryText={requeryText}
+                          requeryContext={requeryContext}
                           requeryPendingId={requeryPendingId}
                           onRequeryTextChange={setRequeryText}
+                          onRequeryContextChange={setRequeryContext}
                           onStartRequery={(finding) => {
                             setRequeryingId(finding.id);
                             setRequeryText("");
+                            setRequeryContext("");
                           }}
-                          onCancelRequery={() => setRequeryingId(null)}
+                          onCancelRequery={() => {
+                            setRequeryingId(null);
+                            setRequeryContext("");
+                          }}
                           onSubmitRequery={(findingId) => handleRequery(findingId)}
                           sttEditing={sttEditingId === a.segment_id}
                           sttEditText={sttEditText}
@@ -1332,13 +1367,19 @@ export default function ReviewView({ targetVersionId, onBack }) {
                         onSaveEdit={() => handleAction(f.id, "modified", editText)}
                         requerying={requeryingId === f.id}
                         requeryText={requeryText}
+                        requeryContext={requeryContext}
                         requeryPending={requeryPendingId === f.id}
                         onRequeryTextChange={setRequeryText}
+                        onRequeryContextChange={setRequeryContext}
                         onStartRequery={() => {
                           setRequeryingId(f.id);
                           setRequeryText("");
+                          setRequeryContext("");
                         }}
-                        onCancelRequery={() => setRequeryingId(null)}
+                        onCancelRequery={() => {
+                          setRequeryingId(null);
+                          setRequeryContext("");
+                        }}
                         onSubmitRequery={() => handleRequery(f.id)}
                         sttEditing={sttEditingId === f.segment_id}
                         sttEditText={sttEditText}

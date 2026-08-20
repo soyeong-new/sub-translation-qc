@@ -11,7 +11,7 @@ from app.core.alignment import align, align_by_korean_cue, detect_global_offset
 from app.core.embedding_dp_alignment import align_by_embedding_dp, _clean_text_for_embedding
 
 from app.core.format_rules import (
-    check_line_length, check_ellipsis, check_reading_speed, MAX_LINE_CHARS, MAX_LINES,
+    check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES,
 )
 from app.core.safety_net import shrink_violating_lines
 from app.language_profiles.loader import load_profile
@@ -795,9 +795,9 @@ async def _run_final_safety_net(
             pair.target.text = final_fixed_by_segment[pair.id]
 
     line_length_violations = check_line_length(pairs)
-    reading_speed_violations = check_reading_speed(pairs)
+    # reading_speed는 화면에 실제로 입혀서 확인하므로 여기서 체크하지 않음
     safety_net_findings = await shrink_violating_lines(
-        pairs, line_length_violations + reading_speed_violations, provider, target_version_id,
+        pairs, line_length_violations, provider, target_version_id,
         existing_findings=dual_verification_findings)
     return final_ellipsis_violations, safety_net_findings
 
@@ -1132,6 +1132,12 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
     await _apply_resolved_formality(pairs, provider, profile, resolved_registers)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
+
+    # 이미 확정된 성별/격식을 pairs에 추가 (verify_and_refine의 5단계 프롬프트에서 참고하도록)
+    for pair in pairs:
+        reg = resolved_registers.get(pair.id) or {}
+        pair.gender = reg.get("gender")
+        pair.formality = reg.get("formality")
 
     dual_verification_findings, dual_verification_warnings = await _run_dual_verification_pass(
         pairs, provider, profile,

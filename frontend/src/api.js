@@ -74,10 +74,10 @@ export const rejectFindingPair = (findingId, otherFindingId, reviewerName) =>
     body: JSON.stringify({ other_finding_id: otherFindingId, reviewer_name: reviewerName }),
   });
 
-export const requeryFinding = (findingId, instruction, reviewerName) =>
+export const requeryFinding = (findingId, instruction, reviewerName, context = "") =>
   request(`/findings/${findingId}/requery`, {
     method: "POST",
-    body: JSON.stringify({ instruction, reviewer_name: reviewerName }),
+    body: JSON.stringify({ instruction, context, reviewer_name: reviewerName }),
   });
 
 export const listSegments = (targetVersionId) =>

@@ -17,9 +17,13 @@ async def test_violation_merges_into_existing_approved_finding_instead_of_new_ca
     long_text = "가" * 60
     pairs = [_pair("p1", long_text)]
     violations = [FormatViolation(segment_id="p1", rule="line_length", detail="60자")]
+    # 프론트(splitDescription)가 "(원본 뜻 참고: ...)"를 문자열 끝에서
+    # 정규식으로 잘라내 별도로 보여준다 — 여기 뒤에 뭔가 덧붙이면 그 파싱이
+    # 깨진다(실제 사용자 재현 버그).
+    original_description = "오역 교정 (원본 뜻 참고: 늦게 도착하면 두 배를 받는다는 뜻이다.)"
     existing = Finding(
         id="finding_p1_claude+gpt_mistranslation", target_version_id="tv1", segment_id="p1",
-        category="mistranslation", description="오역 교정",
+        category="mistranslation", description=original_description,
         original_text="원본", suggested_text=long_text, confidence=1.0,
         source="llm", model="claude+gpt", status="approved", final_text=long_text,
     )
@@ -31,6 +35,9 @@ async def test_violation_merges_into_existing_approved_finding_instead_of_new_ca
     assert len(existing.suggested_text) <= 50
     assert existing.final_text == existing.suggested_text
     assert existing.status == "approved"  # 기존 카드 그대로
+    # description은 안 건드려서, "(원본 뜻 참고: ...)" 태그가 문자열 끝에
+    # 그대로 남아 프론트 파싱이 안 깨져야 한다.
+    assert existing.description == original_description
 
 
 @pytest.mark.asyncio
