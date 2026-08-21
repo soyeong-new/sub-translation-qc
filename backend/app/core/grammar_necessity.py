@@ -57,14 +57,20 @@ _KOREAN_FORMAL_EF_SUFFIXES = ("요", "죠", "니다", "니까", "시오")
 # 성별이 적용되므로 — resolved_gender_from_korean이 non-None이면 검수
 # 스텝을 건너뛴다). "그녀"는 여성 대명사로 훨씬 명시적이라 유지한다.
 _KOREAN_MALE_SINGLE_TERMS = {
-    "오빠", "형", "아빠", "아버지", "삼촌", "아저씨", "남편", "할아버지",
+    "오빠", "형", "아빠", "아버지", "아버님", "삼촌", "아저씨", "남편", "할아버지",
     "남동생", "고모부", "외삼촌", "사위", "남성", "남자", "남학생", "남친",
+    "아들", "신랑", "총각", "도련님", "장인", "시아버지", "매형", "자형", "형부",
+    "처남", "영감", "소년", "신사", "큰아버지", "작은아버지", "오라버니", "사내",
+    "시동생", "왕자",
 }
 _KOREAN_MALE_COMPOUND_TERMS = ("남편분", "남자친구", "남배우", "남가수")
 _KOREAN_FEMALE_SINGLE_TERMS = {
-    "언니", "누나", "엄마", "어머니", "이모", "아줌마", "아내", "할머니",
+    "언니", "누나", "엄마", "어머니", "이모", "아줌마", "아내", "와이프", "할머니",
     "여동생", "고모", "외숙모", "며느리", "집사람", "부인", "여의사", "여군",
     "여경", "여성", "여자", "여학생", "여친", "여배우", "그녀",
+    "딸", "신부", "처녀", "아가씨", "처형", "처제", "형수", "제수", "올케",
+    "시어머니", "장모", "손녀", "아주머니", "숙녀", "소녀", "큰어머니", "작은어머니",
+    "시누이", "공주", "낭자", "처자", "새댁", "계집애", "딸내미", "마님", "규수",
 }
 _KOREAN_FEMALE_COMPOUND_TERMS = ("사모님", "여사님", "여사장", "여교수", "여자친구", "여가수")
 _KOREAN_PRONOUN_TAG = {"그녀": "NP"}
@@ -135,12 +141,18 @@ def _detect_korean_formality(korean_text: str) -> Optional[str]:
     return "informal"
 
 
-def _detect_korean_gender(korean_text: str) -> Optional[str]:
+def _detect_korean_gender(korean_text: str, is_plural_candidate: bool = False) -> Optional[str]:
     """한국어 호칭·대명사(오빠/언니/엄마/그녀 등)로 성별 단서를 찾는다. 이
     호칭이 정확히 스페인어 문장의 어느 인칭(화자/상대/제3자)을 가리키는지까지는
     확인하지 않는다 — 문장에 성별 단서가 하나만, 애매함 없이 나오는 경우에만
     쓰고, 상충하거나(둘 다 나옴) 아예 없으면 None을 반환해 다음 폴백(LLM,
-    그다음 사람)으로 넘긴다."""
+    그다음 사람)으로 넘긴다.
+
+    단, 후보가 복수형(is_plural_candidate)이고 남녀 지칭어가 둘 다 있으면
+    ("아빠"+"엄마" 같은 혼성 집단) 이건 상충이 아니라 그 집단 전체를
+    가리키는 것이다 — 스페인어는 혼성 집단을 남성복수로 표기하는 게
+    문법 규칙이라(개별 구성원의 실제 성별과 무관), LLM/사람 확인 없이
+    male로 확정해도 안전하다."""
     text = korean_text.strip()
     if not text:
         return None
@@ -153,9 +165,11 @@ def _detect_korean_gender(korean_text: str) -> Optional[str]:
         any(_matches_single_term(t, _KOREAN_FEMALE_SINGLE_TERMS) for t in tokens)
         or any(term in text for term in _KOREAN_FEMALE_COMPOUND_TERMS)
     )
-    if has_male and not has_female:
+    if has_male and has_female:
+        return "male" if is_plural_candidate else None
+    if has_male:
         return "male"
-    if has_female and not has_male:
+    if has_female:
         return "female"
     return None
 
@@ -308,7 +322,9 @@ def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
         candidate_word_lemmas = [tok.lemma_.lower() for tok in candidates]
         resolved_gender_from_korean = None
         if len(candidates) == 1:
-            resolved_gender_from_korean = _detect_korean_gender(p.get("korean_text", ""))
+            is_plural = candidates[0].morph.get("Number") == ["Plur"]
+            resolved_gender_from_korean = _detect_korean_gender(
+                p.get("korean_text", ""), is_plural_candidate=is_plural)
         results.append({
             "id": p["id"],
             "gender_check_needed": bool(candidates),

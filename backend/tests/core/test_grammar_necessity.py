@@ -170,6 +170,24 @@ def test_gender_stays_unresolved_when_korean_terms_conflict():
     assert result[0]["resolved_gender_from_korean"] is None
 
 
+def test_resolves_mixed_group_to_masculine_plural_when_candidate_is_plural():
+    """아빠+엄마처럼 남녀 지칭어가 둘 다 나와도, 후보가 그 집단을 가리키는
+    복수형이면 상충이 아니라 스페인어 문법상 남성복수가 기본형이다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Vivimos juntos muchos años.",
+          "korean_text": "아빠랑 엄마랑 같이 산 세월이 있잖아"}], PROFILE)
+    assert result[0]["resolved_gender_from_korean"] == "male"
+
+
+def test_mixed_terms_stay_unresolved_when_candidate_is_singular():
+    """복수형이 아니면(한 사람만 가리킴) 남녀 지칭어 동시 등장은 여전히
+    상충으로 취급해 사람 확인으로 넘긴다 — 위 규칙은 집단 지칭에만 쓴다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Está cansado.",
+          "korean_text": "아빠랑 엄마랑 같이 왔어?"}], PROFILE)
+    assert result[0]["resolved_gender_from_korean"] is None
+
+
 def test_korean_gender_bypass_skipped_when_multiple_candidates_present():
     """회귀(설계 의도): 후보 단어가 둘 이상이면 한국어 단서 하나로 어느
     쪽을 가리키는지 안전하게 구분할 수 없으므로, 아무리 한국어 원문에
