@@ -124,15 +124,40 @@ async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple[
     return korean_raw, video_proxy_path
 
 
+_GENDER_CONTEXT_RADIUS = 2
+
+
+def _context_window(pairs: list, center_idx: int, radius: int = _GENDER_CONTEXT_RADIUS) -> tuple[list, list]:
+    """center_idx 앞뒤로 radius줄씩 잘라 (before, after)로 반환한다 — 성별
+    판단 대상 문장 자체엔 지칭어가 없어도 바로 옆 대사에 그 인물의 이름이나
+    성별을 알려주는 표현이 있는 경우가 많아서다(design §문맥 부족으로 인한
+    오판). korean/target 둘 다 있는 줄만 포함하고, 배열 경계(에피소드
+    시작/끝)에서는 있는 만큼만 반환한다."""
+    def _texts(idx: int) -> Optional[dict]:
+        p = pairs[idx]
+        if p.target is None or p.korean is None:
+            return None
+        return {"korean_text": p.korean.text, "target_text": p.target.text}
+
+    before = [t for idx in range(max(0, center_idx - radius), center_idx)
+              if (t := _texts(idx)) is not None]
+    after = [t for idx in range(center_idx + 1, min(len(pairs), center_idx + radius + 1))
+             if (t := _texts(idx)) is not None]
+    return before, after
+
+
 async def _run_grammar_necessity_check(
     pairs: list, profile: dict, provider: ModelProvider, target_version_id: str,
 ) -> tuple[list, list]:
     """문법 필요성 판단(줄 단위, 대상언어는 spaCy·한국어는 kiwipiepy 형태소
     분석): 성별/격식 판단이 실제로 필요한 줄만 골라낸다. 성별 값은 한국어
     원문(어미/호칭, 후보가 1개일 때만)으로 먼저 자동 판정을 시도하고 — 안
-    되면 LLM(resolve_gender_from_context)이 문장 전체+한국어 원문을 보고
-    그룹핑+성별을 판단한다(확신 있으면 자동 확정, 애매하면 그룹만 만들고
-    사람에게 넘긴다). 반환값은 (segment_resolutions, warnings)."""
+    되면 LLM(resolve_gender_from_context)이 문장 자체+앞뒤 각 2줄 문맥+
+    한국어 원문을 보고 그룹핑+성별을 판단한다(확신 있으면 자동 확정, 애매
+    하면 그룹만 만들고 사람에게 넘긴다). 문장 자체엔 성별 단서가 없어도
+    바로 옆 대사에 이름/호칭이 있는 경우가 있어 앞뒤 문맥을 같이 준다.
+    반환값은 (segment_resolutions, warnings)."""
+    pair_index_by_id = {p.id: i for i, p in enumerate(pairs)}
     grammar_pairs = [
         {"id": p.id, "target_text": p.target.text if p.target else "",
          "korean_text": p.korean.text if p.korean else ""}
@@ -158,12 +183,18 @@ async def _run_grammar_necessity_check(
         # 부를 필요가 없다 — 그 외 후보가 있는 줄만 배치로 묶어 한 번에
         # 판단받는다(gloss_gender_words와 같은 이유로 영화 전체를 한
         # 콜에 몰아넣는다 — 항목이 word+context 수준으로 가벼움).
+        def _llm_item(p) -> dict:
+            context_before, context_after = _context_window(pairs, pair_index_by_id[p.id])
+            return {
+                "id": p.id, "target_text": p.target.text if p.target else "",
+                "korean_text": p.korean.text if p.korean else "",
+                "candidate_words": flags_by_id[p.id]["candidate_words"],
+                "candidate_word_lemmas": flags_by_id[p.id]["candidate_word_lemmas"],
+                "context_before": context_before, "context_after": context_after,
+            }
+
         llm_items = [
-            {"id": p.id, "target_text": p.target.text if p.target else "",
-             "korean_text": p.korean.text if p.korean else "",
-             "candidate_words": flags_by_id[p.id]["candidate_words"],
-             "candidate_word_lemmas": flags_by_id[p.id]["candidate_word_lemmas"]}
-            for p in flagged_pairs
+            _llm_item(p) for p in flagged_pairs
             if flags_by_id[p.id]["candidate_words"]
             and flags_by_id[p.id]["resolved_gender_from_korean"] is None
         ]
@@ -178,7 +209,8 @@ async def _run_grammar_necessity_check(
         if llm_items:
             wire_items = [
                 {"id": i["id"], "target_text": i["target_text"],
-                 "korean_text": i["korean_text"], "candidate_words": i["candidate_words"]}
+                 "korean_text": i["korean_text"], "candidate_words": i["candidate_words"],
+                 "context_before": i["context_before"], "context_after": i["context_after"]}
                 for i in llm_items
             ]
             # LLM이 완전히 실패하거나(예외), 응답에서 특정 id가 통째로
