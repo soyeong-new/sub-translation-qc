@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Float, Boolean, ForeignKey, DateTime, JSON
+from sqlalchemy import String, Float, Boolean, ForeignKey, DateTime, JSON, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -141,3 +141,12 @@ class ExportRow(Base):
     exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     finding_count: Mapped[int] = mapped_column()
     reflection_rate: Mapped[float] = mapped_column(Float)
+
+
+class CharacterGenderFact(Base):
+    __tablename__ = "character_gender_facts"
+    __table_args__ = (UniqueConstraint("title_id", "character_name"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
+    character_name: Mapped[str] = mapped_column(String)
+    gender: Mapped[str] = mapped_column(String)  # "male" | "female"
