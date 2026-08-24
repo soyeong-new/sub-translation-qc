@@ -1862,3 +1862,37 @@ async def test_run_dual_verification_pass_warns_when_pairs_skipped_for_missing_k
         [], "", "", "tv1", {},
     )
     assert any("건너뛴 줄 1건" in w["message"] for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_phase1_threads_known_gender_facts_to_grammar_check(tmp_path, monkeypatch):
+    """known_gender_facts가 run_pipeline_phase1까지 전달되면 그 값 그대로
+    _run_grammar_necessity_check에 넘어가야 한다 — 실제 성별 힌트 로직은
+    Task 5에서 이미 검증했으므로, 여기서는 배선(플러밍)만 확인한다."""
+    from app.core.pipeline import run_pipeline_phase1
+    from app.providers.mock import MockProvider
+    import app.core.pipeline as pipeline_module
+
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nHola.\n", encoding="utf-8",
+    )
+
+    captured = {}
+    original = pipeline_module._run_grammar_necessity_check
+
+    async def _capture(pairs, profile, provider, target_version_id, known_gender_facts=None):
+        captured["known_gender_facts"] = known_gender_facts
+        return await original(pairs, profile, provider, target_version_id, known_gender_facts)
+    monkeypatch.setattr(pipeline_module, "_run_grammar_necessity_check", _capture)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        await run_pipeline_phase1(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="es", variant="LATAM", target_version_id="tv1",
+            provider=MockProvider(),
+            known_gender_facts={"성경": "female"},
+        )
+
+    assert captured["known_gender_facts"] == {"성경": "female"}

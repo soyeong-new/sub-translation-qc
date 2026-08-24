@@ -18,7 +18,7 @@ from app.core.pipeline import (
 )
 from app.core.pretreatment import find_pending_sensitive_hits
 from app.core.ingest import delete_original_video
-from app.repositories import save_phase1_result, save_phase2_result
+from app.repositories import save_phase1_result, save_phase2_result, get_character_gender_facts
 from app.providers.base import get_provider, ModelProvider
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge, load_sensitive_terms, load_profanity_dictionary
@@ -54,6 +54,10 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
         async with async_session() as session:
             tv = await session.get(TargetVersion, target_version_id)
             episode = await session.get(Episode, tv.episode_id)
+            # 이 title(작품)에서 이미 확인된 캐릭터 성별 — 같은 작품의
+            # 다른 회차/언어판에서 재사용한다(design §시리즈/다국어 간
+            # 캐릭터 성별 재사용).
+            known_gender_facts = await get_character_gender_facts(session, episode.title_id)
 
         provider = get_provider()
         # READABLE_STT_CACHE_GRANULARITIES에 속한 형태(옛 "word" 단위든 새
@@ -79,6 +83,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
                 cached_korean_segments=cached_segments,
                 cached_video_proxy_path=episode.video_proxy_path,
                 korean_srt_path=episode.korean_srt_path,
+                known_gender_facts=known_gender_facts,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )

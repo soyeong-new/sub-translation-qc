@@ -1178,7 +1178,8 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                                provider: ModelProvider,
                                cached_korean_segments: Optional[list] = None,
                                cached_video_proxy_path: Optional[str] = None,
-                               korean_srt_path: Optional[str] = None) -> dict:
+                               korean_srt_path: Optional[str] = None,
+                               known_gender_facts: Optional[dict] = None) -> dict:
     """S1(STT/정렬/사전·규칙 처리/문법 필요성 판단)만 실행한다. 성별/격식
     확인이 필요한 줄이 있으면 AI 검증(S2)은 여기서 시작하지 않는다 — 사람이
     확정한 뒤에야 정확한 검증이 가능하므로(design §AI 검증은 확정된 값을
@@ -1334,7 +1335,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     pairs = pretreatment.pairs
 
     segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
-        pairs, profile, provider, target_version_id,
+        pairs, profile, provider, target_version_id, known_gender_facts,
     )
     warnings.extend(grammar_warnings)
 
@@ -1462,7 +1463,8 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         provider: ModelProvider,
                         cached_korean_segments: Optional[list] = None,
                         cached_video_proxy_path: Optional[str] = None,
-                        korean_srt_path: Optional[str] = None) -> dict:
+                        korean_srt_path: Optional[str] = None,
+                        known_gender_facts: Optional[dict] = None) -> dict:
     """phase1 + phase2를 곧장 이어서 실행하는 편의 래퍼 — 성별/격식 확인이
     필요한 줄이 있어도 기다리지 않고 바로 phase2까지 실행한다. 실제 운영
     경로(background.py)는 이 함수를 쓰지 않는다 — registers_need_confirmation
@@ -1473,6 +1475,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     phase1 = await run_pipeline_phase1(
         video_path, target_srt_path, language, variant, target_version_id, provider,
         cached_korean_segments, cached_video_proxy_path, korean_srt_path,
+        known_gender_facts,
     )
     resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
     phase2 = await run_pipeline_phase2(
