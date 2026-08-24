@@ -1604,6 +1604,37 @@ async def test_run_grammar_necessity_check_auto_resolves_when_llm_gives_confiden
 
 
 @pytest.mark.asyncio
+async def test_run_grammar_necessity_check_carries_character_name_into_group():
+    """LLM이 인물의 고유 이름을 판단해 돌려주면, 그 이름이 세그먼트별
+    그룹(resolved_gender_groups)에 그대로 실려야 한다 — 다음 회차/언어판
+    재사용(character_gender_facts 저장)의 전제 조건이다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class NamedProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            return [
+                {"id": item["id"], "words": [
+                    {"index": 0, "is_person": True, "group_id": 0,
+                     "gender": "female", "referent": "특정 인물의 이름",
+                     "character_name": "성경"},
+                ]}
+                for item in items
+            ]
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="성경이 피곤해해."),
+        target=SegmentText(start=0.0, end=1.0, text="Seong-gyeong está cansada."),
+    )]
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, NamedProvider(), "tv1")
+    assert warnings == []
+    groups = resolutions[0]["resolved_gender_groups"]
+    assert groups[0]["character_name"] == "성경"
+
+
+@pytest.mark.asyncio
 async def test_run_grammar_necessity_check_drops_line_when_llm_says_not_a_person(monkeypatch):
     """LLM이 후보 단어를 "사람 얘기 아님"으로 판단하면 그 줄은 성별 확인이
     필요 없다고 표시되어야 한다(design §오탐 제거, 예: tiempo compartido)."""

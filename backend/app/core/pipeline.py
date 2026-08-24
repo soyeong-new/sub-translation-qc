@@ -421,7 +421,8 @@ def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
             group_id = w.get("group_id")
             if group_id not in by_group:
                 by_group[group_id] = {
-                    "referent": w.get("referent"), "words": [], "target_word_lemmas": [],
+                    "referent": w.get("referent"), "character_name": w.get("character_name"),
+                    "words": [], "target_word_lemmas": [],
                     "candidate_indices": [], "gender": w.get("gender"),
                 }
                 order.append(group_id)
