@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.db import async_session
 from app.models import Episode, TargetVersion, Segment
 from app.core.uploads import MEDIA_ROOT
-from app.repositories import delete_target_version_results
+from app.repositories import delete_target_version_results, upsert_character_gender_facts
 from app.background import analyze_and_save, _run_phase2_and_save
 from app.providers.base import get_provider
 from app.core.pipeline import gender_groups_all_resolved
@@ -133,6 +133,22 @@ async def confirm_registers(target_version_id: str, request: Request):
         )
         if unresolved:
             raise HTTPException(400, "아직 확인되지 않은 줄이 있습니다")
+
+        # 이번에 확정된 성별 중 캐릭터 고유 이름이 있는 것만 title 단위로
+        # 저장해, 다음 회차/언어판에서 재사용한다(design §시리즈/다국어
+        # 간 캐릭터 성별 재사용). LLM의 1차 판정이 아니라 여기(확인 화면
+        # 통과 시점)의 최종값만 저장한다.
+        episode = await session.get(Episode, tv.episode_id)
+        new_facts: dict = {}
+        for seg in candidates:
+            for group in (seg.resolved_gender_groups_raw or []):
+                name = group.get("character_name")
+                gender = group.get("gender")
+                if name and gender in ("male", "female"):
+                    new_facts[name] = gender
+        if new_facts:
+            await upsert_character_gender_facts(session, episode.title_id, new_facts)
+
         tv.status = "verifying"
         await session.commit()
 

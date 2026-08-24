@@ -4,7 +4,8 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db import engine, async_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import Base, Title, Episode, TargetVersion
+from app.models import Base, Title, Episode, TargetVersion, Segment
+from app.repositories import get_character_gender_facts
 
 TARGET_SRT = """1
 00:00:00,000 --> 00:00:02,000
@@ -360,6 +361,48 @@ async def test_confirm_registers_runs_ai_verification_after_all_resolved(tmp_pat
             r = await client.get(f"/target-versions/{tv_id}/findings")
             findings = r.json()
             assert any(f["category"] == "mistranslation" for f in findings)
+
+
+@pytest.mark.asyncio
+async def test_confirm_registers_saves_confirmed_character_gender_to_title(monkeypatch):
+    """확인 화면에서 성별이 확정된(character_name이 있는) 그룹은
+    confirm-registers 호출 시 character_gender_facts에 저장돼야 한다 —
+    LLM의 1차 판정이 아니라 검수자가 최종 확인한 값(design 원칙 4)."""
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="awaiting_confirmation"); session.add(tv)
+        await session.flush()
+        seg = Segment(
+            target_version_id=tv.id, index=0, start=0.0, end=1.0,
+            korean_text="성경이 왔어.", target_text="Llegó Seong-gyeong.",
+            gender_check_needed=True,
+            resolved_gender_groups_raw=[{
+                "group_index": 0, "referent": "특정 인물의 이름",
+                "character_name": "성경", "words": ["Seong-gyeong"],
+                "target_word_lemmas": ["seong-gyeong"], "candidate_indices": [0],
+                "gender": "female", "suggested_gender": None,
+            }],
+        )
+        session.add(seg)
+        await session.commit()
+        tv_id, title_id = tv.id, title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/target-versions/{tv_id}/confirm-registers")
+        assert r.status_code == 200
+        if app.state.background_tasks:
+            await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title_id)
+        assert facts == {"성경": "female"}
 
 
 @pytest.mark.asyncio
