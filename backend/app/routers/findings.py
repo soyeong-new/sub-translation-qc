@@ -190,6 +190,7 @@ async def resolve_gender_group(segment_id: str, payload: ResolveGenderGroupIn):
         # 리스트를 만들어 컬럼 자체를 통째로 재할당해야 UPDATE가 나간다.
         new_groups = [dict(g) for g in groups]
         new_groups[payload.group_index]["gender"] = payload.gender
+        new_groups[payload.group_index]["human_confirmed"] = True
         seg.resolved_gender_groups_raw = new_groups
 
         tv = await session.get(TargetVersion, seg.target_version_id)

@@ -313,7 +313,7 @@ async def _run_grammar_necessity_check(
                     "group_index": 0, "referent": None, "character_name": None,
                     "words": i["candidate_words"], "target_word_lemmas": i["candidate_word_lemmas"],
                     "candidate_indices": list(range(len(i["candidate_words"]))),
-                    "gender": None, "suggested_gender": None,
+                    "gender": None, "suggested_gender": None, "human_confirmed": False,
                 }]
                 for i in llm_items
             }
@@ -441,6 +441,7 @@ def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
                     "referent": w.get("referent"), "character_name": w.get("character_name"),
                     "words": [], "target_word_lemmas": [],
                     "candidate_indices": [], "gender": w.get("gender"),
+                    "human_confirmed": False,
                 }
                 order.append(group_id)
             entry = by_group[group_id]

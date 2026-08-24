@@ -144,7 +144,7 @@ async def confirm_registers(target_version_id: str, request: Request):
             for group in (seg.resolved_gender_groups_raw or []):
                 name = group.get("character_name")
                 gender = group.get("gender")
-                if name and gender in ("male", "female"):
+                if name and gender in ("male", "female") and group.get("human_confirmed"):
                     new_facts[name] = gender
         if new_facts:
             await upsert_character_gender_facts(session, episode.title_id, new_facts)
