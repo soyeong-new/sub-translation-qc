@@ -152,9 +152,15 @@ async def _run_grammar_necessity_check(
     """문법 필요성 판단(줄 단위, 대상언어는 spaCy·한국어는 kiwipiepy 형태소
     분석): 성별/격식 판단이 실제로 필요한 줄만 골라낸다. 성별 값은 한국어
     원문(어미/호칭, 후보가 1개일 때만)으로 먼저 자동 판정을 시도하고 — 안
-    되면 LLM(resolve_gender_from_context)이 문장 자체+앞뒤 각 2줄 문맥+
-    한국어 원문을 보고 그룹핑+성별을 판단한다(확신 있으면 자동 확정, 애매
-    하면 그룹만 만들고 사람에게 넘긴다). 문장 자체엔 성별 단서가 없어도
+    되면 후보가 있는 줄은 전부(근거 단서가 있든 없든) LLM
+    (resolve_gender_from_context)이 문장 자체+앞뒤 각 2줄 문맥+한국어
+    원문을 보고 그룹핑(is_person/group_id/referent)까지 판단한다 — 이건
+    항상 신뢰한다. 다만 gender 필드만은 별도로 검증한다: 한국어 원문에
+    성별 근거 단어(강한 단서든 새끼/인간류 약한 단서든)가 하나도 없는
+    줄은, LLM이 gender에 뭘 채워 보내든 코드가 무조건 null로 덮어쓴다 —
+    근거가 없다는 게 LLM을 부르기 전에 이미 확인된 사실이라, 그런
+    줄에서는 LLM이 확신에 찬 오답을 내는 경향이 실측으로 반복 확인됐다
+    (design §2026-08 성별판정 정확도 개선). 문장 자체엔 단서가 없어도
     바로 옆 대사에 이름/호칭이 있는 경우가 있어 앞뒤 문맥을 같이 준다.
     반환값은 (segment_resolutions, warnings)."""
     pair_index_by_id = {p.id: i for i, p in enumerate(pairs)}
@@ -228,18 +234,32 @@ async def _run_grammar_necessity_check(
             }
             try:
                 llm_results = await provider.resolve_gender_from_context(wire_items, profile)
-                gender_groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results)
+                llm_groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results)
                 # _build_gender_groups_from_llm은 응답에 실제로 포함된 id만
                 # 키로 넣는다(빈 리스트 포함 가능 — "전부 사람 아님"이라는
                 # 유효한 판단) — 응답에서 아예 빠진 id만 폴백으로 채운다.
                 for item in llm_items:
-                    gender_groups_by_id.setdefault(item["id"], fallback_groups_by_id[item["id"]])
+                    llm_groups_by_id.setdefault(item["id"], fallback_groups_by_id[item["id"]])
+                # is_person/group_id/referent는 LLM 응답을 그대로 신뢰한다 —
+                # 이번 세션 내내 문제였던 건 gender 필드뿐이었다. has_gender_hint가
+                # False인 줄(한국어 원문에 성별 근거 단어가 하나도 없음)은
+                # LLM이 뭐라고 답했든 gender만 null로 덮어쓴다 — 근거가 없다는
+                # 건 LLM을 부르기 전에 이미 확인된 사실이라, LLM의 자기 확신도
+                # 보고를 믿을 근거가 안 된다(design §2026-08 성별판정 정확도
+                # 개선 — 근거 없는 문장에서 LLM이 확신에 찬 오답을 내는 경향이
+                # 실측으로 반복 확인됨).
+                for item in llm_items:
+                    if flags_by_id[item["id"]]["has_gender_hint"]:
+                        continue
+                    for group in llm_groups_by_id.get(item["id"], []):
+                        group["gender"] = None
+                gender_groups_by_id.update(llm_groups_by_id)
             except Exception as exc:
                 logger.exception(
                     "성별 문맥 판단(LLM) 실패, 해당 줄은 미확정 그룹으로 사람에게 넘김 "
                     "(target_version_id=%s)", target_version_id)
                 warnings.append({"stage": "성별 문맥 판단", "message": str(exc)})
-                gender_groups_by_id = fallback_groups_by_id
+                gender_groups_by_id.update(fallback_groups_by_id)
 
         for p in flagged_pairs:
             flags = flags_by_id[p.id]

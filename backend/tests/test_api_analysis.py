@@ -272,7 +272,8 @@ async def test_confirm_registers_rejects_when_segments_still_unresolved(tmp_path
     def _fake_grammar_necessity(pairs, profile):
         return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False,
                   "resolved_formality": None, "resolved_gender_from_korean": None,
-                  "candidate_words": ["cansada"], "candidate_word_lemmas": ["cansado"]}
+                  "candidate_words": ["cansada"], "candidate_word_lemmas": ["cansado"],
+                  "has_gender_hint": True}
                 for p in pairs]
 
     monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _fake_grammar_necessity)
@@ -324,7 +325,8 @@ async def test_confirm_registers_runs_ai_verification_after_all_resolved(tmp_pat
     def _fake_grammar_necessity(pairs, profile):
         return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False,
                   "resolved_formality": None, "resolved_gender_from_korean": None,
-                  "candidate_words": ["cansada"], "candidate_word_lemmas": ["cansado"]}
+                  "candidate_words": ["cansada"], "candidate_word_lemmas": ["cansado"],
+                  "has_gender_hint": True}
                 for p in pairs]
 
     monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _fake_grammar_necessity)

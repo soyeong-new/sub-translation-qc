@@ -1,7 +1,7 @@
 import pytest
 from app.core.grammar_necessity import (
     check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
-    _detect_korean_formality, _detect_korean_gender,
+    _detect_korean_formality, _detect_korean_gender, _has_any_gender_hint,
 )
 
 PROFILE = {"language": "es", "variant": "LATAM"}
@@ -22,6 +22,26 @@ def test_flags_gender_for_passive_voice_participle_referring_to_people():
         [{"id": "p1", "target_text": "Han sido invitados todos."}], PROFILE)
     assert result[0]["gender_check_needed"] is True
     assert result[0]["candidate_words"] == ["invitados"]
+
+
+def test_does_not_flag_gender_for_html_tag_artifact_in_target_text():
+    """회귀: 자막 원문의 오프스크린/독백 표시용 <i>...</i> 태그를 안 지우고
+    spaCy에 넣으면 "<"가 별도 토큰으로 떨어지고 남은 "i>...내용...</i"
+    파편이 형용사로 오태깅되며 성별 후보로 잘못 잡히는 사례가 실제 리뷰
+    화면에서 발견됐다(design §2026-08 성별판정 정확도 개선)."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "<i>¿Soo-jung?</i> Está ocupada."}], PROFILE)
+    assert result[0]["candidate_words"] == ["ocupada"]
+
+
+def test_does_not_flag_gender_for_dash_prefixed_dialogue_marker_artifact():
+    """회귀: 대사 앞의 화자 구분용 대시가 다음 단어에 붙어("-No", "-Lim
+    Ho-young") spaCy가 통째로 하나의 (잘못된) 형용사로 오태깅하는 사례가
+    실제 데이터에서 반복 관찰됐다(design §2026-08 성별판정 정확도 개선)."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "-No, no es así.\n-¿Qué?"}], PROFILE)
+    assert result[0]["gender_check_needed"] is False
+    assert result[0]["candidate_words"] == []
 
 
 def test_does_not_flag_gender_for_invariant_adjective():
@@ -168,6 +188,27 @@ def test_gender_stays_unresolved_when_korean_terms_conflict():
         [{"id": "p1", "target_text": "Está cansado.",
           "korean_text": "오빠랑 언니 같이 왔어?"}], PROFILE)
     assert result[0]["resolved_gender_from_korean"] is None
+
+
+@pytest.mark.parametrize("text", [
+    "저 선생님 사랑하고 있어요", "주사가 심하네", "아유, 씨 아유, 아유, 씨",
+    "아, 난 또 되게 각별한 사이인 줄 알았네요 식사는요?",
+])
+def test_has_no_gender_hint_when_no_referring_word_at_all(text):
+    """회귀: 실제 오판 사례들(design §2026-08 성별판정 정확도 개선) — 문장에
+    화자/청자 자신을 가리키는 단어가 전혀 없고 대명사·활용형·감탄사뿐이면
+    강한/약한 단서 둘 다 없는 게 맞다."""
+    assert _has_any_gender_hint(text) is False
+
+
+@pytest.mark.parametrize("text", [
+    "아, 이 새끼는 왜 잔칫날 상복을 입고 왔어? 미친 거야?",  # 약한 단서(새끼)
+    "그 인간 죽었니?",  # 약한 단서(인간)
+    "나 임신했어",  # 강한 단서(여성 단어 목록)
+    "이 놈 봐라",  # 약한 단서, NNB로 태깅되는 예외 케이스
+])
+def test_has_gender_hint_when_weak_or_strong_referring_word_present(text):
+    assert _has_any_gender_hint(text) is True
 
 
 def test_resolves_mixed_group_to_masculine_plural_when_candidate_is_plural():

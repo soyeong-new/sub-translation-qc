@@ -67,19 +67,60 @@ _KOREAN_MALE_COMPOUND_TERMS = ("남편분", "남자친구", "남배우", "남가
 _KOREAN_FEMALE_SINGLE_TERMS = {
     "언니", "누나", "엄마", "어머니", "이모", "아줌마", "아내", "와이프", "할머니",
     "여동생", "고모", "외숙모", "며느리", "집사람", "부인", "여의사", "여군",
-    "여경", "여성", "여자", "여학생", "여친", "여배우", "그녀",
+    "여경", "여성", "여자", "여학생", "여친", "여배우", "그녀", "임신",
     "딸", "신부", "처녀", "아가씨", "처형", "처제", "형수", "제수", "올케",
     "시어머니", "장모", "손녀", "아주머니", "숙녀", "소녀", "큰어머니", "작은어머니",
     "시누이", "공주", "낭자", "처자", "새댁", "계집애", "딸내미", "마님", "규수",
 }
 _KOREAN_FEMALE_COMPOUND_TERMS = ("사모님", "여사님", "여사장", "여교수", "여자친구", "여가수")
-_KOREAN_PRONOUN_TAG = {"그녀": "NP"}
+_KOREAN_PRONOUN_TAG = {"그녀": "NP", "놈": "NNB", "년": "NNB"}
+
+# 성별 자체는 안 알려주지만("이 새끼"는 여자한테도 씀) 실전에서 문장에
+# 이런 단어가 하나라도 있으면 LLM 문맥 판단이 잘 맞았고, 아예 없으면
+# (1인칭 고백/청자 대상 명령·감탄사뿐인 문장) LLM이 근거 없이 확신에
+# 찬 오답을 내는 경향이 관찰됐다(design §2026-08 성별판정 정확도 개선).
+# 그래서 이 목록은 gender 값 결정엔 안 쓰고, "LLM한테 물어볼 가치가
+# 있는 문장인가"를 가르는 필터로만 쓴다.
+_KOREAN_WEAK_GENDER_HINT_TERMS = {"새끼", "인간", "놈", "년"}
+
+
+def _has_any_gender_hint(korean_text: str) -> bool:
+    """이 줄을 LLM에 보낼 가치가 있는지 판단한다 — 강한 단서(성별 확정
+    단어)든 약한 단서(새끼/인간처럼 성별은 안 알려주지만 실전에서 LLM
+    판단의 신뢰도를 높여준 단어)든 하나라도 있으면 True. 아예 없으면(순수
+    대명사·활용형·감탄사뿐인 문장) LLM도 텍스트만으론 알 방법이 없는
+    경우이므로 호출자가 LLM을 부르지 않고 곧장 사람에게 넘긴다."""
+    text = korean_text.strip()
+    if not text:
+        return False
+    tokens = _kiwi().tokenize(text)
+    return (
+        any(_matches_single_term(t, _KOREAN_MALE_SINGLE_TERMS) for t in tokens)
+        or any(_matches_single_term(t, _KOREAN_FEMALE_SINGLE_TERMS) for t in tokens)
+        or any(_matches_single_term(t, _KOREAN_WEAK_GENDER_HINT_TERMS) for t in tokens)
+        or any(term in text for term in _KOREAN_MALE_COMPOUND_TERMS)
+        or any(term in text for term in _KOREAN_FEMALE_COMPOUND_TERMS)
+    )
 
 
 def _matches_single_term(tok, terms: set) -> bool:
     if tok.form not in terms:
         return False
     return tok.tag == _KOREAN_PRONOUN_TAG.get(tok.form, "NNG")
+
+
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def _strip_html_tags(text: str) -> str:
+    """자막 원문에 자주 섞이는 서식 태그(오프스크린/독백 표시용 <i>...</i>
+    등)를 spaCy에 넣기 전에 제거한다 — 안 지우면 "<"가 별도 토큰으로
+    떨어져 나가고 남은 "i>내용</i" 파편이 형용사로 오태깅되며 성별 형태소가
+    잘못 붙는 사례가 실측으로 확인됐다(design §2026-08 성별판정 정확도
+    개선, 대시 접두사 버그와 같은 종류). candidate_words 추출용으로만 쓴다
+    — resolve_gender_in_texts류는 원본 오프셋으로 치환하므로 여기서 지우면
+    안 된다."""
+    return _HTML_TAG_RE.sub("", text)
 
 
 @lru_cache(maxsize=None)
@@ -102,7 +143,16 @@ def _is_gendered_token(tok) -> bool:
     "abierta"는 사람이 아니라 puerta에 일치하는 것) — 하지만 그 판단(사람인지
     사물인지)은 여기서 하지 않는다. spaCy Gender 형태소가 있는 ADJ/분사는
     전부 후보다 — "실제로 사람 얘기인가"는 LLM(resolve_gender_from_context)의
-    몫이다(design §spaCy는 순수 형태소 체크만)."""
+    몫이다(design §spaCy는 순수 형태소 체크만).
+
+    다만 토큰 표면형이 "-"로 시작하는 건 예외로 제외한다 — 대사 앞의
+    대시("-No", "-Lim Ho-young"처럼 화자 구분용)가 다음 단어에 그대로
+    붙어 spaCy가 통째로 하나의 (잘못된) 형용사로 오태깅하는 사례가
+    반복 관찰됐다(design §2026-08 성별판정 정확도 개선) — 이건 문법
+    형태소 자체가 실재하지 않는 파싱 아티팩트라 "사람 얘기인지 판단"
+    이전 단계에서 걸러도 안전하다."""
+    if tok.text.startswith("-"):
+        return False
     if not tok.morph.get("Gender"):
         return False
     if tok.pos_ == "ADJ":
@@ -305,15 +355,20 @@ def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
     """입력 pairs([{"id","target_text","korean_text"}, ...])와 1:1 대응하는
     결과를 반환한다: {"id", "gender_check_needed", "formality_check_needed",
     "resolved_formality", "resolved_gender_from_korean", "candidate_words",
-    "candidate_word_lemmas"}. resolved_* 필드는 한국어 원문에서 확정 가능했을
-    때만 값이 채워지고, 확정 못 하면 None — 호출자(pipeline.py)가 이후 LLM
-    문맥 판단, 그래도 안 되면 사람에게 순서대로 넘긴다. candidate_words/
+    "candidate_word_lemmas", "has_gender_hint"}. resolved_* 필드는 한국어
+    원문에서 확정 가능했을 때만 값이 채워지고, 확정 못 하면 None —
+    호출자(pipeline.py)가 이후 LLM 문맥 판단, 그래도 안 되면 사람에게
+    순서대로 넘긴다. has_gender_hint는 resolved_gender_from_korean이 실패한
+    경우에 한해 "그래도 LLM한테 물어볼 가치가 있는 문장인가"를 가리는
+    값이다 — 강한 단서든 약한 단서든 하나도 없으면(순수 대명사·활용형·
+    감탄사뿐인 문장) LLM도 텍스트만으론 알 방법이 없으므로 False다
+    (design §2026-08 성별판정 정확도 개선). candidate_words/
     candidate_word_lemmas는 성별 표시 후보 단어를 문장 속 등장 순서로 나열한
     병렬 리스트다 — 실제로 사람을 가리키는지/누구인지/성별이 뭔지는 이 함수의
     책임이 아니다."""
     language = profile.get("language")
     nlp = _resolve_model(language)
-    texts = [p.get("target_text", "") for p in pairs]
+    texts = [_strip_html_tags(p.get("target_text", "")) for p in pairs]
     docs = nlp.pipe(texts)
     results = []
     for p, doc in zip(pairs, docs):
@@ -333,5 +388,6 @@ def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
             "resolved_gender_from_korean": resolved_gender_from_korean,
             "candidate_words": candidate_words,
             "candidate_word_lemmas": candidate_word_lemmas,
+            "has_gender_hint": _has_any_gender_hint(p.get("korean_text", "")),
         })
     return results

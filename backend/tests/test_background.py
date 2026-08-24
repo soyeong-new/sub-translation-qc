@@ -53,7 +53,8 @@ async def test_analyze_and_save_stops_at_awaiting_confirmation_without_running_a
     def _fake_grammar_necessity(pairs, profile):
         return [{"id": p["id"], "gender_check_needed": True, "formality_check_needed": False,
                   "resolved_formality": None, "resolved_gender_from_korean": None,
-                  "candidate_words": ["x"], "candidate_word_lemmas": ["x"]} for p in pairs]
+                  "candidate_words": ["x"], "candidate_word_lemmas": ["x"],
+                  "has_gender_hint": True} for p in pairs]
 
     monkeypatch.setattr("app.core.pipeline.check_grammar_necessity", _fake_grammar_necessity)
 

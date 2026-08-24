@@ -312,12 +312,13 @@ async def test_back_translate_proposals_chunks_large_batches():
     total = CHUNK_MAX_SIZE + 5  # 한 청크로는 안 들어가는 양
     claude_only = [{"segment_id": f"p{i}", "corrected_text": f"texto {i}"} for i in range(total)]
 
-    backtranslation_by_id, warnings = await _back_translate_proposals(
+    backtranslation_by_id, original_backtranslation_by_id, not_improved, warnings = await _back_translate_proposals(
         _FakeProvider(), {"language": "es"}, agreed=[], claude_only=claude_only, gpt_only=[],
-        target_version_id="tv1",
+        target_version_id="tv1", pairs=[],
     )
 
     assert warnings == []
+    assert not_improved == set()  # is_improvement 없이 응답 → 기본 보존
     assert len(call_batches) == 2  # 35 + 5, 한 콜에 다 안 들어가고 두 번 나뉨
     assert all(n <= CHUNK_MAX_SIZE for n in call_batches)
     assert len(backtranslation_by_id) == total
@@ -347,9 +348,9 @@ async def test_back_translate_proposals_survives_one_chunk_failing():
     total = CHUNK_MAX_SIZE + 5
     claude_only = [{"segment_id": f"p{i}", "corrected_text": f"texto {i}"} for i in range(total)]
 
-    backtranslation_by_id, warnings = await _back_translate_proposals(
+    backtranslation_by_id, original_backtranslation_by_id, not_improved, warnings = await _back_translate_proposals(
         _FakeProvider(), {"language": "es"}, agreed=[], claude_only=claude_only, gpt_only=[],
-        target_version_id="tv1",
+        target_version_id="tv1", pairs=[],
     )
 
     assert len(warnings) == 1  # 첫 청크만 실패
@@ -1517,7 +1518,7 @@ async def test_run_grammar_necessity_check_auto_resolves_when_llm_gives_confiden
             ]
 
     pairs = [AlignedPair(
-        id="p1", korean=SegmentText(start=0.0, end=1.0, text="후안이 피곤해해."),
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="그 인간이 피곤해해."),
         target=SegmentText(start=0.0, end=1.0, text="Juan está cansado."),
     )]
     resolutions, warnings = await _run_grammar_necessity_check(
@@ -1548,7 +1549,7 @@ async def test_run_grammar_necessity_check_drops_line_when_llm_says_not_a_person
             ]
 
     pairs = [AlignedPair(
-        id="p1", korean=SegmentText(start=0.0, end=1.0, text="타임셰어 멤버십을 줬어."),
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="그 인간이 타임셰어 멤버십을 줬어."),
         target=SegmentText(start=0.0, end=1.0, text="Me dio tiempo compartido."),
     )]
     resolutions, warnings = await _run_grammar_necessity_check(
@@ -1571,7 +1572,7 @@ async def test_run_grammar_necessity_check_falls_back_to_unresolved_group_when_l
             raise RuntimeError("network down")
 
     pairs = [AlignedPair(
-        id="p1", korean=SegmentText(start=0.0, end=1.0, text="피곤해."),
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="그 인간이 피곤해."),
         target=SegmentText(start=0.0, end=1.0, text="Estoy cansado."),
     )]
     resolutions, warnings = await _run_grammar_necessity_check(
