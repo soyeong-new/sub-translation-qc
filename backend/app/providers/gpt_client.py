@@ -132,8 +132,12 @@ _GENDER_RESOLUTION_SCHEMA = {
                                         "group_id": {"type": "integer"},
                                         "gender": {"type": ["string", "null"], "enum": ["male", "female", None]},
                                         "referent": {"type": ["string", "null"]},
+                                        "character_name": {"type": ["string", "null"]},
                                     },
-                                    "required": ["index", "is_person", "group_id", "gender", "referent"],
+                                    "required": [
+                                        "index", "is_person", "group_id", "gender",
+                                        "referent", "character_name",
+                                    ],
                                     "additionalProperties": False,
                                 },
                             },
@@ -187,7 +191,17 @@ _GENDER_RESOLUTION_SYSTEM_PREFIX = (
     "추측하지 마라). "
     "(4) referent — 이 그룹이 누구를 가리키는지 검수자에게 보여줄 짧은 "
     "한국어 설명(예: \"화자 자신\", \"특정 인물의 이름\", \"제3자\", "
-    "\"듣고 있는 상대방\"). is_person이 false면 group_id/gender/referent 값은 "
+    "\"듣고 있는 상대방\"). "
+    "(5) character_name — 이 인물의 실제 고유 이름/별명(문장이나 "
+    "context_before/context_after에 문자 그대로 나온 경우만). 이 값은 "
+    "같은 작품의 다른 회차·다른 언어판에서 같은 인물의 성별을 다시 "
+    "묻지 않기 위해 저장되므로, 다른 인물과 겹칠 위험이 있으면 절대 "
+    "채우지 마라 — 성+직함(예: \"김씨\", \"김대리\", \"김 선생님\")처럼 "
+    "여러 사람에게 쓰일 수 있는 표현이나, \"그녀\"/\"아가씨\"/\"저 "
+    "아저씨\" 같은 대명사·일반 호칭은 null로 남긴다. \"성경\", \"소진\" "
+    "처럼 이 작품 안에서 특정 개인을 명확히 가리키는 고유한 이름/별명일 "
+    "때만 채워라. 애매하면 null이 안전하다. "
+    "is_person이 false면 group_id/gender/referent/character_name 값은 "
     "무시되니 아무 값이나 넣어도 된다(단, 스키마상 필드는 항상 채워야 "
     "한다). words 배열은 candidate_words와 정확히 같은 개수·순서로, "
     "각 원소의 index는 candidate_words에서의 위치(0부터)와 일치해야 한다."

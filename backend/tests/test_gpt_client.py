@@ -202,6 +202,28 @@ async def test_resolve_gender_from_context_sends_candidate_words_and_returns_res
 
 
 @pytest.mark.asyncio
+async def test_resolve_gender_from_context_schema_requires_character_name_field():
+    """character_name이 스키마에 없으면 OpenAI structured output이 이
+    필드를 절대 채워 보내지 않는다 — 스키마에 명시적으로 있어야 한다."""
+    payload = {"results": [{"id": "p1", "words": [
+        {"index": 0, "is_person": True, "group_id": 0, "gender": "female",
+         "referent": "특정 인물의 이름", "character_name": "성경"},
+    ]}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.resolve_gender_from_context(
+        items=[{"id": "p1", "target_text": "Seong-gyeong está cansada.",
+                "korean_text": "성경이 피곤해해.", "candidate_words": ["cansada"]}],
+        profile={"language": "es", "variant": "LATAM"},
+    )
+    assert result[0]["words"][0]["character_name"] == "성경"
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    word_schema = call_kwargs["response_format"]["json_schema"]["schema"][
+        "properties"]["results"]["items"]["properties"]["words"]["items"]
+    assert "character_name" in word_schema["properties"]
+    assert "character_name" in word_schema["required"]
+
+
+@pytest.mark.asyncio
 async def test_resolve_gender_from_context_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
