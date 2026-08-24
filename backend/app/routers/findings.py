@@ -353,6 +353,9 @@ async def requery(finding_id: str, payload: RequeryIn):
             apply_resolved_gender_to_text, segment, new_suggested_text, profile.get("language"))
         finding.suggested_text = new_suggested_text
         finding.status = "pending"
+        finding.final_text = ""
+        finding.reviewer_name = ""
+        finding.reviewed_at = None
         finding.description = f"[다시 질문: {payload.instruction}] {finding.description}"
         await session.commit()
         return {"id": finding.id, "status": finding.status, "suggested_text": finding.suggested_text}

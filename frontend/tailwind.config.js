@@ -89,9 +89,10 @@ export default {
       },
       fontFamily: {
         // 한글 UI 라벨 + EN/ES 자막 원문을 함께 다루므로 한글 최적화 폰트를 우선하고
-        // 라틴 문자는 Inter로 보완. 시스템 폰트로 폴백해 별도 웹폰트 로딩 없이 동작.
+        // 라틴 문자는 Inter로 보완. Wanted Sans Variable은 index.html에서 CDN으로 로드함
+        // (미로드/네트워크 실패 시 시스템 폰트로 자동 폴백).
         sans: [
-          "Pretendard",
+          '"Wanted Sans Variable"',
           "Inter",
           "-apple-system",
           "BlinkMacSystemFont",

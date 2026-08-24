@@ -3,8 +3,8 @@
 import { useRef, useState } from "react";
 
 const baseClass =
-  "flex flex-col items-center justify-center gap-1 rounded-md border-2 border-dashed " +
-  "border-input bg-background px-4 py-6 text-center text-sm text-muted-foreground " +
+  "flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed " +
+  "border-border bg-background px-3 py-2.5 text-center text-xs text-muted-foreground " +
   "transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
   "aria-disabled:cursor-not-allowed aria-disabled:opacity-50";

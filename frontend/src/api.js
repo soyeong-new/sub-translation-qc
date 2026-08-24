@@ -201,3 +201,5 @@ export const uploadSrtKo = (file, onProgress) =>
   uploadWithProgress("/uploads/srt-ko", file, onProgress);
 
 export const listTitles = () => request("/titles");
+
+export const getStorageUsage = () => request("/storage");

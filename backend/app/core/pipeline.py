@@ -451,6 +451,25 @@ async def _safe_call(coro, label: str, note: str, target_version_id: str, warnin
         return []
 
 
+def _drop_malformed_corrections(corrections: list, label: str, target_version_id: str, warnings: list) -> list:
+    """항목 하나하나에 segment_id가 빠진 채로 응답이 오는 경우(모델이 대량 입력에서
+    가끔 필드를 누락함 — split_scenes 독스트링 참고) 이후 c["segment_id"] 접근에서
+    KeyError가 나 파이프라인 전체가 죽는 걸 막는다. _safe_call은 호출 자체가
+    통째로 실패했을 때만 잡아주고, 이렇게 부분적으로 망가진 개별 항목은 못 걸러서
+    별도로 걸러야 한다."""
+    valid = [c for c in corrections if isinstance(c, dict) and c.get("segment_id")]
+    dropped = len(corrections) - len(valid)
+    if dropped:
+        logger.warning(
+            "%s: segment_id 누락 항목 %d건 버림 (target_version_id=%s)",
+            label, dropped, target_version_id)
+        warnings.append({
+            "stage": label,
+            "message": f"AI 응답 중 {dropped}건이 형식이 맞지 않아 건너뛰었습니다.",
+        })
+    return valid
+
+
 async def _check_equivalence(
     candidate_pairs: list, korean_text_by_id: dict,
     provider: ModelProvider, profile: dict, target_version_id: str,
@@ -526,19 +545,34 @@ async def _back_translate_all(
 async def _back_translate_proposals(
     provider: ModelProvider, profile: dict,
     agreed: list, claude_only: list, gpt_only: list, target_version_id: str,
-) -> tuple[dict, list]:
-    """제안된 문구를 반대쪽 모델이 한국어로 역번역한다(감사/참고용) — 자기가
-    쓴 문구를 자기가 역번역하면 스스로의 오류를 매끄럽게 얼버무려 가릴 위험이
-    있어(같은 모델의 왕복 번역은 오류를 숨기는 경향) 항상 교차 검증한다.
-    claude_only는 GPT가, (agreed + gpt_only는 전부 GPT 문구이므로) Claude가
-    역번역한다. 반환값은 (segment_id -> 한국어 역번역 텍스트, warnings)."""
+    pairs: list,
+) -> tuple[dict, dict, set, list]:
+    """제안된 문구를 반대쪽 모델이 한국어로 역번역하고(감사/참고용), 동시에
+    그 제안이 교정 전 원문보다 실제로 나아졌는지도 같은 호출에서 판단시킨다
+    — 자기가 쓴 문구를 자기가 평가하면 스스로의 오류를 매끄럽게 얼버무려
+    가릴 위험이 있어(같은 모델의 왕복 번역/판단은 오류를 숨기는 경향) 항상
+    교차 검증한다. claude_only는 GPT가, (agreed + gpt_only는 전부 GPT
+    문구이므로) Claude가 판단한다. 원문(original_text)도 같이 역번역시켜
+    리뷰어가 "교정 전엔 뭐였는지"를 제안문 역번역과 나란히 비교할 수 있게
+    한다(design §리뷰어가 스페인어를 몰라 원문의 뉘앙스가 더 나은 경우를
+    놓치는 문제). 반환값은 (segment_id -> 제안문 한국어 역번역,
+    segment_id -> 원문 한국어 역번역, 개선 아님으로 판정된
+    (segment_id, source) 집합, warnings)."""
     warnings: list = []
-    claude_authored_texts = [
-        {"id": c["segment_id"], "text": c["corrected_text"]} for c in claude_only
-    ]
-    gpt_authored_texts = [
-        {"id": c["segment_id"], "text": c["corrected_text"]} for c in agreed + gpt_only
-    ]
+    original_text_by_id = {p.id: p.target.text for p in pairs if p.target}
+    korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in pairs}
+
+    def _to_payload(corrections: list) -> list:
+        return [
+            {"id": c["segment_id"],
+             "reference_korean": korean_text_by_id.get(c["segment_id"], ""),
+             "original_text": original_text_by_id.get(c["segment_id"], ""),
+             "text": c["corrected_text"]}
+            for c in corrections
+        ]
+
+    claude_authored_texts = _to_payload(claude_only)
+    gpt_authored_texts = _to_payload(agreed + gpt_only)
 
     claude_authored_backtranslated, gpt_authored_backtranslated = await asyncio.gather(
         _back_translate_all(
@@ -556,12 +590,30 @@ async def _back_translate_proposals(
         **{(r["id"], "claude_authored"): r["korean_text"] for r in claude_authored_backtranslated},
         **{(r["id"], "gpt_authored"): r["korean_text"] for r in gpt_authored_backtranslated},
     }
-    return backtranslation_by_id, warnings
+    original_backtranslation_by_id = {
+        (r["id"], "claude_authored"): r["original_korean_text"]
+        for r in claude_authored_backtranslated if r.get("original_korean_text")
+    } | {
+        (r["id"], "gpt_authored"): r["original_korean_text"]
+        for r in gpt_authored_backtranslated if r.get("original_korean_text")
+    }
+    # 판정 호출이 실패하면(_safe_call이 빈 리스트로 대체) is_improvement 키가
+    # 아예 없다 — 이때는 "폐기"보다 "일단 보존"이 안전하므로 기본값 True로
+    # 둔다(모르면 걸러내지 않는다).
+    not_improved = {
+        (r["id"], "claude_authored") for r in claude_authored_backtranslated
+        if not r.get("is_improvement", True)
+    } | {
+        (r["id"], "gpt_authored") for r in gpt_authored_backtranslated
+        if not r.get("is_improvement", True)
+    }
+    return backtranslation_by_id, original_backtranslation_by_id, not_improved, warnings
 
 
 def _make_dual_verification_finding(
     target_version_id: str, pair, correction: dict,
     status: str, model_label: str, source: str, backtranslation_by_id: dict,
+    original_backtranslation_by_id: dict,
 ) -> Finding:
     original_text = pair.target.text
     corrected_text = correction["corrected_text"]
@@ -572,6 +624,17 @@ def _make_dual_verification_finding(
     backtranslation = backtranslation_by_id.get((correction["segment_id"], source))
     if backtranslation:
         description = f"{description} (한국어 역번역 참고: {backtranslation})"
+    # 리뷰어가 스페인어를 몰라 "원문이 더 나을 수도 있다"를 놓치는 문제
+    # (design §Shin Ramyun/Ojalá 오판 사례) — 제안문 역번역 옆에 원문
+    # 역번역도 붙여 나란히 비교할 수 있게 한다. ReviewView.jsx의
+    # splitDescription이 이 태그를 이미 파싱하므로(STT 재검증 경로와 공유)
+    # 프론트엔드 변경은 필요 없다 — 반드시 "한국어 역번역 참고" 태그
+    # 뒤(오른쪽)에 붙여야 한다(파싱이 뒤에서부터 벗겨내므로 순서가 바뀌면
+    # 정규식이 실패한다).
+    original_backtranslation = original_backtranslation_by_id.get(
+        (correction["segment_id"], source))
+    if original_backtranslation:
+        description = f"{description} (원본 한국어 역번역 참고: {original_backtranslation})"
     return Finding(
         id=f"finding_{correction['segment_id']}_{model_label}_{correction['category']}",
         target_version_id=target_version_id, segment_id=correction["segment_id"],
@@ -658,7 +721,22 @@ async def _split_into_scenes(
         except Exception:
             chunks = None
         if chunks is not None:
-            return [sub for chunk in chunks for sub in _chunk_pairs_by_gap(chunk)]
+            final_chunks = [sub for chunk in chunks for sub in _chunk_pairs_by_gap(chunk)]
+            # 성공 시에도 씬 경계를 남긴다 — 실패 때만 기록하면 "이 대사가
+            # 실제로 어느 씬으로 묶였는지"를 사후에 확인할 방법이 없어, 씬이
+            # 예상과 다르게 쪼개져 문맥이 끊긴 경우(예: 반복되는 시구절이
+            # 서로 다른 씬으로 갈라짐)를 디버깅할 수가 없었다. warnings(DB
+            # 저장, 리뷰어 화면에 노출됨)엔 안 넣는다 — 정상 실행에 매번
+            # "경고"가 뜨는 건 노이즈이므로 서버 로그로만 남긴다.
+            # ponytail: logging.info는 앱 전체에 로깅 설정이 없어 기본
+            # WARNING 레벨에 걸러져 조용히 사라진다 — 전역 logging 설정을
+            # 새로 추가하는 대신 warning 레벨을 그대로 씀(실제 경고는 아니지만
+            # 로그에 보이는 게 목적).
+            logger.warning(
+                "씬 %d개로 분할 (target_version_id=%s): %s", len(final_chunks),
+                target_version_id,
+                ", ".join(f"{c[0].id}~{c[-1].id}({len(c)}줄)" for c in final_chunks))
+            return final_chunks
     warnings.append({
         "stage": "씬 분할",
         "message": "씬 분할 실패, 타임코드 공백 기준 청킹으로 대체",
@@ -773,8 +851,12 @@ async def _run_dual_verification_pass(
     scene_chunks = await _split_into_scenes(
         provider, profile, filtered_pairs, target_version_id, warnings)
     chunk_results = await asyncio.gather(*[_verify_chunk(chunk) for chunk in scene_chunks])
-    claude_corrections = [c for claude_chunk, _ in chunk_results for c in claude_chunk]
-    gpt_corrections = [c for _, gpt_chunk in chunk_results for c in gpt_chunk]
+    claude_corrections = _drop_malformed_corrections(
+        [c for claude_chunk, _ in chunk_results for c in claude_chunk],
+        "Claude 검증", target_version_id, warnings)
+    gpt_corrections = _drop_malformed_corrections(
+        [c for _, gpt_chunk in chunk_results for c in gpt_chunk],
+        "GPT 검증", target_version_id, warnings)
 
     candidate_pairs, claude_only, gpt_only = _reconcile_dual_verification(
         claude_corrections, gpt_corrections)
@@ -797,9 +879,23 @@ async def _run_dual_verification_pass(
         if c.get("category") not in ("unnatural_style", "nuance_tone")
     ]
 
-    backtranslation_by_id, backtranslation_warnings = await _back_translate_proposals(
-        provider, profile, true_agreed, filtered_claude_only, filtered_gpt_only, target_version_id)
+    (backtranslation_by_id, original_backtranslation_by_id, not_improved,
+     backtranslation_warnings) = await _back_translate_proposals(
+        provider, profile, true_agreed, filtered_claude_only, filtered_gpt_only,
+        target_version_id, pairs)
     warnings.extend(backtranslation_warnings)
+
+    # 원문보다 나아지지 않았다고 판정된 교정은 여기서 폐기한다 — true_agreed여도
+    # 예외 없음(두 모델이 같은 문구에 합의했다는 것과, 그 문구가 원문보다
+    # 실제로 나은 것은 별개다). 폐기된 항목은 finding 자체가 안 생긴다.
+    true_agreed = [c for c in true_agreed if (c["segment_id"], "gpt_authored") not in not_improved]
+    filtered_claude_only = [
+        c for c in filtered_claude_only
+        if (c["segment_id"], "claude_authored") not in not_improved
+    ]
+    filtered_gpt_only = [
+        c for c in filtered_gpt_only if (c["segment_id"], "gpt_authored") not in not_improved
+    ]
 
     entries = [
         # true_agreed 항목의 corrected_text는 gpt_correction이다(agreed는
@@ -822,7 +918,7 @@ async def _run_dual_verification_pass(
             continue
         findings.append(_make_dual_verification_finding(
             target_version_id, pair, correction, status, model_label, source,
-            backtranslation_by_id))
+            backtranslation_by_id, original_backtranslation_by_id))
         if applies:
             pair.target.text = correction["corrected_text"]
     return findings, warnings

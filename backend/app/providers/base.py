@@ -60,11 +60,16 @@ class ModelProvider(ABC):
 
     @abstractmethod
     async def back_translate_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
-        """Claude로 대상언어 텍스트를 한국어로 역번역한다(감사/참고용). GPT가
-        만든 텍스트만 여기로 들어온다 — 자기가 만든 텍스트를 자기가 역번역하면
+        """Claude로 대상언어 텍스트를 한국어로 역번역하고(감사/참고용), 동시에
+        text가 original_text보다 실제로 나아졌는지도 판단한다. GPT가 만든
+        텍스트만 여기로 들어온다 — 자기가 만든 텍스트를 자기가 판단하면
         스스로의 오류를 매끄럽게 얼버무려 가릴 위험이 있어(같은 모델의 왕복
-        번역은 오류를 숨기는 경향), 항상 반대쪽 모델이 역번역한다. 입력은
-        [{"id": str, "text": str}], 반환값은 [{"id": str, "korean_text": str}]."""
+        번역/판단은 오류를 숨기는 경향), 항상 반대쪽 모델이 판단한다. 입력은
+        [{"id": str, "reference_korean": str(한국어 원문),
+        "original_text": str(교정 전), "text": str(교정 후)}], 반환값은
+        [{"id": str, "korean_text": str(text의 역번역),
+        "original_korean_text": str(original_text의 역번역),
+        "is_improvement": bool}]."""
         ...
 
     @abstractmethod

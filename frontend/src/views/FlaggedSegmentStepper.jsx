@@ -62,7 +62,6 @@ export function GenderQuestion({
       {heading && <p className="mb-2 text-xs font-semibold text-muted-foreground">{heading}</p>}
       {words?.length > 0 && (
         <p className="mb-3 text-sm text-foreground">
-          성수 구분이 필요한 표현:{" "}
           {words.map((w) => (
             <span key={w} className="mr-1.5 whitespace-nowrap">
               <span className="rounded bg-accent/20 px-1.5 py-0.5 font-mono text-accent-foreground">
@@ -187,6 +186,15 @@ export default function FlaggedSegmentStepper({
     };
   }, [currentSegment?.id, currentSegment?.start, currentSegment?.end, videoOffsetSeconds]);
 
+  // 한국어 원문 카드를 클릭하면(예: 다른 곳으로 스크럽하거나 멈춘 뒤)
+  // 지금 줄의 구간 처음으로 다시 이동해 재생한다.
+  function replayCurrentSegment() {
+    const video = videoRef.current;
+    if (!video || !currentSegment) return;
+    video.currentTime = currentSegment.start - videoOffsetSeconds;
+    video.play().catch(() => {});
+  }
+
   function goToNextUnresolved(fromIndex) {
     for (let i = fromIndex + 1; i < segments.length; i += 1) {
       if (!isSegmentResolved(segments[i])) {
@@ -280,17 +288,11 @@ export default function FlaggedSegmentStepper({
       className="fixed inset-0 z-50 flex flex-col bg-background">
       <header className="flex items-center justify-between border-b border-border px-6 py-4">
         <div>
-          <h2 id="stepper-heading" className="text-lg font-semibold text-foreground">
-            성별·격식 확인
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {currentIndex + 1} / {segments.length} · 남은 확인 {unresolvedCount}건
-          </p>
-        </div>
-        <div className="flex gap-2">
           {onExit && (
             <button onClick={onExit} className={ghostBtnClass}>목록으로</button>
           )}
+        </div>
+        <div className="flex gap-2">
           {allResolved && (
             <button disabled={completePending} onClick={onComplete} className={primaryBtnClass}>
               AI 검증 시작하기
@@ -300,7 +302,10 @@ export default function FlaggedSegmentStepper({
       </header>
 
       <div className="flex flex-1 flex-col gap-6 overflow-auto p-6 lg:flex-row">
-        <div className="lg:w-1/2">
+        <div className="lg:w-2/5">
+          <h2 id="stepper-heading" className="mb-2 text-lg font-semibold text-foreground">
+            성별·격식 확인
+          </h2>
           {videoProxyUrl ? (
             <video
               ref={videoRef}
@@ -314,15 +319,21 @@ export default function FlaggedSegmentStepper({
               영상 프록시를 사용할 수 없습니다.
             </div>
           )}
-          <div className="mt-4 rounded-md border border-border bg-card p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">한국어 원문</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{currentSegment.korean_text}</p>
-            <p className="mt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">대상언어</p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-foreground">{currentSegment.target_text}</p>
-          </div>
         </div>
 
-        <div className="space-y-6 lg:w-1/2">
+        <div className="space-y-6 lg:w-3/5">
+          <p className="text-sm text-muted-foreground">
+            {currentIndex + 1} / {segments.length}
+          </p>
+
+          <div
+            onClick={replayCurrentSegment}
+            className="cursor-pointer rounded-md border border-border bg-card p-4"
+          >
+            <h3 className="mb-3 text-sm font-semibold text-foreground">한국어 원문</h3>
+            <p className="whitespace-pre-wrap text-sm text-foreground">{currentSegment.korean_text}</p>
+          </div>
+
           {currentSegment.gender_check_needed && (
             <section aria-labelledby="stepper-gender-heading" className="rounded-lg border border-border bg-card p-4">
               <div className="mb-3 flex items-center gap-2">

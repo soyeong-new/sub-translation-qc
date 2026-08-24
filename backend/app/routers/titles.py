@@ -1,13 +1,15 @@
 """작품(Title) 등록, 에피소드 등록, 목록 조회/삭제 엔드포인트."""
 
+import shutil
 from datetime import datetime, timezone
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion
+from app.models import Title, Episode, TargetVersion, FindingRow
 from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
+from app.core.uploads import MEDIA_ROOT
 from app.language_profiles.loader import list_profiles
 
 router = APIRouter()
@@ -54,6 +56,14 @@ async def create_episode(title_id: str, payload: EpisodeIn):
         return {"id": episode.id, "title_id": title_id}
 
 
+@router.get("/storage")
+async def get_storage_usage():
+    """MEDIA_ROOT가 놓인 디스크(EC2라면 EBS 볼륨)의 전체/사용 용량을 바이트로 반환한다."""
+    MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(MEDIA_ROOT)
+    return {"used": usage.used, "total": usage.total}
+
+
 @router.get("/titles")
 async def list_titles():
     """제목별로 묶어서(타이틀명 아카이브) 각 title의 episode/target_version을
@@ -66,12 +76,26 @@ async def list_titles():
         )).scalars().all()
         episodes = (await session.execute(select(Episode))).scalars().all()
         target_versions = (await session.execute(select(TargetVersion))).scalars().all()
+        reviewer_rows = (await session.execute(
+            select(FindingRow.target_version_id, FindingRow.reviewer_name)
+            .where(FindingRow.reviewer_name != "")
+        )).all()
+        reviewers_by_tv: dict = {}
+        for tv_id, name in reviewer_rows:
+            reviewers_by_tv.setdefault(tv_id, set()).add(name)
 
+        display_names = {
+            (p["language"], p["variant"]): p["display_name"] for p in list_profiles()
+        }
         tvs_by_episode: dict = {}
         for tv in target_versions:
             tvs_by_episode.setdefault(tv.episode_id, []).append({
                 "id": tv.id, "target_language": tv.target_language, "variant": tv.variant,
+                "display_name": display_names.get(
+                    (tv.target_language, tv.variant), f"{tv.target_language} ({tv.variant})"
+                ),
                 "status": tv.status, "error_message": tv.error_message,
+                "reviewers": sorted(reviewers_by_tv.get(tv.id, [])),
             })
         episodes_by_title: dict = {}
         for ep in episodes:

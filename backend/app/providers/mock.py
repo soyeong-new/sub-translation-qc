@@ -50,10 +50,14 @@ class MockProvider(ModelProvider):
         return text[:max_chars]
 
     async def back_translate_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
-        return [{"id": t["id"], "korean_text": f"[역번역:{t['text']}]"} for t in texts]
+        return [{"id": t["id"], "korean_text": f"[역번역:{t['text']}]",
+                  "original_korean_text": f"[역번역:{t.get('original_text', '')}]",
+                  "is_improvement": True} for t in texts]
 
     async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
-        return [{"id": t["id"], "korean_text": f"[역번역:{t['text']}]"} for t in texts]
+        return [{"id": t["id"], "korean_text": f"[역번역:{t['text']}]",
+                  "original_korean_text": f"[역번역:{t.get('original_text', '')}]",
+                  "is_improvement": True} for t in texts]
 
     async def check_equivalence_with_claude(self, items: List[dict], profile: dict) -> List[dict]:
         return _check_equivalence(items)

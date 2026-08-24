@@ -3,7 +3,11 @@
 // 렌더링된다.
 
 import { useEffect, useRef, useState } from "react";
-import { listTitles, deleteTitle, rerunAnalysis, pollTargetVersionStatus } from "../api.js";
+import { listTitles, deleteTitle, rerunAnalysis, pollTargetVersionStatus, getStorageUsage } from "../api.js";
+
+function formatGB(bytes) {
+  return (bytes / 1024 ** 3).toFixed(1);
+}
 
 const STATUS_LABELS = {
   analyzing: "분석 중...",
@@ -13,26 +17,38 @@ const STATUS_LABELS = {
   failed: "실패",
 };
 
-const STATUS_BADGE_CLASS = {
-  analyzing: "bg-muted text-muted-foreground border-border",
-  awaiting_confirmation: "bg-warning/10 text-warning border-warning/30",
-  verifying: "bg-muted text-muted-foreground border-border",
-  review: "bg-success/10 text-success border-success/30",
-  failed: "bg-destructive/10 text-destructive border-destructive/30",
+const STATUS_DOT_CLASS = {
+  analyzing: "bg-muted-foreground/50",
+  awaiting_confirmation: "bg-warning",
+  verifying: "bg-muted-foreground/50",
+  review: "bg-success",
+  failed: "bg-destructive",
 };
 
+// 카드마다 상태 텍스트를 반복하는 대신, 색의 의미를 한 번만 설명하는 범례.
+const STATUS_LEGEND = [
+  { key: "review", dot: "bg-success" },
+  { key: "awaiting_confirmation", dot: "bg-warning" },
+  { key: "analyzing", dot: "bg-muted-foreground/50" },
+  { key: "failed", dot: "bg-destructive" },
+];
+
 const smallBtnBase =
-  "inline-flex items-center justify-center rounded-md border px-2.5 py-1 text-xs font-medium " +
+  "inline-flex items-center justify-center rounded-lg border px-2.5 py-1 text-xs font-medium " +
   "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 const openBtnClass = `${smallBtnBase} border-primary/40 bg-primary/10 text-primary hover:bg-primary/20`;
 const rerunBtnClass = `${smallBtnBase} border-input bg-background text-foreground hover:bg-accent`;
-const deleteBtnClass = `${smallBtnBase} border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20`;
+const deleteBtnClass =
+  "inline-flex h-6 w-6 items-center justify-center text-destructive/70 leading-none " +
+  "transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 " +
+  "focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
 
 export default function TitleArchiveList({ onOpen }) {
   const [titles, setTitles] = useState(null); // null = 로딩 중
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null); // 지금 처리 중인 target_version/title id
+  const [storage, setStorage] = useState(null); // { used, total } bytes
 
   const isMountedRef = useRef(true);
   useEffect(() => {
@@ -52,7 +68,16 @@ export default function TitleArchiveList({ onOpen }) {
       });
   }
 
+  function refreshStorage() {
+    getStorageUsage()
+      .then((data) => {
+        if (isMountedRef.current) setStorage(data);
+      })
+      .catch(() => {}); // 저장공간 바는 부가 정보라 실패해도 조용히 무시
+  }
+
   useEffect(refresh, []);
+  useEffect(refreshStorage, []);
 
   async function waitThenOpen(targetVersionId) {
     setBusyId(targetVersionId);
@@ -99,6 +124,7 @@ export default function TitleArchiveList({ onOpen }) {
     try {
       await deleteTitle(title.id);
       refresh();
+      refreshStorage();
     } catch (err) {
       setError(err.message ?? "삭제 중 오류가 발생했습니다.");
     } finally {
@@ -109,24 +135,80 @@ export default function TitleArchiveList({ onOpen }) {
   if (titles === null || titles.length === 0) return null;
 
   return (
-    <div className="mt-10 w-full max-w-2xl">
-      <h2 className="mb-3 text-sm font-semibold text-foreground">등록된 작품</h2>
-      {error && (
-        <p role="status" aria-live="polite" className="mb-2 text-sm text-destructive">{error}</p>
+    <div className="flex min-w-0 max-w-2xl flex-1 flex-col gap-4">
+      {storage && (
+        <div className="rounded-2xl border border-border/50 bg-muted/30 p-5 backdrop-blur-md">
+          <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+            <span>Storage</span>
+            <span>
+              {formatGB(storage.used)}GB / {formatGB(storage.total)}GB 사용 중
+            </span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={`h-full rounded-full ${
+                storage.used / storage.total > 0.9 ? "bg-destructive" : "bg-primary"
+              }`}
+              style={{ width: `${Math.min(100, (storage.used / storage.total) * 100)}%` }}
+            />
+          </div>
+        </div>
       )}
-      <ul className="space-y-3">
+      <div className="rounded-2xl border border-border/50 bg-muted/30 p-6 backdrop-blur-md">
+        <h2 className="mb-2 text-2xl font-semibold text-foreground">Archive</h2>
+        <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          {STATUS_LEGEND.map(({ key, dot }) => (
+            <span key={key} className="inline-flex items-center gap-1.5">
+              <span className={`h-2 w-2 rounded-full ${dot}`} />
+              {STATUS_LABELS[key]}
+            </span>
+          ))}
+        </div>
+        {error && (
+          <p role="status" aria-live="polite" className="mb-2 text-sm text-destructive">{error}</p>
+        )}
+        <ul className="space-y-4">
         {titles.map((title) => {
           const targetVersions = title.episodes.flatMap((ep) => ep.target_versions);
           return (
-            <li key={title.id} className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <li
+              key={title.id}
+              className="rounded-2xl border border-border/50 bg-card/70 p-5 shadow-sm backdrop-blur-sm transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:shadow-md"
+            >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-foreground">{title.name}</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-1.5">
+                    {targetVersions.map((tv) => (
+                      <span
+                        key={tv.id}
+                        role="img"
+                        aria-label={STATUS_LABELS[tv.status] || tv.status}
+                        title={STATUS_LABELS[tv.status] || tv.status}
+                        className={`h-2.5 w-2.5 rounded-full ${
+                          STATUS_DOT_CLASS[tv.status] || "bg-muted-foreground/50"
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <span className="text-sm font-medium text-foreground">{title.name}</span>
+                  {targetVersions.map((tv) => (
+                    <div key={tv.id} className="flex items-center gap-2">
+                      <button disabled={busyId === tv.id} onClick={() => handleOpen(tv)} className={openBtnClass}>
+                        열기
+                      </button>
+                      <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
+                        재분석
+                      </button>
+                    </div>
+                  ))}
+                </div>
                 <button
                   disabled={busyId === title.id}
                   onClick={() => handleDelete(title)}
+                  aria-label="삭제"
                   className={deleteBtnClass}
                 >
-                  삭제
+                  ×
                 </button>
               </div>
               <ul className="mt-2 space-y-1.5">
@@ -135,29 +217,22 @@ export default function TitleArchiveList({ onOpen }) {
                 )}
                 {targetVersions.map((tv) => (
                   <li key={tv.id} className="flex flex-wrap items-center gap-2 text-xs">
-                    <span
-                      className={`inline-flex items-center rounded-full border px-2 py-0.5 ${
-                        STATUS_BADGE_CLASS[tv.status] || "bg-muted text-muted-foreground border-border"
-                      }`}
-                    >
-                      {STATUS_LABELS[tv.status] || tv.status}
+                    <span className="rounded-lg bg-muted/50 px-2.5 py-1 text-muted-foreground">
+                      {tv.display_name}
                     </span>
-                    <span className="text-muted-foreground">
-                      {tv.target_language}({tv.variant})
-                    </span>
-                    <button disabled={busyId === tv.id} onClick={() => handleOpen(tv)} className={openBtnClass}>
-                      열기
-                    </button>
-                    <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
-                      새로고침
-                    </button>
+                    {tv.reviewers.length > 0 && (
+                      <span className="rounded-lg bg-muted/50 px-2.5 py-1 text-muted-foreground">
+                        {tv.reviewers.join(", ")}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
             </li>
           );
         })}
-      </ul>
+        </ul>
+      </div>
     </div>
   );
 }

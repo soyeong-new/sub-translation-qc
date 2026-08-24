@@ -31,7 +31,7 @@ function profileKey(p) {
 }
 
 const inputClass =
-  "block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground " +
+  "block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground " +
   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
   "disabled:cursor-not-allowed disabled:opacity-50";
@@ -171,13 +171,10 @@ export default function TitleListView({ onSelect }) {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center bg-background px-4 py-12">
-      <div className="w-full max-w-md rounded-lg border border-border bg-card p-8 shadow-sm">
+    <div className="mx-auto flex min-h-screen w-full max-w-6xl items-stretch gap-8 bg-background px-4 py-12">
+      <div className="min-w-0 max-w-2xl flex-1 rounded-2xl border border-border/50 bg-card/80 p-8 shadow-sm backdrop-blur-md">
         <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-card-foreground">작품 등록</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            한국어 원본과 스페인어 번역본을 등록하고 QC 분석을 시작합니다.
-          </p>
+          <h1 className="text-2xl font-semibold text-card-foreground">New Title</h1>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -193,38 +190,40 @@ export default function TitleListView({ onSelect }) {
             />
           </Field>
 
-          <Field id="title-type" label="유형">
-            <select
-              id="title-type"
-              value={type}
-              onChange={(e) => setType(e.target.value)}
-              disabled={isSubmitting}
-              className={inputClass}
-            >
-              <option value="movie">영화</option>
-              <option value="series">드라마</option>
-            </select>
-          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field id="title-type" label="유형">
+              <select
+                id="title-type"
+                value={type}
+                onChange={(e) => setType(e.target.value)}
+                disabled={isSubmitting}
+                className={inputClass}
+              >
+                <option value="movie">영화</option>
+                <option value="series">드라마</option>
+              </select>
+            </Field>
 
-          <Field id="target-language" label="대상언어">
-            <select
-              id="target-language"
-              value={selectedProfile ? profileKey(selectedProfile) : ""}
-              onChange={(e) => {
-                const match = languageProfiles.find((p) => profileKey(p) === e.target.value);
-                setSelectedProfile(match ?? null);
-              }}
-              disabled={isSubmitting || languageProfiles.length === 0}
-              className={inputClass}
-            >
-              {languageProfiles.length === 0 && <option value="">불러오는 중...</option>}
-              {languageProfiles.map((p) => (
-                <option key={profileKey(p)} value={profileKey(p)}>
-                  {p.language} ({p.variant})
-                </option>
-              ))}
-            </select>
-          </Field>
+            <Field id="target-language" label="대상언어">
+              <select
+                id="target-language"
+                value={selectedProfile ? profileKey(selectedProfile) : ""}
+                onChange={(e) => {
+                  const match = languageProfiles.find((p) => profileKey(p) === e.target.value);
+                  setSelectedProfile(match ?? null);
+                }}
+                disabled={isSubmitting || languageProfiles.length === 0}
+                className={inputClass}
+              >
+                {languageProfiles.length === 0 && <option value="">불러오는 중...</option>}
+                {languageProfiles.map((p) => (
+                  <option key={profileKey(p)} value={profileKey(p)}>
+                    {p.display_name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
 
           <FileDropzone
             id="video-file"
@@ -238,7 +237,7 @@ export default function TitleListView({ onSelect }) {
 
           <FileDropzone
             id="srt-file"
-            label="스페인어 SRT 자막"
+            label="대상언어 SRT 자막"
             accept={SRT_EXTENSIONS.join(",")}
             file={srtFile}
             onFileSelected={handleSrtSelected}
@@ -248,7 +247,7 @@ export default function TitleListView({ onSelect }) {
 
           <FileDropzone
             id="korean-srt-file"
-            label="한국어 SRT 자막 (선택, 있으면 STT 타이밍에 이 파일의 텍스트를 씁니다)"
+            label="한국어 SRT 자막 (선택)"
             accept={SRT_EXTENSIONS.join(",")}
             file={koreanSrtFile}
             onFileSelected={handleKoreanSrtSelected}
@@ -259,7 +258,7 @@ export default function TitleListView({ onSelect }) {
           <button
             type="submit"
             disabled={!canSubmit}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-primary
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary
               px-4 py-2 text-sm font-medium text-primary-foreground transition-colors
               hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2
               focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background

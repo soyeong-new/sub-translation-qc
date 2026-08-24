@@ -93,8 +93,8 @@ const btnBase =
 
 // 승인/거부/수정 버튼은 색으로만 구분하지 않고(라벨 텍스트 병기) 채움/윤곽 스타일까지
 // 다르게 하여 시각적으로 뚜렷이 구분되도록 한다 (ui-ux-pro-max 가이드).
-const approveBtnClass = `${btnBase} bg-success text-success-foreground hover:bg-success/90`;
-const rejectBtnClass = `${btnBase} bg-destructive text-destructive-foreground hover:bg-destructive/90`;
+const approveBtnClass = `${btnBase} border border-success/40 bg-success/10 text-success hover:bg-success/20`;
+const rejectBtnClass = `${btnBase} border border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20`;
 const modifyBtnClass = `${btnBase} border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground`;
 const ghostBtnClass = `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
 const primaryBtnClass = `${btnBase} bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2`;
@@ -189,6 +189,12 @@ function splitDescription(rawDescription) {
     : withoutOriginalMeaning;
   const requeryInstruction = requeryMatch ? requeryMatch[1] : null;
   return { description, backTranslation, originalBackTranslation, proposalBackTranslation, originalMeaning, requeryInstruction };
+}
+
+// 문장 중간이 아니라 문장부호(.!?) 뒤에서 줄바꿈되도록, 문장마다 줄을
+// 나눈다 — whitespace-pre-line과 같이 써야 줄바꿈이 실제로 반영된다.
+function breakBySentence(text) {
+  return text.split(/(?<=[.!?])\s+/).join("\n");
 }
 
 // Claude/GPT가 같은 세그먼트에 대해 서로 다르게 제안했을 때(둘 다 pending)
@@ -304,9 +310,11 @@ function FindingCard({
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${categoryClass}`}>
           {CATEGORY_LABELS[finding.category] || finding.category}
         </span>
-        <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${statusClass}`}>
-          {STATUS_LABELS[finding.status] || finding.status}
-        </span>
+        {finding.status !== "approved" && finding.status !== "rejected" && (
+          <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${statusClass}`}>
+            {STATUS_LABELS[finding.status] || finding.status}
+          </span>
+        )}
         {finding.model && (
           <span className="inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
             {finding.model === "claude" ? "Claude" : finding.model === "gpt" ? "GPT" : finding.model}
@@ -323,13 +331,15 @@ function FindingCard({
         </div>
       )}
 
-      <p className="mb-3 text-sm text-foreground">{description}</p>
+      <p className="mb-3 max-w-prose whitespace-pre-line text-sm leading-relaxed text-foreground">
+        {breakBySentence(description)}
+      </p>
 
       {/* STT 한국어 원문 — 오역처럼 보이는 finding이 사실은 STT가 잘못 알아들은
           결과일 수 있다. 검수자가 별도 STT 사이드바를 뒤지지 않고 그 자리에서
           바로 "번역이 틀렸나, STT가 틀렸나"를 가늠할 수 있게 참고용으로 붙인다. */}
       {koreanText && (
-        <div className="mb-3 rounded-md border border-dashed border-accent/40 bg-accent/5 p-3">
+        <div className="mb-3 rounded-md border border-dashed border-accent/80 bg-accent/5 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <p className="text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
               한국어 원문
@@ -572,9 +582,11 @@ function PairedFindingCard({
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${categoryClass}`}>
             {CATEGORY_LABELS[finding.category] || finding.category}
           </span>
-          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE_CLASS[finding.status] || FALLBACK_BADGE_CLASS}`}>
-            {STATUS_LABELS[finding.status] || finding.status}
-          </span>
+          {finding.status !== "approved" && finding.status !== "rejected" && (
+            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE_CLASS[finding.status] || FALLBACK_BADGE_CLASS}`}>
+              {STATUS_LABELS[finding.status] || finding.status}
+            </span>
+          )}
         </div>
 
         {requeryInstruction && (
@@ -584,7 +596,9 @@ function PairedFindingCard({
           </div>
         )}
 
-        <p className="mb-2 text-xs text-foreground">{description}</p>
+        <p className="mb-2 max-w-prose whitespace-pre-line text-xs leading-relaxed text-foreground">
+          {breakBySentence(description)}
+        </p>
 
         <div className="rounded-md border border-primary/30 bg-primary/5 p-2">
           <div className="mb-1 flex items-center justify-between gap-2">
@@ -592,12 +606,12 @@ function PairedFindingCard({
             <CharCount text={finding.suggested_text} />
           </div>
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
+          {(proposalBackTranslation || backTranslation) && (
+            <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-muted-foreground">
+              역번역 참고: {proposalBackTranslation || backTranslation}
+            </p>
+          )}
         </div>
-        {(proposalBackTranslation || backTranslation) && (
-          <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-muted-foreground">
-            역번역 참고: {proposalBackTranslation || backTranslation}
-          </p>
-        )}
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
@@ -715,16 +729,16 @@ function PairedFindingCard({
         isPreviewing ? "border-primary ring-1 ring-primary" : "border-border"
       }`}
     >
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-semibold text-accent-foreground">
-          {a.status === "pending" && b.status === "pending"
-            ? "Claude/GPT 의견 다름 — 하나를 선택해주세요"
-            : "Claude/GPT 의견 다름 — 처리됨 (테두리 색으로 확인, 다시 바꿀 수 있음)"}
-        </span>
-      </div>
+      {a.status === "pending" && b.status === "pending" && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-semibold text-accent-foreground">
+            Claude/GPT 의견 다름 — 하나를 선택해주세요
+          </span>
+        </div>
+      )}
 
       {koreanText && (
-        <div className="mb-3 rounded-md border border-dashed border-accent/40 bg-accent/5 p-3">
+        <div className="mb-3 rounded-md border border-dashed border-accent/80 bg-accent/5 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <p className="text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
               한국어 원문
@@ -791,10 +805,10 @@ function PairedFindingCard({
           <button
             disabled={!reviewerName.trim() || pendingActions[a.id] != null || pendingActions[b.id] != null}
             onClick={onRejectBoth}
-            className={`${rejectBtnClass} px-2.5 py-1 text-xs`}
+            className={`${modifyBtnClass} px-2.5 py-1 text-xs`}
           >
             {(pendingActions[a.id] === "rejected" || pendingActions[b.id] === "rejected") && <Spinner />}
-            원본 유지 (둘 다 거부)
+            원본 유지
           </button>
         </div>
         <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{a.original_text}</p>
@@ -816,7 +830,7 @@ function PairedFindingCard({
 // 좌측 컬럼: finding 카드를 클릭하면 그 구간이 재생되는 영상 미리보기.
 // 예전엔 findings 목록 위에 붙어 있었으나, 화면 좌측 "사실 확인" 자리로
 // 옮겼다(더 눈에 잘 띄고, 스크롤해도 sticky로 계속 보임).
-function VideoPreviewPanel({ videoProxyUrl, previewSegment, videoRef }) {
+function VideoPreviewPanel({ videoProxyUrl, videoRef }) {
   if (!videoProxyUrl) {
     return (
       <aside className="lg:sticky lg:top-6 lg:self-start">
@@ -829,9 +843,6 @@ function VideoPreviewPanel({ videoProxyUrl, previewSegment, videoRef }) {
   return (
     <aside className="lg:sticky lg:top-6 lg:self-start">
       <div className="rounded-lg border border-border bg-card p-3 shadow-sm">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {previewSegment ? "구간 미리보기" : "finding 카드를 클릭하면 그 구간이 재생됩니다"}
-        </p>
         <video
           ref={videoRef}
           src={videoProxyUrl}
@@ -1220,52 +1231,68 @@ export default function ReviewView({ targetVersionId, onBack }) {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b border-border bg-card px-6 py-4">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-4">
+        <div className="mx-auto flex max-w-screen-2xl flex-wrap items-end justify-between gap-4">
           <div>
             <button
               onClick={onBack}
-              className="mb-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
             >
               &larr; 목록으로
             </button>
-            <h1 className="text-xl font-semibold text-card-foreground">리뷰 — Findings</h1>
           </div>
-          <div className="w-full max-w-xs">
-            <Field id="reviewer-name" label="검수자 이름">
-              <input
-                id="reviewer-name"
-                value={reviewerName}
-                onChange={(e) => setReviewerName(e.target.value)}
-                placeholder="이름을 입력하세요"
-                className={inputClass}
-              />
-            </Field>
+          <div className="flex w-full max-w-xs items-center gap-2">
+            <label htmlFor="reviewer-name" className="shrink-0 text-sm font-medium text-foreground">
+              검수자 이름
+            </label>
+            <input
+              id="reviewer-name"
+              value={reviewerName}
+              onChange={(e) => setReviewerName(e.target.value)}
+              placeholder="이름을 입력하세요"
+              className={inputClass}
+            />
           </div>
         </div>
       </header>
 
       {pipelineWarnings.length > 0 && (
-        <div className="mx-auto max-w-6xl px-6 pt-4">
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            <p className="font-medium">일부 분석 단계 실패</p>
-            <ul className="mt-1 list-disc pl-5">
-              {pipelineWarnings.map((w, i) => (
-                <li key={i}>{w.stage}: {w.message}</li>
-              ))}
-            </ul>
+        <div className="mx-auto max-w-screen-2xl px-6 pt-4">
+          <div className="flex gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="mt-0.5 h-4 w-4 shrink-0"
+            >
+              <path
+                fillRule="evenodd"
+                d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.63-1.516 2.63H3.72c-1.347 0-2.189-1.463-1.516-2.63L8.485 2.495ZM10 6a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 6Zm0 8a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
+                clipRule="evenodd"
+              />
+            </svg>
+            <div>
+              <p className="font-medium">일부 분석 단계 실패</p>
+              <ul className="mt-1 list-disc pl-5">
+                {pipelineWarnings.map((w, i) => (
+                  <li key={i}>{w.stage}: {w.message}</li>
+                ))}
+              </ul>
+            </div>
           </div>
         </div>
       )}
 
       {/* 본문을 좌측 영상 미리보기 / 우측 Findings·내보내기 본문으로 분리한다.
           좁은 화면에서는 세로로 쌓이며 미리보기가 먼저 나온다. */}
-      <main className="mx-auto max-w-6xl px-6 py-8">
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[320px_1fr]">
-          <VideoPreviewPanel
-            videoProxyUrl={videoProxyUrl}
-            previewSegment={previewSegment}
-            videoRef={previewVideoRef}
-          />
+      <main className="mx-auto max-w-screen-2xl px-6 py-8">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[420px_1fr]">
+          <div>
+            <h1 className="mb-2 text-xl font-semibold text-foreground">리뷰</h1>
+            <VideoPreviewPanel
+              videoProxyUrl={videoProxyUrl}
+              videoRef={previewVideoRef}
+            />
+          </div>
 
           <div className="space-y-8">
             <section aria-labelledby="findings-heading">
@@ -1403,45 +1430,42 @@ export default function ReviewView({ targetVersionId, onBack }) {
               )}
             </section>
 
-            {halfPairSegments.length > 0 && (
-              <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
-                <div className="mb-4">
-                  <h2 className="text-lg font-semibold text-card-foreground">
-                    확인 필요 (짝 없는 줄) {halfPairSegments.length}건
-                  </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    한국어와 대상언어 중 한쪽만 있어 자동으로 짝을 못 찾은 줄입니다.
-                    필요 없는 줄은 제외할 수 있습니다.
-                  </p>
-                </div>
-                <ul className="space-y-3">
-                  {halfPairSegments.map((seg) => {
-                    const hasTarget = Boolean(seg.target_text?.trim());
-                    const pending = excludePendingId === seg.id;
-                    return (
-                      <li
-                        key={seg.id}
-                        className={`rounded-md border p-3 ${
-                          seg.excluded ? "border-border bg-muted/30 opacity-60" : "border-border bg-muted/10"
-                        }`}
-                      >
-                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                            {hasTarget ? "대상언어만 있음 (최종 자막에 포함됨)" : "한국어만 있음 (최종 자막에 영향 없음)"}
-                          </span>
-                          {seg.excluded && (
-                            <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                              제외됨
-                            </span>
-                          )}
-                        </div>
-                        {seg.korean_text && (
-                          <p className="whitespace-pre-wrap text-sm text-foreground">{seg.korean_text}</p>
-                        )}
-                        {seg.target_text && (
-                          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{seg.target_text}</p>
-                        )}
-                        <div className="mt-2 flex items-center gap-2">
+            {halfPairSegments.length > 0 && (() => {
+              const koreanOnlySegments = halfPairSegments.filter((s) => !s.target_text?.trim());
+              const targetOnlySegments = halfPairSegments.filter((s) => Boolean(s.target_text?.trim()));
+
+              function renderHalfPairItem(seg) {
+                const hasTarget = Boolean(seg.target_text?.trim());
+                const pending = excludePendingId === seg.id;
+                const isPreviewing = previewSegment?.id === seg.id;
+
+                function handleClick(e) {
+                  if (e.target.closest("button, textarea, input, a, select")) return;
+                  setPreviewSegment(seg);
+                }
+
+                return (
+                  <li
+                    key={seg.id}
+                    onClick={handleClick}
+                    className={`cursor-pointer rounded-md border p-3 ${isPreviewing ? "ring-1 ring-primary" : ""} ${
+                      seg.excluded ? "border-border bg-muted/30 opacity-60" : "border-border bg-muted/10"
+                    }`}
+                  >
+                    {hasTarget && seg.excluded && (
+                      <div className="mb-2 flex justify-end">
+                        <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                          제외됨
+                        </span>
+                      </div>
+                    )}
+                    {seg.korean_text && (
+                      <p className="whitespace-pre-wrap text-sm text-foreground">{seg.korean_text}</p>
+                    )}
+                    {hasTarget ? (
+                      <div className="flex items-end justify-between gap-3">
+                        <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{seg.target_text}</p>
+                        <div className="flex shrink-0 items-center gap-2">
                           <button
                             disabled={pending}
                             onClick={() => handleToggleExclude(seg.id, !seg.excluded)}
@@ -1456,21 +1480,40 @@ export default function ReviewView({ targetVersionId, onBack }) {
                             </span>
                           )}
                         </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            )}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              }
 
-            <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-card-foreground">최종 SRT 내보내기</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    승인/수정된 텍스트를 반영한 최종 자막을 생성합니다.
-                  </p>
-                </div>
+              return (
+                <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
+                  <div className="mb-4">
+                    <h2 className="text-lg font-semibold text-card-foreground">
+                      확인 필요 (짝 없는 줄) {halfPairSegments.length}건
+                    </h2>
+                  </div>
+                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                    <div>
+                      <h3 className="mb-2 text-sm font-semibold text-foreground">
+                        한국어만 있음 ({koreanOnlySegments.length}) - 최종 자막에 영향 없음
+                      </h3>
+                      <ul className="space-y-3">{koreanOnlySegments.map(renderHalfPairItem)}</ul>
+                    </div>
+                    <div>
+                      <h3 className="mb-2 text-sm font-semibold text-foreground">
+                        대상언어만 있음 ({targetOnlySegments.length}) - 최종 자막에 포함됨
+                      </h3>
+                      <ul className="space-y-3">{targetOnlySegments.map(renderHalfPairItem)}</ul>
+                    </div>
+                  </div>
+                </section>
+              );
+            })()}
+
+            <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold text-card-foreground">최종 SRT 내보내기</h2>
                 <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
                   {isExporting && <Spinner />}
                   내보내기

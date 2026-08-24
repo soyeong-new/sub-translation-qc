@@ -1,5 +1,6 @@
 language: es
 variant: LATAM
+display_name: 스페인어 (중남미)
 naturalness_check:
   llm_instruction: >
     스페인어 원어민이 어색하게 느낄 직역투 표현을 찾아 자연스러운 대안을 제안하라.

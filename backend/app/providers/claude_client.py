@@ -57,7 +57,12 @@ _SHRINK_SCHEMA_INSTRUCTION = (
 _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'id (문자열, 입력의 "id"와 반드시 일치), '
-    "korean_text (문자열, 자연스러운 한국어 역번역). "
+    "korean_text (문자열, text의 자연스러운 한국어 역번역), "
+    "original_korean_text (문자열, original_text의 자연스러운 한국어 역번역 "
+    "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게), "
+    "is_improvement (불리언, text가 original_text보다 reference_korean의 "
+    "의미·톤을 더 잘 살리는 자연스러운 표현이면 true, 동등하거나 "
+    "original_text가 더 낫다고 판단되면 false). "
     "반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
 )
 
@@ -134,6 +139,9 @@ class ClaudeClient:
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(스페인어 번역문)를 검증하라. "
             "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
             "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
+            "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
+            "정보 보존(고유명사·숫자·장소·행동 등 구체적 사실) > 오역/심의 정확성 > 씬 내 반복 표현 일관성 > 자연스러움. "
+            "특히 자연스럽게 다듬는 과정에서 원문에 있는 구체적 사실을 생략·변경·추가하면 안 된다.\n\n"
             "⚠️ [검수 범위 및 교정 원칙]\n"
             "1. 반드시 교정해야 하는 대상:\n"
             "   - 오역 및 핵심 의미 누락/와전 (category: \"mistranslation\")\n"
@@ -157,7 +165,7 @@ class ClaudeClient:
             "   - 교정 지침: 원문의 뜻을 왜곡 없이 정확하게 전달하도록 교정하라.\n"
             "3. 어색한 어조 및 직역투 (category: \"unnatural_style\" 또는 \"nuance_tone\"):\n"
             "   - 기준: 문법은 맞지만 한국어 어순/표현을 그대로 따라간 직역투라 스페인어로서 어색한가? 또는 한국어 원문의 감정·톤이 명확히 다르게 전달되었는가?\n"
-            "   - 교정 지침: 원문의 감정·톤을 정확히 살리면서 스페인어권 현지인이 실제로 사용하는 자연스러운 구어체로 교정하라.\n"
+            "   - 교정 지침: 원문의 감정·톤을 정확히 살리면서 스페인어권 현지인이 실제로 사용하는 자연스러운 구어체로 교정하라. 같은 씬 안에서 한국어 원문의 단어/표현이 반복되면, 문법적으로 다르게 써야 할 이유가 없는 한 같은 번역으로 통일하라.\n"
             "   - 주의: 원문이 이미 자연스러운 구어체로 한국어의 감정·톤을 잘 전달하고 있으면 nuance_tone 제안을 하지 마라.\n"
             "4. 문화 맥락 및 로컬라이제이션 (category: \"locale_convention\"):\n"
             "   - 기준: 스페인어권 문화 관습, 관용 표현, 단위 표기(미터법/화폐 등)에 안 맞는 번역이 있는가?\n"
@@ -201,13 +209,24 @@ class ClaudeClient:
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
         system = (
-            f"다음은 {language_label} 텍스트 목록이다. 각 항목을 자연스러운 "
-            "한국어로 역번역하라 — 스페인어를 모르는 검수자가 원래 의미를 "
-            "가늠하기 위한 참고용이므로, 의미뿐 아니라 톤·뉘앙스(간결함, "
-            "거침, 급함, 존중, 여유로움 등)도 함께 전달하라. 원문이 짧고 "
-            "직설적이면 역번역도 짧고 직설적으로, 원문에 존댓말·격식이 "
-            "있으면 그 격식도 살려서 옮겨라 — 단순히 의미만 통하는 매끄러운 "
-            "한국어 문장으로 다듬지 마라.\n" + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
+            f"다음은 한국어 원문(reference_korean), 교정 전 {language_label} 원본"
+            f"(original_text), 교정 후 {language_label} 제안문(text) 목록이다. "
+            "각 항목마다 두 가지를 하라.\n"
+            "1. text와 original_text를 각각 자연스러운 한국어로 역번역하라"
+            "(korean_text, original_korean_text) — 스페인어를 모르는 검수자가 "
+            "교정 전/후 의미를 나란히 비교하기 위한 참고용이므로, 의미뿐 "
+            "아니라 톤·뉘앙스(간결함, 거침, 급함, 존중, 여유로움 등)도 함께 "
+            "전달하라. 원문이 짧고 직설적이면 역번역도 짧고 직설적으로, "
+            "원문에 존댓말·격식이 있으면 그 격식도 살려서 옮겨라 — 단순히 "
+            "의미만 통하는 매끄러운 한국어 문장으로 다듬지 마라.\n"
+            "2. text가 original_text보다 reference_korean의 의미·톤을 더 잘 "
+            f"살리는 자연스러운 {language_label} 표현인지 판단하라"
+            "(is_improvement). 의미 왜곡 없이 이미 자연스러운데 단순히 어휘 "
+            "취향만 다르다면 개선으로 보지 마라 — 동등하면 false. text가 "
+            "아무리 자연스러워도 reference_korean에 있는 구체적 정보(인물·"
+            "장소·숫자·행동)를 생략·변경·추가했다면 무조건 false로 판정하라 "
+            "— 자연스러움은 정보 보존을 앞설 수 없다.\n"
+            + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
         return await self._call_array(system, user, model=self._light_model)

@@ -39,5 +39,7 @@ def list_profiles() -> list[dict]:
         if "_" not in stem:
             continue
         language, variant = stem.split("_", 1)
-        profiles.append({"language": language, "variant": variant})
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        display_name = data.get("display_name", f"{language} ({variant})")
+        profiles.append({"language": language, "variant": variant, "display_name": display_name})
     return profiles
