@@ -3,7 +3,7 @@
 from typing import List
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import FindingRow, Segment, SttCorrection
+from app.models import FindingRow, Segment, SttCorrection, CharacterGenderFact
 from app.schemas import Finding
 
 
@@ -214,3 +214,33 @@ async def get_findings_for_segment(session: AsyncSession, segment_id: str) -> Li
         select(FindingRow).where(FindingRow.segment_id == segment_id)
     )
     return list(rows.scalars().all())
+
+
+async def get_character_gender_facts(session: AsyncSession, title_id: str) -> dict:
+    """이 title(작품)에서 이미 확인된 캐릭터별 성별을 돌려준다
+    ({character_name: gender}). 다른 title의 기록은 절대 섞이지 않는다."""
+    rows = (await session.execute(
+        select(CharacterGenderFact).where(CharacterGenderFact.title_id == title_id)
+    )).scalars().all()
+    return {r.character_name: r.gender for r in rows}
+
+
+async def upsert_character_gender_facts(session: AsyncSession, title_id: str, facts: dict) -> None:
+    """확정된 캐릭터별 성별을 title 단위로 upsert한다. 커밋은 호출자
+    책임(confirm_registers가 다른 변경사항과 함께 한 번에 커밋한다)."""
+    if not facts:
+        return
+    existing = (await session.execute(
+        select(CharacterGenderFact).where(
+            CharacterGenderFact.title_id == title_id,
+            CharacterGenderFact.character_name.in_(facts.keys()),
+        )
+    )).scalars().all()
+    existing_by_name = {r.character_name: r for r in existing}
+    for name, gender in facts.items():
+        row = existing_by_name.get(name)
+        if row is not None:
+            row.gender = gender
+        else:
+            session.add(CharacterGenderFact(title_id=title_id, character_name=name, gender=gender))
+    await session.flush()

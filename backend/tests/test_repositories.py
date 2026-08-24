@@ -6,6 +6,7 @@ from app.db import async_session, engine
 from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection
 from app.repositories import (
     save_pipeline_result, get_findings, delete_target_version_results,
+    get_character_gender_facts, upsert_character_gender_facts,
 )
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
 
@@ -510,3 +511,55 @@ async def test_get_findings_orders_by_video_position_not_segment_id_string():
     async with async_session() as session:
         ordered = [f.id for f in await get_findings(session, tv_id)]
     assert ordered == ["f_2", "f_10"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_and_get_character_gender_facts():
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+
+        await upsert_character_gender_facts(session, title.id, {"성경": "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title.id)
+        assert facts == {"성경": "female"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_character_gender_facts_overwrites_existing_value():
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        await upsert_character_gender_facts(session, title.id, {"성경": "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        # 검수자가 이전 값과 다르게 정정하면 새 값으로 덮어써야 한다 —
+        # 사람의 판단이 항상 최종 권위를 가진다(design 원칙 4).
+        await upsert_character_gender_facts(session, title.id, {"성경": "male"})
+        await session.commit()
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title.id)
+        assert facts == {"성경": "male"}
+
+
+@pytest.mark.asyncio
+async def test_get_character_gender_facts_scoped_to_title():
+    async with async_session() as session:
+        title_a = Title(name="Drama A", type="series", created_at=datetime.now())
+        title_b = Title(name="Drama B", type="series", created_at=datetime.now())
+        session.add_all([title_a, title_b])
+        await session.flush()
+        await upsert_character_gender_facts(session, title_a.id, {"성경": "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        # 다른 title(작품)의 이름은 절대 섞이면 안 된다 — 이게 이 기능의
+        # 핵심 안전장치다(design §과거 GenderWordResolution 제거 사유와의 차이).
+        facts_b = await get_character_gender_facts(session, title_b.id)
+        assert facts_b == {}
