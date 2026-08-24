@@ -434,7 +434,10 @@ async def test_analyze_and_save_runs_stt_and_uses_korean_srt_text(
          patch("app.background.delete_original_video"):
         await background.analyze_and_save(tv_id, str(srt_path))
 
-    mock_extract.assert_not_called()
+    # 대사 내용은 여전히 STT를 안 거치지만(아래 확인), 영상 재생 동기화
+    # 오프셋 탐지용으로 앞부분만 짧게 STT용 오디오 추출은 호출된다
+    # (design §2026-08 영상 동기화 버그 수정).
+    mock_extract.assert_called_once()
     async with async_session() as session:
         segs = (await session.execute(
             select(Segment).where(Segment.target_version_id == tv_id)

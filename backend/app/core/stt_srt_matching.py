@@ -84,7 +84,10 @@ def _interpolate_gap(gap_words: List[dict], left_time: float, right_time: float)
     """STT가 확정 못 한 연속 구간(gap_words)을 left_time~right_time 사이에서
     글자 수 비례로 보간한다 — 이전 버전(korean_words_from_srt)과 같은
     원리지만, 보간 범위가 SRT 큐 전체가 아니라 양옆 STT 실측 지점 사이의
-    훨씬 좁은 구간이라 오차가 작다."""
+    훨씬 좁은 구간이라 오차가 작다. confirmed=False로 표시해, 이 타이밍이
+    실측이 아니라 추정값이라는 걸 호출자가 구분할 수 있게 한다(design
+    §2026-08 영상 동기화 버그 수정 — 고유명사 오인식으로 확정을 못 한
+    앵커를 실측처럼 취급하면 안 되는 경우가 실제로 있었다)."""
     if not gap_words:
         return []
     total_chars = sum(len(w["text"]) for w in gap_words)
@@ -94,18 +97,25 @@ def _interpolate_gap(gap_words: List[dict], left_time: float, right_time: float)
     for w in gap_words:
         share = duration * (len(w["text"]) / total_chars) if total_chars else duration / len(gap_words)
         word_end = cursor + share
-        result.append({"start": cursor, "end": word_end, "text": w["text"], "cue_index": w["cue_index"]})
+        result.append({
+            "start": cursor, "end": word_end, "text": w["text"],
+            "cue_index": w["cue_index"], "confirmed": False,
+        })
         cursor = word_end
     return result
 
 
 def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -> List[dict]:
     """STT 결과(실측 타이밍)와 한국어 SRT(검증된 텍스트)를 매칭해 합친다.
-    반환 모양은 STT transcribe()에 cue_index 하나가 추가된 형태다
-    ([{"start","end","text","cue_index"}]) — cue_index는 이 단어가 원래
-    어느 한국어 SRT 큐(0부터 시작하는 인덱스)에 속했는지를 담아,
-    merge_words_by_korean_cue가 단어를 다시 큐 단위로 합칠 수 있게 한다.
-    기존 소비자(pipeline.py의 SegmentText(**s))는 이 추가 키를 조용히
+    반환 모양은 STT transcribe()에 cue_index/confirmed가 추가된 형태다
+    ([{"start","end","text","cue_index","confirmed"}]) — cue_index는 이
+    단어가 원래 어느 한국어 SRT 큐(0부터 시작하는 인덱스)에 속했는지를
+    담아, merge_words_by_korean_cue가 단어를 다시 큐 단위로 합칠 수 있게
+    한다. confirmed는 이 타이밍이 STT 실측 매칭인지(True) 아니면 양옆
+    확정 지점 사이에서 글자수 비례로 추정한 값인지(False)를 구분한다 —
+    타이밍 정확도가 중요한 용도(예: 영상 동기화 오프셋 탐지)에서 추정값을
+    실측처럼 쓰면 안 되기 때문이다(design §2026-08 영상 동기화 버그 수정).
+    기존 소비자(pipeline.py의 SegmentText(**s))는 이 추가 키들을 조용히
     무시하므로(Pydantic v2 기본 동작) 영향받지 않는다.
 
     difflib.SequenceMatcher(표준 라이브러리)로 두 단어 시퀀스의 일치
@@ -137,7 +147,7 @@ def match_stt_words_to_korean_srt(stt_words: List[dict], korean_srt_path: str) -
             start, end = confirmed[i]
             result.append({
                 "start": start, "end": end, "text": srt_words[i]["text"],
-                "cue_index": srt_words[i]["cue_index"],
+                "cue_index": srt_words[i]["cue_index"], "confirmed": True,
             })
             i += 1
             continue

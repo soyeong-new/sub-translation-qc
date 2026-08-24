@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from statistics import median
 from typing import Optional
 from app.providers.base import ModelProvider
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
@@ -22,6 +23,7 @@ from app.knowledge.loader import (
 from app.core.pretreatment import run_pretreatment
 from app.core.grammar_necessity import (
     check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
+    _strip_html_tags,
 )
 from app.schemas import SegmentText, AlignedPair, Finding
 
@@ -122,6 +124,88 @@ async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple[
             Path(video_proxy_path).unlink(missing_ok=True)
         raise korean_raw if isinstance(korean_raw, Exception) else video_proxy_path
     return korean_raw, video_proxy_path
+
+
+_VIDEO_SYNC_ANCHOR_CUES = 10
+_VIDEO_SYNC_CLIP_MARGIN_SECONDS = 90.0
+
+
+def _median_offset_from_stt_matches(matched_words: list, raw_cues: list,
+                                     num_cues: int = _VIDEO_SYNC_ANCHOR_CUES) -> Optional[float]:
+    """match_stt_words_to_korean_srt가 돌려준 단어별 실측 타이밍을 앞쪽
+    num_cues개 큐로만 제한해서, 큐별 "실측 시작 시각 - SRT 표기 시작 시각"
+    차이의 중앙값을 구한다. confirmed=False(양옆 확정 지점 사이에서 글자수
+    비례로 추정한 값, 실측 아님)인 단어는 아예 근거에서 뺀다 — 고유명사
+    (인명·마스코트 이름 등)를 STT가 잘못 들어 확정을 못 한 큐를 실측인
+    것처럼 오프셋 계산에 넣었다가 실제로 안 맞는 사례가 확인됐다(design
+    §2026-08 영상 동기화 버그 수정). 한 큐 안 첫 "확정" 매칭 단어의
+    시각만 쓴다. 중앙값을 쓰는 이유는 그래도 한 큐가 튀면(예: 확정됐지만
+    문맥상 이상한 매칭) 평균처럼 전체가 끌려가지 않게 하기 위해서다.
+    확정 매칭된 큐가 하나도 없으면 None(사람에게 알려야 할 실패)."""
+    offset_by_cue_index: dict = {}
+    for w in matched_words:
+        idx = w["cue_index"]
+        if idx >= num_cues or idx in offset_by_cue_index or not w.get("confirmed"):
+            continue
+        offset_by_cue_index[idx] = w["start"] - raw_cues[idx].start
+    if not offset_by_cue_index:
+        return None
+    return median(offset_by_cue_index.values())
+
+
+async def _detect_raw_video_sync_offset(
+    provider: ModelProvider, video_path: str, korean_srt_path: str,
+    raw_cues: list, target_version_id: str, warnings: list,
+) -> Optional[float]:
+    """한국어 SRT를 직접 올린 경우(korean_srt_path)엔 STT를 아예 안 거치므로,
+    실제 영상 파일의 진짜 오디오 타이밍을 시스템 어디도 모른다 — 한국어
+    SRT와 대상언어 SRT가 서로 잘 맞아도, 둘 다 업로드한 영상 파일 자체와는
+    어긋나 있을 수 있다(예: 자막은 안 잘랐는데 영상만 인트로를 잘라 올림).
+    영상 전체를 STT하는 대신 앞쪽 몇 큐 분량만 잘라 STT해서 실측 타이밍을
+    확보하고, 그 구간에서 한국어 SRT **원본**(global_offset 보정 전) 표기
+    시각과의 차이(중앙값)를 반환한다 — "실측 시각 - 한국어 SRT 원본 시각"
+    이지, 최종 video_offset_seconds가 아니다(design §2026-08 영상 동기화
+    버그 수정). 호출자가 이 값을 global_offset과 합쳐야 한다 — 프론트가
+    seek 기준으로 쓰는 Segment.start는 한국어가 아니라 **대상언어 SRT의
+    시계**이고, 대상언어 시계 ≈ 한국어 SRT 원본 시계 + global_offset이기
+    때문이다(korean_cues를 global_offset만큼 옮겨서 정렬하는 것과 같은
+    이유). 탐지 실패(음성 인식 실패, 매칭 실패 등)는 예외를 던지지 않고
+    None을 반환하며 warnings에 남긴다 — 조용히 넘기지 않는다."""
+    if not raw_cues:
+        return None
+    anchor_cues = raw_cues[:_VIDEO_SYNC_ANCHOR_CUES]
+    clip_duration = anchor_cues[-1].end + _VIDEO_SYNC_CLIP_MARGIN_SECONDS
+
+    try:
+        wav_path = await asyncio.to_thread(
+            extract_audio, video_path, duration_seconds=clip_duration)
+        try:
+            stt_words = await provider.transcribe(wav_path)
+        finally:
+            Path(wav_path).unlink(missing_ok=True)
+    except Exception as exc:
+        logger.exception(
+            "영상 동기화용 앞부분 STT 실패, 영상 재생 오프셋 확인 생략 "
+            "(target_version_id=%s)", target_version_id)
+        warnings.append({"stage": "영상 동기화", "message": str(exc)})
+        return None
+
+    if not stt_words:
+        warnings.append({
+            "stage": "영상 동기화",
+            "message": "영상 앞부분에서 음성을 인식하지 못해 영상 재생 동기화를 확인하지 못했습니다.",
+        })
+        return None
+
+    matched_words = match_stt_words_to_korean_srt(stt_words, korean_srt_path)
+    offset = _median_offset_from_stt_matches(matched_words, raw_cues)
+    if offset is None:
+        warnings.append({
+            "stage": "영상 동기화",
+            "message": "한국어 SRT 앞부분과 실제 영상 음성이 일치하는 지점을 찾지 못해 영상 재생 동기화를 확인하지 못했습니다.",
+        })
+        return None
+    return offset
 
 
 _GENDER_CONTEXT_RADIUS = 2
@@ -563,11 +647,16 @@ async def _back_translate_proposals(
     korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in pairs}
 
     def _to_payload(corrections: list) -> list:
+        # <i>...</i> 같은 오프스크린/독백 표시 태그를 지우고 보낸다 — 안
+        # 지우면 역번역 LLM한테 불필요하게 텍스트 길이만 늘리고(청크당
+        # 응답 토큰 한도를 더 쉽게 넘기게 만듦), 있으나 마나 한 마크업을
+        # 대사처럼 오인시킬 위험도 있다(design §2026-08 정렬 오류 수정과
+        # 같은 종류의 문제).
         return [
             {"id": c["segment_id"],
              "reference_korean": korean_text_by_id.get(c["segment_id"], ""),
-             "original_text": original_text_by_id.get(c["segment_id"], ""),
-             "text": c["corrected_text"]}
+             "original_text": _strip_html_tags(original_text_by_id.get(c["segment_id"], "")),
+             "text": _strip_html_tags(c["corrected_text"])}
             for c in corrections
         ]
 
@@ -1087,6 +1176,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     target_segments = load_srt(target_srt_path)
 
     global_offset = 0.0
+    video_offset_seconds = 0.0
 
     if korean_srt_path:
         # 한국어 SRT가 지정된 경우: STT 캐시보다 지문 정제 + 임베딩 DP 정렬이 우선한다.
@@ -1098,6 +1188,22 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
             video_proxy_path = None
 
         raw_cues = load_srt(korean_srt_path)
+
+        # 영상 동기화용 STT는 global_offset 계산과 독립적이라 먼저 돌려도
+        # 되지만, raw_video_offset은 한국어 SRT "원본"(보정 전) 시계 기준이라
+        # 최종 video_offset_seconds로 쓰려면 global_offset과 합쳐야 한다
+        # (Segment.start는 한국어가 아니라 대상언어 SRT 시계 —
+        # _detect_raw_video_sync_offset 독스트링 참고). 그래서 합산은
+        # global_offset을 구한 뒤로 미룬다.
+        # video_path(원본)가 아니라 방금 만든 video_proxy_path를 쓴다 —
+        # 오디오 추출엔 원본 화질이 필요 없고(generate_video_proxy 참고),
+        # 원본은 스토리지 정리로 나중에 지워질 수 있어(delete_original_video)
+        # 원본에 의존하면 프록시가 멀쩡히 있어도 이 체크가 실패한다.
+        raw_video_offset = None
+        if video_proxy_path:
+            raw_video_offset = await _detect_raw_video_sync_offset(
+                provider, video_proxy_path, korean_srt_path, raw_cues, target_version_id, warnings)
+
         korean_cues = []
         for c in raw_cues:
             cleaned = _clean_text_for_embedding(c.text)
@@ -1106,13 +1212,14 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
             if cleaned:
                 korean_cues.append(SegmentText(start=c.start, end=c.end, text=cleaned))
 
-        # 한국어 SRT 경로는 STT(실측 오디오 타이밍)를 안 거치므로, 한국어 SRT와
-        # 대상언어 SRT가 각자 스스로 적어놓은 타임코드를 그대로 믿는다 — 둘
-        # 사이에 상수 오프셋이 있어도(예: 서로 다른 인트로 길이 기준으로
-        # 작업됨) 못 잡아낸다. 한국어 SRT는 검증된 원문으로 간주하므로(다른
-        # 분기의 STT와 같은 역할), 이걸 기준 삼아 대상언어 SRT와 비교해 같은
-        # 방식으로 오프셋을 찾는다 — 새로 오디오를 분석할 필요 없이 이미 가진
-        # 두 SRT의 타임코드만으로 계산된다.
+        # 한국어 SRT 경로는 정렬용으로는 STT(실측 오디오 타이밍)를 안
+        # 거치므로, 한국어 SRT와 대상언어 SRT가 각자 스스로 적어놓은
+        # 타임코드를 그대로 믿는다 — 둘 사이에 상수 오프셋이 있어도(예:
+        # 서로 다른 인트로 길이 기준으로 작업됨) 못 잡아낸다. 한국어 SRT는
+        # 검증된 원문으로 간주하므로(다른 분기의 STT와 같은 역할), 이걸
+        # 기준 삼아 대상언어 SRT와 비교해 같은 방식으로 오프셋을 찾는다 —
+        # 새로 오디오를 분석할 필요 없이 이미 가진 두 SRT의 타임코드만으로
+        # 계산된다.
         global_offset = detect_global_offset(korean_cues, target_segments)
         if global_offset:
             korean_cues = [
@@ -1124,6 +1231,22 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                 "message": f"한국어 SRT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
             })
 
+        # 대상언어 SRT 시계 ≈ 한국어 SRT 원본 시계 + global_offset이므로,
+        # 영상 재생 seek용 오프셋은 raw_video_offset을 그대로 쓰지 않고
+        # global_offset과 합친다. 탐지 실패(None)했으면 video-specific
+        # 정보가 없다는 뜻이니, "대상언어 시계 = 실제 영상 시계"라고
+        # 가정하는(오늘 이 수정 이전과 동일한) global_offset을 그대로
+        # 폴백으로 쓴다 — 조용히 아예 0으로 떨어지진 않는다.
+        if raw_video_offset is not None:
+            video_offset_seconds = global_offset - raw_video_offset
+            if abs(video_offset_seconds) > 0.5:
+                warnings.append({
+                    "stage": "영상 동기화",
+                    "message": f"한국어 SRT와 실제 영상 사이 {video_offset_seconds:+.1f}초 오프셋을 감지해 영상 재생을 자동 보정했습니다.",
+                })
+        else:
+            video_offset_seconds = global_offset
+
         korean_raw = [{"start": c.start, "end": c.end, "text": c.text} for c in korean_cues]
         pairs = await align_by_embedding_dp(
             korean_cues, target_segments, provider, korean_raw_cues=raw_cues)
@@ -1134,7 +1257,11 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         video_proxy_path = cached_video_proxy_path
         korean_words = [SegmentText(**s) for s in korean_raw]
 
+        # 이 분기의 korean_words는 이미 실측 STT 타이밍이라, 대상언어 SRT와의
+        # 오프셋이 그대로 실제 영상과의 오프셋이기도 하다(korean_srt_path
+        # 분기와 달리 별도 탐지가 필요 없음).
         global_offset = detect_global_offset(korean_words, target_segments)
+        video_offset_seconds = global_offset
         if global_offset:
             korean_raw = [
                 {**s, "start": s["start"] + global_offset, "end": s["end"] + global_offset}
@@ -1154,6 +1281,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         korean_words = [SegmentText(**s) for s in korean_raw]
 
         global_offset = detect_global_offset(korean_words, target_segments)
+        video_offset_seconds = global_offset
         if global_offset:
             korean_raw = [
                 {**s, "start": s["start"] + global_offset, "end": s["end"] + global_offset}
@@ -1201,7 +1329,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         "segment_resolutions": segment_resolutions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
-        "video_offset_seconds": global_offset,
+        "video_offset_seconds": video_offset_seconds,
         "korean_segments_raw": korean_raw,
         "warnings": warnings,
         "findings": pretreatment.findings,

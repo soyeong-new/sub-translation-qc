@@ -12,7 +12,7 @@ def test_match_uses_srt_punctuated_text_with_stt_real_timing(tmp_path):
     )
     stt_words = [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]
     result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
-    assert result == [{"start": 0.0, "end": 2.0, "text": "안녕하세요!", "cue_index": 0}]
+    assert result == [{"start": 0.0, "end": 2.0, "text": "안녕하세요!", "cue_index": 0, "confirmed": True}]
 
 
 def test_match_interpolates_word_stt_missed_between_confirmed_anchors(tmp_path):
@@ -33,6 +33,12 @@ def test_match_interpolates_word_stt_missed_between_confirmed_anchors(tmp_path):
     middle = result[1]
     assert middle["text"] == "반가워"
     assert 1.5 <= middle["start"] < middle["end"] <= 8.0
+    # 보간(추정)된 단어라 confirmed=False여야 한다 — 실측(양옆 두 단어)과
+    # 구분돼야 영상 동기화 오프셋 탐지 같은 정확도 중요 용도에서 걸러낼 수
+    # 있다.
+    assert result[0]["confirmed"] is True
+    assert middle["confirmed"] is False
+    assert result[2]["confirmed"] is True
 
 
 def test_match_drops_stt_word_with_no_srt_counterpart(tmp_path):
@@ -46,7 +52,7 @@ def test_match_drops_stt_word_with_no_srt_counterpart(tmp_path):
         {"start": 0.5, "end": 1.0, "text": "안녕"},
     ]
     result = match_stt_words_to_korean_srt(stt_words, str(srt_path))
-    assert result == [{"start": 0.5, "end": 1.0, "text": "안녕", "cue_index": 0}]
+    assert result == [{"start": 0.5, "end": 1.0, "text": "안녕", "cue_index": 0, "confirmed": True}]
 
 
 def test_match_falls_back_to_cue_bounds_when_no_confirmed_anchor_exists(tmp_path):

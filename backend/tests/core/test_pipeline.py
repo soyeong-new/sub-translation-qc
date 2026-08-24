@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pytest
 from unittest.mock import patch
-from app.core.pipeline import run_pipeline, run_pipeline_phase1
+from app.core.pipeline import run_pipeline, run_pipeline_phase1, _median_offset_from_stt_matches
 from app.providers.mock import MockProvider
+from app.schemas import SegmentText
 
 TARGET_SRT = """1
 00:00:00,000 --> 00:00:02,000
@@ -591,9 +592,13 @@ async def test_pipeline_uses_cached_stt_and_skips_transcribe_and_proxy_generatio
 
 @pytest.mark.asyncio
 async def test_pipeline_uses_embedding_dp_when_korean_srt_path_given(tmp_path):
-    """korean_srt_path가 주어지면 STT(extract_audio)를 거치지 않고,
-    OpenAI text-embedding-3-small + DP 알고리즘으로 한국어 SRT와 대상언어 SRT를 직접 정렬한다.
-    결과 텍스트와 타이밍은 한국어 SRT 큐([5.0, 7.0])의 값을 그대로 사용한다."""
+    """korean_srt_path가 주어지면 대사 내용/타이밍은 STT가 아니라 OpenAI
+    text-embedding-3-small + DP 알고리즘으로 한국어 SRT와 대상언어 SRT를 직접
+    정렬한다 — 결과 텍스트와 타이밍은 한국어 SRT 큐([5.0, 7.0])의 값을 그대로
+    쓴다. 다만 extract_audio는 여전히(내용용이 아니라) 영상 재생 동기화
+    오프셋 탐지용으로 앞부분 클립만 짧게 호출된다(design §2026-08 영상
+    동기화 버그 수정). 원본이 아니라 방금 만든 프록시 경로로 호출된다 —
+    원본은 나중에 스토리지 정리로 지워질 수 있어 의존하면 안 된다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     ko_srt_path = tmp_path / "ko.srt"
@@ -611,7 +616,10 @@ async def test_pipeline_uses_embedding_dp_when_korean_srt_path_given(tmp_path):
             korean_srt_path=str(ko_srt_path),
         )
 
-    mock_extract.assert_not_called()
+    # 영상 동기화용으로만 짧게(첫 큐 끝 + 여유분) 호출된다 — 내용용 전체
+    # STT는 여전히 안 돈다. 원본(/fake/video.mp4)이 아니라 프록시 경로로
+    # 호출돼야 한다.
+    mock_extract.assert_called_once_with("/fake/proxy.mp4", duration_seconds=pytest.approx(97.0))
     korean_pair = next(p for p in result["pairs"] if p.korean is not None)
     assert korean_pair.korean.text == "안녕하세요!"
     assert korean_pair.korean.start == 5.0
@@ -648,16 +656,22 @@ async def test_pipeline_drops_pure_stage_direction_korean_cue(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pipeline_auto_corrects_constant_offset_with_korean_srt_path(tmp_path):
-    """회귀: korean_srt_path 경로는 STT(실측 오디오)를 안 거쳐서, 한국어 SRT와
-    대상언어 SRT가 각자 적어놓은 타임코드를 그대로 믿는다 — 그래서 둘 사이에
-    상수 오프셋이 있어도(서로 다른 인트로 길이 기준 등) video_offset_seconds가
-    항상 0으로 나가 검토 화면 영상 미리보기가 실제 영상과 안 맞는 문제가
-    있었다. 한국어 SRT 자체의 타임코드를 STT 대신 기준 삼아 오프셋을
-    찾아내야 한다."""
+    """회귀: korean_srt_path 경로는 대사 정렬용으로는 STT를 안 거치므로, 한국어
+    SRT와 대상언어 SRT가 각자 적어놓은 타임코드끼리 비교한 오프셋(정렬용,
+    global_offset)을 찾아 짝짓기에 반영한다 — 이건 실제 영상 파일과는
+    무관하다. 영상 재생 동기화용 video_offset_seconds는 별도로, 앞부분을
+    짧게 STT해서 실측 오디오 기준(한국어 SRT 원본 시계 기준)으로 raw
+    오프셋을 구한 뒤, Segment.start가 실제로 쓰는 시계(대상언어 SRT
+    시계 ≈ 한국어 SRT 원본 + global_offset)에 맞춰 global_offset과
+    합산한다(design §2026-08 영상 동기화 버그 수정) — 이전엔 이 둘을 같은
+    값으로 취급하거나(1차 버그) STT 원시값을 합산 없이 그대로 썼다(2차
+    버그, 기준 시계가 안 맞음). 두 오프셋이 서로 다른 값이어야 두
+    메커니즘이 섞이지 않고 각자 검증된다."""
     from app.core.ingest import build_srt
 
     starts = [0.0, 13.0, 41.0, 68.0, 100.0, 155.0]
-    # 대상언어 SRT는 한국어 SRT보다 55초 늦게(뒤로 밀려) 찍혀 있다.
+    # 대상언어 SRT는 한국어 SRT보다 55초 늦게(뒤로 밀려) 찍혀 있다 — 이건
+    # 정렬(global_offset)용 오프셋이다.
     target_entries = [
         {"start": s + 55.0, "end": s + 55.0 + 3.0, "text": f"Linea {i}"}
         for i, s in enumerate(starts)
@@ -671,22 +685,81 @@ async def test_pipeline_auto_corrects_constant_offset_with_korean_srt_path(tmp_p
     ko_srt_path = tmp_path / "ko.srt"
     ko_srt_path.write_text(build_srt(korean_entries), encoding="utf-8")
 
-    with patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+    # 실제 영상의 진짜 오디오는 한국어 SRT 표기 시각보다 20초 늦게 나온다고
+    # 가정한다 — 정렬용 오프셋(55.0)과는 다른 값이어야 두 메커니즘이 서로
+    # 안 섞이고 각자 검증된다.
+    VIDEO_OFFSET = 20.0
+
+    class SyncedProvider(MockProvider):
+        async def transcribe(self, audio_path):
+            words = []
+            for i, s in enumerate(starts[:5]):
+                t = s + VIDEO_OFFSET
+                words.append({"start": t, "end": t + 0.4, "text": "대사"})
+                words.append({"start": t + 0.4, "end": t + 0.8, "text": str(i)})
+            return words
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
         result = await run_pipeline(
             video_path="/fake/video.mp4",
             target_srt_path=str(target_srt_path),
             language="es", variant="LATAM",
-            target_version_id="tv1", provider=MockProvider(),
+            target_version_id="tv1", provider=SyncedProvider(),
             korean_srt_path=str(ko_srt_path),
         )
 
-    # 오프셋 탐색은 1초 단위 coarse step으로 하니(app/core/alignment.py) 정확히
-    # 55.0은 아닐 수 있다 — 0(보정 안 됨)과는 확실히 구분되는 근사값인지만 본다.
-    assert result["video_offset_seconds"] == pytest.approx(55.0, abs=1.5)
+    # video_offset_seconds = global_offset(대상언어 SRT vs 한국어 SRT 원본,
+    # ≈55.0이지만 1초 단위 coarse step 때문에 근사값) - raw STT 오프셋(20.0).
+    # 정확히 20.0이 아니라 대략 35.0 근방이어야 두 메커니즘이 합쳐졌다는
+    # 뜻이다.
+    assert result["video_offset_seconds"] == pytest.approx(55.0 - VIDEO_OFFSET, abs=1.5)
     assert any(w["stage"] == "타임코드 자동 보정" for w in result["warnings"])
     matched = {p.target.text: p.korean.text for p in result["pairs"] if p.target and p.korean}
     assert matched["Linea 0"] == "대사 0"
     assert matched["Linea 3"] == "대사 3"
+
+
+def test_median_offset_from_stt_matches_ignores_cues_beyond_limit_and_outliers():
+    raw_cues = [
+        SegmentText(start=0.0, end=1.0, text="a"),
+        SegmentText(start=10.0, end=11.0, text="b"),
+        SegmentText(start=20.0, end=21.0, text="c"),
+        SegmentText(start=999.0, end=1000.0, text="far away, outside anchor window"),
+    ]
+    matched_words = [
+        {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "a", "confirmed": True},   # +20
+        {"cue_index": 1, "start": 30.5, "end": 31.0, "text": "b", "confirmed": True},   # +20.5
+        {"cue_index": 2, "start": 61.0, "end": 61.5, "text": "c", "confirmed": True},   # +41 (outlier)
+        # cue_index 3은 num_cues(=3) 범위 밖이라 무시돼야 한다.
+        {"cue_index": 3, "start": 5000.0, "end": 5000.5, "text": "z", "confirmed": True},
+    ]
+    offset = _median_offset_from_stt_matches(matched_words, raw_cues, num_cues=3)
+    assert offset == pytest.approx(20.5)
+
+
+def test_median_offset_from_stt_matches_returns_none_when_no_matches_within_limit():
+    raw_cues = [SegmentText(start=0.0, end=1.0, text="a")]
+    matched_words = [{"cue_index": 5, "start": 100.0, "end": 100.5, "text": "far", "confirmed": True}]
+    assert _median_offset_from_stt_matches(matched_words, raw_cues, num_cues=3) is None
+
+
+def test_median_offset_from_stt_matches_ignores_unconfirmed_interpolated_words():
+    """회귀: 고유명사(인명·마스코트 이름 등)를 STT가 잘못 들어 확정을 못
+    하면 match_stt_words_to_korean_srt가 confirmed=False인 추정값을
+    돌려준다 — 이걸 실측처럼 오프셋 계산에 넣으면 안 된다."""
+    raw_cues = [
+        SegmentText(start=0.0, end=1.0, text="a"),
+        SegmentText(start=10.0, end=11.0, text="b"),
+    ]
+    matched_words = [
+        {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "a", "confirmed": True},
+        # cue 1은 보간(추정)값뿐이라 근거에서 빠져야 한다 — 이게 안 빠지면
+        # 아래 기대값(20.0)이 아니라 둘의 중앙값이 나온다.
+        {"cue_index": 1, "start": 999.0, "end": 999.5, "text": "b", "confirmed": False},
+    ]
+    offset = _median_offset_from_stt_matches(matched_words, raw_cues, num_cues=2)
+    assert offset == pytest.approx(20.0)
 
 
 @pytest.mark.asyncio
@@ -1651,7 +1724,9 @@ async def test_pipeline_falls_back_to_word_align_when_cached_segments_lack_cue_i
             korean_srt_path=str(ko_srt_path),
         )
 
-    mock_extract.assert_not_called()
+    # 영상 동기화 오프셋 탐지용으로 짧게는 호출된다(design §2026-08 영상
+    # 동기화 버그 수정) — 이 테스트가 검증하려는 cue_index 폴백과는 무관.
+    mock_extract.assert_called_once()
     korean_pair = next(p for p in result["pairs"] if p.korean is not None)
     assert korean_pair.korean.text == "안녕하세요"
 

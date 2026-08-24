@@ -12,6 +12,11 @@ from app.core.uploads import MEDIA_ROOT
 _TIME_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})"
 )
+# <i>, <b> 등 스타일 태그 — 자막 표시용 장식일 뿐 의미가 없는데, 태그 문자가
+# 그대로 남으면 글자수 기반 규칙(format_rules 줄길이/읽기속도)이 실제 화면
+# 글자수보다 부풀려 세거나, 임베딩/형태소 분석에 잡음이 섞인다. 파싱 시점에
+# 한 번만 제거하면 이후 모든 단계가 이미 깨끗한 텍스트를 받는다.
+_STYLE_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 
 
 def _to_seconds(h, m, s, ms) -> float:
@@ -31,6 +36,7 @@ def parse_srt(content: str) -> List[SegmentText]:
         # 이어붙인 한 줄에 적용돼 대량의 오탐이 생긴다. 또 build_srt가 이 텍스트를
         # 그대로 다시 쓰므로 export 결과의 줄바꿈이 원본과 달라진다.
         text = "\n".join(lines[time_idx + 1:]).strip()
+        text = _STYLE_TAG_RE.sub("", text).strip()
         if not text:
             continue
         segments.append(SegmentText(
@@ -63,18 +69,24 @@ def build_srt(entries: List[dict]) -> str:
     return "\n".join(blocks)
 
 
-def extract_audio(video_path: str, out_dir: Optional[str] = None) -> str:
+def extract_audio(video_path: str, out_dir: Optional[str] = None,
+                   duration_seconds: Optional[float] = None) -> str:
     """원본 영상에서 오디오 트랙을 16kHz mono WAV로 뽑아낸다. v1은 음원분리 없이
-    이 결과를 그대로 STT에 넣는다 (design §3, §11-3)."""
+    이 결과를 그대로 STT에 넣는다 (design §3, §11-3). duration_seconds를 주면
+    처음 그 길이만큼만 잘라 추출한다 — 영상 앞부분 몇 분만 필요한 용도(예:
+    영상 동기화 오프셋 탐지)에서 전체 오디오를 뽑는 비용을 아낀다."""
     out_dir_p = Path(out_dir) if out_dir else Path(video_path).parent
     out_dir_p.mkdir(parents=True, exist_ok=True)
     stem = Path(video_path).stem
     out = str(out_dir_p / f"{stem}_16k.wav")
-    subprocess.run(
-        ["ffmpeg", "-i", video_path, "-vn", "-acodec", "pcm_s16le",
-         "-ar", "16000", "-ac", "1", "-y", out],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
-    )
+    # -t를 -i 앞(입력 옵션)에 둔다 — 뒤(출력 옵션)에 두면 ffmpeg이 입력
+    # 전체를 계속 디코딩하면서 출력만 잘라내 duration_seconds를 준 목적
+    # (앞부분만 빠르게 뽑기)이 무색해진다.
+    cmd = ["ffmpeg"]
+    if duration_seconds is not None:
+        cmd += ["-t", str(duration_seconds)]
+    cmd += ["-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", out]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     return out
 
 
