@@ -232,6 +232,7 @@ def _context_window(pairs: list, center_idx: int, radius: int = _GENDER_CONTEXT_
 
 async def _run_grammar_necessity_check(
     pairs: list, profile: dict, provider: ModelProvider, target_version_id: str,
+    known_gender_facts: Optional[dict] = None,
 ) -> tuple[list, list]:
     """문법 필요성 판단(줄 단위, 대상언어는 spaCy·한국어는 kiwipiepy 형태소
     분석): 성별/격식 판단이 실제로 필요한 줄만 골라낸다. 성별 값은 한국어
@@ -309,10 +310,10 @@ async def _run_grammar_necessity_check(
             # 미확정 그룹 하나로 만들어 사람에게 넘긴다.
             fallback_groups_by_id = {
                 i["id"]: [{
-                    "group_index": 0, "referent": None,
+                    "group_index": 0, "referent": None, "character_name": None,
                     "words": i["candidate_words"], "target_word_lemmas": i["candidate_word_lemmas"],
                     "candidate_indices": list(range(len(i["candidate_words"]))),
-                    "gender": None,
+                    "gender": None, "suggested_gender": None,
                 }]
                 for i in llm_items
             }
@@ -338,6 +339,22 @@ async def _run_grammar_necessity_check(
                     for group in llm_groups_by_id.get(item["id"], []):
                         group["gender"] = None
                 gender_groups_by_id.update(llm_groups_by_id)
+
+                # 이 title에서 이미 확인된 캐릭터 이름이면 미리 답을
+                # 채워 보여준다(design §시리즈/다국어 간 캐릭터 성별
+                # 재사용). gender 필드 자체는 건드리지 않는다 — 검수자가
+                # 확인 버튼을 눌러야 확정되고, 그래야 확인 화면 목록에서
+                # 빠지지 않는다(isSegmentResolved가 gender만 본다).
+                if known_gender_facts:
+                    for groups in gender_groups_by_id.values():
+                        for group in groups:
+                            name = group.get("character_name")
+                            group["suggested_gender"] = (
+                                known_gender_facts.get(name) if name else None)
+                else:
+                    for groups in gender_groups_by_id.values():
+                        for group in groups:
+                            group["suggested_gender"] = None
             except Exception as exc:
                 logger.exception(
                     "성별 문맥 판단(LLM) 실패, 해당 줄은 미확정 그룹으로 사람에게 넘김 "
