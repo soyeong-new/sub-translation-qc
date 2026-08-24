@@ -55,8 +55,14 @@ export function isSegmentResolved(segment) {
 // 있으면(LLM이 판단한, 이 그룹이 누구인지에 대한 짧은 설명) 위에 안내
 // 문구를 보여주고, 없으면 생략한다.
 export function GenderQuestion({
-  heading, words, wordMeanings, referent, resolvedGender, pending, onSelect,
+  heading, words, wordMeanings, referent, resolvedGender, suggestedGender, pending, onSelect,
 }) {
+  // 아직 검수자가 답하지 않았는데(resolvedGender가 없는데) 이 title의
+  // 다른 회차/언어판에서 이미 확인된 값이 있으면, 버튼 강조는 그 값을
+  // 미리 보여주되 실제 확정(gender 필드)은 여전히 검수자가 버튼을
+  // 눌러야만 일어난다 — 목록에서 자동으로 빠지지 않는다(design 원칙 5).
+  const highlightGender = resolvedGender || suggestedGender || null;
+  const isReused = !resolvedGender && !!suggestedGender;
   return (
     <div>
       {heading && <p className="mb-2 text-xs font-semibold text-muted-foreground">{heading}</p>}
@@ -79,20 +85,26 @@ export function GenderQuestion({
           이 성별은 <strong>{referent}</strong>의 성별입니다.
         </p>
       )}
+      {isReused && (
+        <p className="mb-3 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning-foreground">
+          이 작품의 다른 회차/언어판에서 {suggestedGender === "male" ? "남성" : "여성"}으로
+          확인된 적이 있습니다 — 맞으면 아래 버튼으로 확인해주세요.
+        </p>
+      )}
       {/* 이미 확인된 줄이어도 버튼은 계속 눌러서 답을 바꿀 수 있다 — 지금
           저장된 값과 같은 버튼만 강조 표시한다. */}
       <div className="flex flex-wrap gap-2">
         <button
           disabled={pending}
           onClick={() => onSelect("male")}
-          className={resolvedGender === "male" ? selectedBtnClass : binaryBtnClass}
+          className={highlightGender === "male" ? selectedBtnClass : binaryBtnClass}
         >
           남성
         </button>
         <button
           disabled={pending}
           onClick={() => onSelect("female")}
-          className={resolvedGender === "female" ? selectedBtnClass : binaryBtnClass}
+          className={highlightGender === "female" ? selectedBtnClass : binaryBtnClass}
         >
           여성
         </button>
@@ -359,6 +371,7 @@ export default function FlaggedSegmentStepper({
                         wordMeanings={group.word_meanings}
                         referent={genderGroups.length > 1 ? null : group.referent}
                         resolvedGender={group.gender}
+                        suggestedGender={group.suggested_gender}
                         pending={pending}
                         onSelect={(gender) => handleResolveGenderGroup(index, gender)}
                       />
