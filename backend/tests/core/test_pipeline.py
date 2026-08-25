@@ -1636,9 +1636,11 @@ async def test_run_grammar_necessity_check_carries_character_name_into_group():
 
 @pytest.mark.asyncio
 async def test_run_grammar_necessity_check_suggests_known_character_gender():
-    """이 title에서 이미 확인된 캐릭터 이름이 다시 나오면, gender 자체는
-    여전히 None(검수자 확인 필요)이지만 suggested_gender로 힌트를 줘야
-    한다 — 완전 자동 스킵은 하지 않는다(design 원칙 5)."""
+    """이 title에서 이미 확인된 캐릭터 이름이 다시 나오면 gender를 바로
+    채워 자동 적용한다(2026-08-25: 힌트 전용에서 자동 적용으로 전환 —
+    동명이인 리스크보다 반복 확인 번거로움을 줄이는 쪽을 선택). human이
+    실제로 이번에 클릭한 게 아니므로 human_confirmed는 True로 만들지
+    않는다."""
     from app.core.pipeline import _run_grammar_necessity_check
     from app.schemas import SegmentText, AlignedPair
     from app.providers.mock import MockProvider
@@ -1663,8 +1665,9 @@ async def test_run_grammar_necessity_check_suggests_known_character_gender():
         known_gender_facts={"성경": "female"})
     assert warnings == []
     group = resolutions[0]["resolved_gender_groups"][0]
-    assert group["gender"] is None
+    assert group["gender"] == "female"
     assert group["suggested_gender"] == "female"
+    assert group["human_confirmed"] is False
 
 
 @pytest.mark.asyncio
@@ -1695,6 +1698,97 @@ async def test_run_grammar_necessity_check_suggested_gender_none_when_unknown():
         pairs, {"language": "es", "variant": "LATAM"}, NamedProvider(), "tv1")
     group = resolutions[0]["resolved_gender_groups"][0]
     assert group["suggested_gender"] is None
+
+
+def _unnamed_provider():
+    from app.providers.mock import MockProvider
+
+    class UnnamedProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            return [
+                {"id": item["id"], "words": [
+                    {"index": 0, "is_person": True, "group_id": 0,
+                     "gender": None, "referent": "이름 없는 인물", "character_name": None},
+                ]}
+                for item in items
+            ]
+    return UnnamedProvider()
+
+
+@pytest.mark.asyncio
+async def test_run_grammar_necessity_check_applies_episode_gender_fact_for_unnamed_single_group():
+    """이름이 없는 인물이라도, 같은 회차의 다른 언어 버전에서 정확히 같은
+    위치(순번)·같은 한국어 원문으로 이미 확인된 값이 있으면 자동 적용한다
+    (design §회차 내 문장 기준 재사용)."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="정말 미녀가 되어갔다."),
+        target=SegmentText(start=0.0, end=1.0, text="Ella se volvió hermosa."),
+    )]
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, _unnamed_provider(), "tv1",
+        episode_gender_facts={(0, "정말 미녀가 되어갔다."): "female"})
+    assert warnings == []
+    group = resolutions[0]["resolved_gender_groups"][0]
+    assert group["gender"] == "female"
+    assert group["suggested_gender"] == "female"
+    assert group["human_confirmed"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_grammar_necessity_check_ignores_episode_gender_fact_when_index_differs():
+    """순번이 다르면(같은 문장이 회차 안에서 다른 사람에게 또 쓰였을 수
+    있으므로) 매칭하지 않는다 — 텍스트만으로 매칭하면 안전하지 않다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="정말 미녀가 되어갔다."),
+        target=SegmentText(start=0.0, end=1.0, text="Ella se volvió hermosa."),
+    )]
+    resolutions, _ = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, _unnamed_provider(), "tv1",
+        # 같은 텍스트지만 순번이 5 — 이 pair는 순번 0이라 매칭 안 돼야 한다.
+        episode_gender_facts={(5, "정말 미녀가 되어갔다."): "female"})
+    group = resolutions[0]["resolved_gender_groups"][0]
+    assert group["gender"] is None
+    assert group["suggested_gender"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_grammar_necessity_check_ignores_episode_gender_fact_for_multi_group_line():
+    """인물이 2명 이상인 줄은 언어마다 그룹 순서/개수가 다를 수 있어
+    안전하게 대응시킬 수 없으므로, 회차 내 문장 기준 재사용을 적용하지
+    않는다(그룹이 1개인 줄만 대상)."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class TwoGroupProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            return [
+                {"id": item["id"], "words": [
+                    {"index": 0, "is_person": True, "group_id": 0,
+                     "gender": None, "referent": "인물1", "character_name": None},
+                    {"index": 1, "is_person": True, "group_id": 1,
+                     "gender": None, "referent": "인물2", "character_name": None},
+                ]}
+                for item in items
+            ]
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="그와 그녀 둘 다 피곤했다."),
+        target=SegmentText(start=0.0, end=1.0, text="Él está cansado y ella está cansada."),
+    )]
+    resolutions, _ = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, TwoGroupProvider(), "tv1",
+        episode_gender_facts={(0, "그와 그녀 둘 다 피곤했다."): "female"})
+    groups = resolutions[0]["resolved_gender_groups"]
+    assert len(groups) == 2
+    assert all(g["gender"] is None for g in groups)
+    assert all(g["suggested_gender"] is None for g in groups)
 
 
 @pytest.mark.asyncio
@@ -1881,9 +1975,11 @@ async def test_run_pipeline_phase1_threads_known_gender_facts_to_grammar_check(t
     captured = {}
     original = pipeline_module._run_grammar_necessity_check
 
-    async def _capture(pairs, profile, provider, target_version_id, known_gender_facts=None):
+    async def _capture(pairs, profile, provider, target_version_id,
+                        known_gender_facts=None, episode_gender_facts=None):
         captured["known_gender_facts"] = known_gender_facts
-        return await original(pairs, profile, provider, target_version_id, known_gender_facts)
+        return await original(pairs, profile, provider, target_version_id,
+                               known_gender_facts, episode_gender_facts)
     monkeypatch.setattr(pipeline_module, "_run_grammar_necessity_check", _capture)
 
     with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \

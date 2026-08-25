@@ -3,7 +3,7 @@
 from typing import List
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import FindingRow, Segment, SttCorrection, CharacterGenderFact
+from app.models import FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion
 from app.schemas import Finding
 
 
@@ -244,3 +244,29 @@ async def upsert_character_gender_facts(session: AsyncSession, title_id: str, fa
         else:
             session.add(CharacterGenderFact(title_id=title_id, character_name=name, gender=gender))
     await session.flush()
+
+
+async def get_episode_gender_facts(session: AsyncSession, episode_id: str,
+                                    exclude_target_version_id: str) -> dict:
+    """같은 회차의 다른 언어 버전에서 이미 확인된, 인물이 1명뿐인 줄의 성별을
+    (세그먼트 순번, 한국어 원문) 키로 돌려준다 — character_gender_facts(제목
+    전체, 이름 기준)와 달리 이름이 없는 인물도 커버하지만, 안전하게
+    같은 회차 안으로만 범위를 좁힌다(다른 회차의 같은 문장은 다른 사람일
+    수 있다). 순번+한국어 원문이 둘 다 같아야 매칭한다 — 흔한 문장이 같은
+    회차 안에서 다른 사람에게 두 번 쓰이는 경우, 순번까지 다르면 매칭
+    안 되게 하기 위해서다. 인물이 2명 이상인 줄은 언어마다 그룹 순서/개수가
+    달라질 수 있어 대응이 안전하지 않으므로 제외한다."""
+    rows = (await session.execute(
+        select(Segment.index, Segment.korean_text, Segment.resolved_gender_groups_raw)
+        .join(TargetVersion, Segment.target_version_id == TargetVersion.id)
+        .where(
+            TargetVersion.episode_id == episode_id,
+            TargetVersion.id != exclude_target_version_id,
+            Segment.resolved_gender_groups_raw.isnot(None),
+        )
+    )).all()
+    facts: dict = {}
+    for index, korean_text, groups in rows:
+        if groups and len(groups) == 1 and groups[0].get("gender"):
+            facts[(index, korean_text)] = groups[0]["gender"]
+    return facts

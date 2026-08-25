@@ -232,7 +232,7 @@ def _context_window(pairs: list, center_idx: int, radius: int = _GENDER_CONTEXT_
 
 async def _run_grammar_necessity_check(
     pairs: list, profile: dict, provider: ModelProvider, target_version_id: str,
-    known_gender_facts: Optional[dict] = None,
+    known_gender_facts: Optional[dict] = None, episode_gender_facts: Optional[dict] = None,
 ) -> tuple[list, list]:
     """문법 필요성 판단(줄 단위, 대상언어는 spaCy·한국어는 kiwipiepy 형태소
     분석): 성별/격식 판단이 실제로 필요한 줄만 골라낸다. 성별 값은 한국어
@@ -249,6 +249,7 @@ async def _run_grammar_necessity_check(
     바로 옆 대사에 이름/호칭이 있는 경우가 있어 앞뒤 문맥을 같이 준다.
     반환값은 (segment_resolutions, warnings)."""
     pair_index_by_id = {p.id: i for i, p in enumerate(pairs)}
+    korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in pairs}
     grammar_pairs = [
         {"id": p.id, "target_text": p.target.text if p.target else "",
          "korean_text": p.korean.text if p.korean else ""}
@@ -340,17 +341,37 @@ async def _run_grammar_necessity_check(
                         group["gender"] = None
                 gender_groups_by_id.update(llm_groups_by_id)
 
-                # 이 title에서 이미 확인된 캐릭터 이름이면 미리 답을
-                # 채워 보여준다(design §시리즈/다국어 간 캐릭터 성별
-                # 재사용). gender 필드 자체는 건드리지 않는다 — 검수자가
-                # 확인 버튼을 눌러야 확정되고, 그래야 확인 화면 목록에서
-                # 빠지지 않는다(isSegmentResolved가 gender만 본다).
-                if known_gender_facts:
-                    for groups in gender_groups_by_id.values():
+                # 이 title에서 이미 확인된 캐릭터 이름이면 gender를 바로
+                # 채운다(design §시리즈/다국어 간 캐릭터 성별 재사용 —
+                # 자동 적용으로 전환, 2026-08-25 사용자 결정: 동명이인 오적용
+                # 리스크보다 매 회차/언어마다 같은 확인을 반복하는 번거로움이
+                # 더 크다고 판단). human_confirmed는 True로 만들지 않는다 —
+                # 이번에 사람이 실제로 본 게 아니므로, 이 인스턴스를 다시
+                # "재확인된 사실"로 harvest해 재전파하지는 않는다(기존 사실을
+                # 그대로 재사용만 함).
+                if known_gender_facts or episode_gender_facts:
+                    for pair_id, groups in gender_groups_by_id.items():
                         for group in groups:
                             name = group.get("character_name")
-                            group["suggested_gender"] = (
-                                known_gender_facts.get(name) if name else None)
+                            fact_gender = (
+                                known_gender_facts.get(name)
+                                if known_gender_facts and name else None
+                            )
+                            group["suggested_gender"] = fact_gender
+                            if fact_gender:
+                                group["gender"] = fact_gender
+                        # 이름 매칭이 안 됐고 인물이 1명뿐인 줄이면, 같은 회차의
+                        # 다른 언어 버전에서 정확히 같은 위치·같은 한국어
+                        # 원문으로 이미 확인된 값이 있는지 추가로 시도한다
+                        # (design §회차 내 문장 기준 재사용 — 이름 없는 인물도
+                        # 커버. 인물 2명 이상인 줄은 언어마다 그룹 순서/개수가
+                        # 달라질 수 있어 대응이 안전하지 않으므로 제외).
+                        if episode_gender_facts and len(groups) == 1 and not groups[0].get("gender"):
+                            key = (pair_index_by_id[pair_id], korean_text_by_id.get(pair_id, ""))
+                            episode_fact_gender = episode_gender_facts.get(key)
+                            if episode_fact_gender:
+                                groups[0]["suggested_gender"] = episode_fact_gender
+                                groups[0]["gender"] = episode_fact_gender
                 else:
                     for groups in gender_groups_by_id.values():
                         for group in groups:
@@ -1180,7 +1201,8 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                                cached_korean_segments: Optional[list] = None,
                                cached_video_proxy_path: Optional[str] = None,
                                korean_srt_path: Optional[str] = None,
-                               known_gender_facts: Optional[dict] = None) -> dict:
+                               known_gender_facts: Optional[dict] = None,
+                               episode_gender_facts: Optional[dict] = None) -> dict:
     """S1(STT/정렬/사전·규칙 처리/문법 필요성 판단)만 실행한다. 성별/격식
     확인이 필요한 줄이 있으면 AI 검증(S2)은 여기서 시작하지 않는다 — 사람이
     확정한 뒤에야 정확한 검증이 가능하므로(design §AI 검증은 확정된 값을
@@ -1336,7 +1358,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     pairs = pretreatment.pairs
 
     segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
-        pairs, profile, provider, target_version_id, known_gender_facts,
+        pairs, profile, provider, target_version_id, known_gender_facts, episode_gender_facts,
     )
     warnings.extend(grammar_warnings)
 
@@ -1465,7 +1487,8 @@ async def run_pipeline(video_path: str, target_srt_path: str,
                         cached_korean_segments: Optional[list] = None,
                         cached_video_proxy_path: Optional[str] = None,
                         korean_srt_path: Optional[str] = None,
-                        known_gender_facts: Optional[dict] = None) -> dict:
+                        known_gender_facts: Optional[dict] = None,
+                        episode_gender_facts: Optional[dict] = None) -> dict:
     """phase1 + phase2를 곧장 이어서 실행하는 편의 래퍼 — 성별/격식 확인이
     필요한 줄이 있어도 기다리지 않고 바로 phase2까지 실행한다. 실제 운영
     경로(background.py)는 이 함수를 쓰지 않는다 — registers_need_confirmation
@@ -1476,7 +1499,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     phase1 = await run_pipeline_phase1(
         video_path, target_srt_path, language, variant, target_version_id, provider,
         cached_korean_segments, cached_video_proxy_path, korean_srt_path,
-        known_gender_facts,
+        known_gender_facts, episode_gender_facts,
     )
     resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
     phase2 = await run_pipeline_phase2(
