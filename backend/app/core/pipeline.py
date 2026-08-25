@@ -1072,6 +1072,19 @@ async def _run_final_safety_net(
             pair.target.text = final_fixed_by_segment[pair.id]
 
     line_length_violations = check_line_length(pairs)
+    # Claude/GPT가 갈려서 아직 사람이 못 고른 pending 세그먼트는 여기서
+    # 건너뛴다 — pair.target.text가 두 제안 중 어느 쪽도 반영 안 된 원문
+    # 그대로라서(applies는 두 모델이 합의했을 때만 True — 위 entries 참고),
+    # 이 시점에 만드는 축약 카드는 사람이 둘 중 하나를 고르는 순간 곧바로
+    # 무의미해진다("같은 문장인데 카드가 3개" 문제, 사용자 재현). 사람이
+    # 고른 뒤 최종 텍스트 기준 글자수는 export 직전 안전망(export.py의
+    # safety_net_check)이 다시 검사하므로 놓치지 않는다.
+    pending_segment_ids = {
+        f.segment_id for f in dual_verification_findings if f.status == "pending"
+    }
+    line_length_violations = [
+        v for v in line_length_violations if v.segment_id not in pending_segment_ids
+    ]
     # reading_speed는 화면에 실제로 입혀서 확인하므로 여기서 체크하지 않음
     safety_net_findings = await shrink_violating_lines(
         pairs, line_length_violations, provider, target_version_id,

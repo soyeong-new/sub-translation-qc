@@ -1959,6 +1959,49 @@ async def test_run_dual_verification_pass_warns_when_pairs_skipped_for_missing_k
 
 
 @pytest.mark.asyncio
+async def test_run_final_safety_net_skips_line_length_check_for_pending_segment():
+    """회귀(사용자 재현): Claude/GPT가 갈려서 아직 사람이 못 고른(pending)
+    세그먼트는, target.text가 둘 중 어느 제안도 반영 안 된 원문 그대로다.
+    이 시점에 원문 기준으로 글자수 위반을 잡아 축약 카드를 만들면, 사람이
+    둘 중 하나를 고르는 순간 곧바로 무의미해지는 카드가 하나 더 생겨서
+    "같은 문장인데 카드가 3개"로 보인다."""
+    from app.core.pipeline import _run_final_safety_net
+    from app.schemas import Finding
+
+    long_text = "x " * 40  # MAX_LINE_CHARS(50)를 넘겨 줄 길이 위반 유발
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="원문"),
+        target=SegmentText(start=0.0, end=1.0, text=long_text),
+    )]
+    pending_finding = Finding(
+        id="f1", target_version_id="tv1", segment_id="p1", category="mistranslation",
+        description="설명", original_text=long_text, suggested_text="corregido",
+        confidence=0.9, source="llm", model="claude", status="pending",
+    )
+    _, safety_net_findings = await _run_final_safety_net(
+        pairs, MockProvider(), "tv1", [pending_finding])
+    assert safety_net_findings == []
+
+
+@pytest.mark.asyncio
+async def test_run_final_safety_net_still_checks_line_length_when_no_pending_findings():
+    """위 회귀 테스트가 안전망 체크 자체를 과하게 막아버리지 않았는지
+    확인하는 대조군 — pending finding이 전혀 없으면 원래대로 축약 카드가
+    만들어져야 한다."""
+    from app.core.pipeline import _run_final_safety_net
+
+    long_text = "x " * 40
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="원문"),
+        target=SegmentText(start=0.0, end=1.0, text=long_text),
+    )]
+    _, safety_net_findings = await _run_final_safety_net(
+        pairs, MockProvider(), "tv1", [])
+    assert len(safety_net_findings) == 1
+    assert safety_net_findings[0].segment_id == "p1"
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_phase1_threads_known_gender_facts_to_grammar_check(tmp_path, monkeypatch):
     """known_gender_facts가 run_pipeline_phase1까지 전달되면 그 값 그대로
     _run_grammar_necessity_check에 넘어가야 한다 — 실제 성별 힌트 로직은
