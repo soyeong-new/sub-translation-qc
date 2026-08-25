@@ -26,6 +26,9 @@ export const listLanguageProfiles = () => request("/language-profiles");
 export const createTitle = (name, type) =>
   request("/titles", { method: "POST", body: JSON.stringify({ name, type }) });
 
+export const updateTitleType = (titleId, type) =>
+  request(`/titles/${titleId}`, { method: "PATCH", body: JSON.stringify({ type }) });
+
 export const createEpisode = (titleId, episodeNo, videoPath, koreanSrtPath = null) =>
   request(`/titles/${titleId}/episodes`, {
     method: "POST",

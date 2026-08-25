@@ -52,6 +52,7 @@ function Field({ id, label, children }) {
 export default function TitleListView({ onSelect }) {
   const [name, setName] = useState("");
   const [type, setType] = useState("movie");
+  const [episodeNo, setEpisodeNo] = useState("");
   const [videoFile, setVideoFile] = useState(null);
   const [srtFile, setSrtFile] = useState(null);
   const [koreanSrtFile, setKoreanSrtFile] = useState(null);
@@ -152,8 +153,9 @@ export default function TitleListView({ onSelect }) {
         const koreanSrtUpload = await uploadSrtKo(koreanSrtFile, setKoreanSrtProgress);
         koreanSrtPath = koreanSrtUpload.path;
       }
+      const episodeNoValue = type === "series" && episodeNo.trim() ? Number(episodeNo) : null;
       const episode = await createEpisode(
-        title.id, null, videoUpload.path, koreanSrtPath,
+        title.id, episodeNoValue, videoUpload.path, koreanSrtPath,
       );
       const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
       setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
@@ -224,6 +226,20 @@ export default function TitleListView({ onSelect }) {
               </select>
             </Field>
           </div>
+
+          {type === "series" && (
+            <Field id="episode-no" label="회차">
+              <input
+                id="episode-no"
+                type="number"
+                value={episodeNo}
+                onChange={(e) => setEpisodeNo(e.target.value)}
+                placeholder="예: 1"
+                disabled={isSubmitting}
+                className={inputClass}
+              />
+            </Field>
+          )}
 
           <FileDropzone
             id="video-file"

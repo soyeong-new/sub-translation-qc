@@ -20,6 +20,10 @@ class TitleIn(BaseModel):
     type: str
 
 
+class TitleUpdateIn(BaseModel):
+    type: str
+
+
 class EpisodeIn(BaseModel):
     episode_no: int | None = None
     video_path: str
@@ -36,6 +40,20 @@ async def create_title(payload: TitleIn):
     async with async_session() as session:
         title = Title(name=payload.name, type=payload.type)
         session.add(title)
+        await session.commit()
+        return {"id": title.id, "name": title.name, "type": title.type}
+
+
+@router.patch("/titles/{title_id}")
+async def update_title(title_id: str, payload: TitleUpdateIn):
+    """등록할 때 유형(영화/드라마)을 잘못 골랐을 때 고치는 용도 — 예를 들어
+    영화로 등록해서 "회차 추가" 버튼이 안 보이던 걸 드라마로 바꾸면 바로
+    보이게 된다."""
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None or title.deleted_at is not None:
+            raise HTTPException(404, "title not found")
+        title.type = payload.type
         await session.commit()
         return {"id": title.id, "name": title.name, "type": title.type}
 
@@ -74,7 +92,9 @@ async def list_titles():
         titles = (await session.execute(
             select(Title).where(Title.deleted_at.is_(None)).order_by(Title.created_at.desc())
         )).scalars().all()
-        episodes = (await session.execute(select(Episode))).scalars().all()
+        episodes = (await session.execute(
+            select(Episode).order_by(Episode.episode_no)
+        )).scalars().all()
         target_versions = (await session.execute(select(TargetVersion))).scalars().all()
         reviewer_rows = (await session.execute(
             select(FindingRow.target_version_id, FindingRow.reviewer_name)

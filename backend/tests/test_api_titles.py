@@ -122,6 +122,49 @@ async def test_list_titles_includes_nested_episodes_and_target_versions():
 
 
 @pytest.mark.asyncio
+async def test_update_title_changes_type():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "movie"})
+        title_id = title_res.json()["id"]
+
+        r = await client.patch(f"/titles/{title_id}", json={"type": "series"})
+        assert r.status_code == 200
+        assert r.json()["type"] == "series"
+
+        listed = await client.get("/titles")
+    updated = next(t for t in listed.json() if t["id"] == title_id)
+    assert updated["type"] == "series"
+
+
+@pytest.mark.asyncio
+async def test_update_title_returns_404_for_unknown_title():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch("/titles/does-not-exist", json={"type": "series"})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_titles_orders_episodes_by_episode_no():
+    """회귀: 회차를 등록 순서와 다르게 추가해도(예: 3화를 2화보다 먼저
+    추가) 목록은 항상 episode_no 오름차순으로 나와야 한다 — 등록 순서
+    그대로 내려주면 화면에서 회차가 뒤죽박죽으로 보인다."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+        for episode_no in (3, 1, 2):
+            await client.post(
+                f"/titles/{title_id}/episodes",
+                json={"episode_no": episode_no, "video_path": "/x.mp4"})
+
+        r = await client.get("/titles")
+    title = next(t for t in r.json() if t["id"] == title_id)
+    assert [ep["episode_no"] for ep in title["episodes"]] == [1, 2, 3]
+
+
+@pytest.mark.asyncio
 async def test_delete_title_soft_deletes_and_keeps_children(tmp_path):
     """title 삭제는 소프트 삭제다 — finding/STT수정이력 같은 교정 데이터는
     나중에 재활용하려고 DB에 그대로 남긴다. 목록에서만 안 보이면 되고,

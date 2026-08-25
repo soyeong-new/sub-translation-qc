@@ -1177,12 +1177,12 @@ export default function ReviewView({ targetVersionId, onBack }) {
   // 내보내기 결과(srt 문자열)를 실제 .srt 파일로 다운로드한다 — 지금까지는
   // 화면에 텍스트만 보여주고 파일을 만들어주지 않아서, 검수자가 직접
   // 복사해서 파일로 저장해야 했다.
-  function downloadSrtFile(srtText) {
+  function downloadSrtFile(srtText, filename) {
     const blob = new Blob([srtText], { type: "application/x-subrip;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${targetVersionId.slice(0, 8)}.srt`;
+    a.download = filename ?? `${targetVersionId.slice(0, 8)}.srt`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1205,7 +1205,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
         }
       }
       setExportResult(result);
-      downloadSrtFile(result.srt);
+      downloadSrtFile(result.srt, result.filename);
       setExportStatus({ kind: "idle" });
     } catch (err) {
       setExportStatus({ kind: "error", message: err.message ?? "내보내기 중 오류가 발생했습니다." });

@@ -3,8 +3,8 @@
 import { useRef, useState } from "react";
 
 const baseClass =
-  "flex flex-col items-center justify-center gap-1 rounded-xl border border-dashed " +
-  "border-border bg-background px-3 py-2.5 text-center text-xs text-muted-foreground " +
+  "flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed " +
+  "border-border bg-background px-2.5 py-1.5 text-center text-xs text-muted-foreground " +
   "transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
   "aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
@@ -65,9 +65,9 @@ export default function FileDropzone({ id, label, accept, file, onFileSelected, 
           }}
         />
         {file ? (
-          <span className="font-mono text-foreground">{file.name}</span>
+          <span className="block w-full min-w-0 truncate font-mono text-foreground">{file.name}</span>
         ) : (
-          <span>클릭하거나 파일을 여기로 드래그하세요</span>
+          <span>Upload</span>
         )}
         {progress != null && (
           <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
