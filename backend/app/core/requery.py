@@ -56,14 +56,24 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
 
 async def reverify_segment_after_stt_correction(
     segment: Segment, provider: ModelProvider, knowledge: str, profile: dict,
+    current_text: Optional[str] = None,
 ) -> Optional[dict]:
     """STT 원문이 수정된 직후, 그 줄의 번역이 새 원문 기준으로도 여전히
     맞는지 GPT 하나로만 가볍게 재검증한다 — "다시 질문하기"와 같은 원칙으로
     단일 모델만 쓰고 이중 독립검증(합의 필요)은 하지 않는다. 글자수 제약은
     다른 모든 검증 경로와 동일하게(줄당 MAX_LINE_CHARS자, 최대 MAX_LINES줄)
-    유지한다. 문제 없으면(GPT가 아무 교정도 안 돌려주면) None."""
+    유지한다. 문제 없으면(GPT가 아무 교정도 안 돌려주면) None.
+
+    current_text가 있으면(이 세그먼트에 finding이 이미 정확히 하나 있는
+    경우) segment.target_text(원본 그대로) 대신 그 finding의 제안문을
+    기준으로 재검증한다 — 안 그러면 "이미 다른 이유로 수정 제안이 나와
+    있는 줄"을 GPT가 항상 원본(target_text)만 보고 판단해서, 원본은
+    그럭저럭 괜찮다는 이유로 기존 제안이 새 원문 기준으로도 맞는지는
+    한 번도 확인 안 하고 넘어가는 문제(회귀: 사용자 재현 — STT 고쳐도
+    기존 제안 카드가 그대로였음)가 생긴다."""
+    text_to_check = current_text if current_text is not None else segment.target_text
     results = await provider.verify_and_refine(
-        [{"id": segment.id, "korean_text": segment.korean_text, "target_text": segment.target_text}],
+        [{"id": segment.id, "korean_text": segment.korean_text, "target_text": text_to_check}],
         profile, [], knowledge, _FORMAT_CONSTRAINT,
     )
     return results[0] if results else None

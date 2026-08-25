@@ -382,7 +382,17 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
         profile = load_profile(tv.target_language, tv.variant) if tv else {}
         provider = get_provider()
         knowledge = load_knowledge()
-        correction = await reverify_segment_after_stt_correction(seg, provider, knowledge, profile)
+
+        # 이 세그먼트에 finding이 이미 정확히 하나 있으면, 재검증 기준을
+        # segment.target_text(원본 그대로)가 아니라 그 finding의 제안문으로
+        # 바꾼다 — 안 그러면 "이미 다른 이유로 수정 제안이 나와 있는 줄"을
+        # GPT가 항상 원본만 보고 판단해서, 기존 제안이 새 원문 기준으로도
+        # 맞는지는 한 번도 확인 안 하고 넘어간다(회귀: 사용자 재현 — STT
+        # 고쳐도 기존 제안 카드가 그대로였음).
+        existing = await get_findings_for_segment(session, segment_id)
+        current_text = existing[0].suggested_text if len(existing) == 1 else None
+        correction = await reverify_segment_after_stt_correction(
+            seg, provider, knowledge, profile, current_text=current_text)
 
         if correction:
             # GPT가 새로 만든 제안문구는 1차 검수 때 이미 확정된 성별을
@@ -410,7 +420,8 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
             correction["corrected_text"] = fixed_text
 
         new_finding = None
-        if correction and correction["corrected_text"] != seg.target_text:
+        checked_text = current_text if current_text is not None else seg.target_text
+        if correction and correction["corrected_text"] != checked_text:
             # 검수자가 스페인어를 몰라도 "원본"(수정 전 문장)이 무슨 뜻인지
             # 알아야 "제안"과 비교 판단이 가능하다 — GPT의 original_meaning이
             # 원본 뜻을 이미 풀어주지만, 그건 GPT 자신의 이해일 뿐이라 실제
@@ -454,7 +465,6 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
             # 비교 아님) 어느 쪽이 이길지 보장이 안 된다. finding이 0개거나
             # 2개 이상(의견 갈림 등 아직 안 끝난 상태)이면 어느 걸 갱신해야
             # 할지 애매하므로 안전하게 새로 만든다.
-            existing = await get_findings_for_segment(session, segment_id)
             if len(existing) == 1:
                 finding = existing[0]
                 finding.category = correction["category"]

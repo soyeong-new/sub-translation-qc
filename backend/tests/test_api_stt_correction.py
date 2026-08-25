@@ -101,7 +101,7 @@ async def test_correct_stt_updates_existing_finding_in_place_instead_of_duplicat
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
 
-    async def fake_reverify(segment, provider, knowledge, profile):
+    async def fake_reverify(segment, provider, knowledge, profile, current_text=None):
         return {"category": "mistranslation", "description": "재검증 설명",
                 "corrected_text": "Ya revisé todo."}
 
@@ -150,6 +150,59 @@ async def test_correct_stt_updates_existing_finding_in_place_instead_of_duplicat
 
 
 @pytest.mark.asyncio
+async def test_correct_stt_reverifies_against_existing_pending_suggestion_not_raw_original(monkeypatch):
+    """회귀(사용자 재현): 세그먼트에 이미 pending finding이 하나 있는 상태에서
+    STT를 수정하면, 재검증은 원본 target_text가 아니라 "지금 검수자가 보고
+    있는 제안문"(그 finding의 suggested_text) 기준으로 이뤄져야 한다. 원본
+    target_text만 보고 재검증하면, 원본 자체는 (다른 이유로 이미 문제가
+    있어 제안이 나와 있었더라도) 그럭저럭 괜찮아 보여 GPT가 "문제 없음"으로
+    판단해버리고, 그 결과 기존 제안 카드가 새 한국어 원문 기준으로 한 번도
+    재검토되지 않은 채 그대로 남는다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        # target_text 자체는(MockProvider 기준으로) 문제가 없어 보이는 텍스트다 —
+        # 원본만 보고 재검증하면 "문제 없음"으로 판단될 것이다.
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=2.0,
+                      korean_text="원문", target_text="Texto original bueno.")
+        session.add(seg); await session.flush()
+        # 이미 다른 이유로 나와 있는 pending 제안 — MockProvider가 이 안의
+        # "BAD_TRANSLATION" 마커를 보고 교정을 돌려주게 되어 있다.
+        session.add(FindingRow(
+            id="f1", target_version_id=tv.id, segment_id=seg.id,
+            category="mistranslation", description="기존 지적",
+            original_text="원본", suggested_text="BAD_TRANSLATION",
+            confidence=1.0, source="llm", model="claude", status="pending",
+        ))
+        await session.commit()
+        seg_id = seg.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            f"/segments/{seg_id}/correct-stt",
+            json={"corrected_text": "고친 원문", "reviewer_name": "김검수"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["new_finding"] is not None
+        assert body["new_finding"]["id"] == "f1"
+        assert body["new_finding"]["suggested_text"] == "texto corregido"
+
+    async with async_session() as session:
+        rows = await session.execute(select(FindingRow).where(FindingRow.segment_id == seg_id))
+        findings = list(rows.scalars().all())
+        assert len(findings) == 1  # 새 카드가 따로 생기지 않고 기존 카드 하나만 갱신됨
+        assert findings[0].suggested_text == "texto corregido"
+        assert findings[0].status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_correct_stt_reapplies_already_confirmed_gender_to_new_suggestion(monkeypatch):
     """회귀: 1차 검수 때 이미 확정된 성별(resolved_gender_raw)이 STT
     재검증이 새로 만든 제안문구에도 반영돼야 한다 — 안 그러면 "cansado/a"
@@ -157,7 +210,7 @@ async def test_correct_stt_reapplies_already_confirmed_gender_to_new_suggestion(
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
 
-    async def fake_reverify(segment, provider, knowledge, profile):
+    async def fake_reverify(segment, provider, knowledge, profile, current_text=None):
         return {"category": "mistranslation", "description": "테스트",
                 "corrected_text": "Te ves cansado/a."}
 
@@ -207,7 +260,7 @@ async def test_correct_stt_flags_new_gender_ambiguity_when_not_covered_by_prior_
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
 
-    async def fake_reverify(segment, provider, knowledge, profile):
+    async def fake_reverify(segment, provider, knowledge, profile, current_text=None):
         return {"category": "mistranslation", "description": "테스트",
                 "corrected_text": "Estoy cansado."}
 
