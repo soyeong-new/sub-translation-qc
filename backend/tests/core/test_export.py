@@ -1,6 +1,18 @@
 from datetime import datetime
 
-from app.core.export import assemble_final_srt, compute_stats, safety_net_check
+from app.core.export import assemble_final_srt, compute_stats, safety_net_check, build_export_filename
+
+
+def test_build_export_filename_without_episode():
+    assert build_export_filename("보통의 연애", None, "es", "LATAM") == "보통의 연애_es_LATAM.srt"
+
+
+def test_build_export_filename_with_episode_uses_hoi_suffix():
+    assert build_export_filename("보통의 연애", 3, "es", "LATAM") == "보통의 연애_3화_es_LATAM.srt"
+
+
+def test_build_export_filename_strips_filesystem_unsafe_characters():
+    assert build_export_filename('제목: "특별판"/1', None, "es", "LATAM") == "제목 특별판1_es_LATAM.srt"
 
 
 def test_assemble_final_srt_uses_final_text_for_approved_findings():

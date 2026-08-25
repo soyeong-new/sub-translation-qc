@@ -1,9 +1,24 @@
 """검수 결과를 반영해 최종 SRT를 조립하고 반영율 통계를 계산하는 모듈."""
 
-from typing import List
+import re
+from typing import List, Optional
 from app.core.ingest import build_srt
 from app.core.format_rules import check_line_length
 from app.schemas import AlignedPair, SegmentText, ExportStats
+
+_FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
+
+
+def build_export_filename(title_name: str, episode_no: Optional[int],
+                           target_language: str, variant: str) -> str:
+    """내보내기 SRT 파일명을 만든다 — 타이틀명_(회차)_언어코드_변형.srt.
+    회차(episode_no)가 있으면 "N화"를 언어 앞에 끼워 넣는다."""
+    safe_title = _FILENAME_UNSAFE_RE.sub("", title_name).strip()
+    parts = [safe_title]
+    if episode_no is not None:
+        parts.append(f"{episode_no}화")
+    parts.append(f"{target_language}_{variant}")
+    return "_".join(parts) + ".srt"
 
 
 def _final_text_by_segment(findings: List[dict]) -> dict:

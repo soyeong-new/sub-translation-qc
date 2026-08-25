@@ -3,8 +3,8 @@
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
-from app.models import TargetVersion, FindingRow, Segment, ExportRow
-from app.core.export import assemble_final_srt, compute_stats, safety_net_check
+from app.models import TargetVersion, FindingRow, Segment, ExportRow, Episode, Title
+from app.core.export import assemble_final_srt, compute_stats, safety_net_check, build_export_filename
 
 router = APIRouter()
 
@@ -15,6 +15,8 @@ async def export_target_version(target_version_id: str):
         tv = await session.get(TargetVersion, target_version_id)
         if tv is None:
             raise HTTPException(404, "target version not found")
+        episode = await session.get(Episode, tv.episode_id)
+        title = await session.get(Title, episode.title_id)
         # export는 저장 순서(index)가 아니라 타임코드 순으로 내보낸다 —
         # alignment.align()이 짝을 못 찾은 대상언어 세그먼트를 목록 뒤에 붙이므로
         # index 순서는 실제 재생 순서와 다를 수 있다.
@@ -59,4 +61,7 @@ async def export_target_version(target_version_id: str):
         "srt": srt,
         "stats": stats.model_dump(),
         "format_warnings": [w.model_dump() for w in warnings],
+        "filename": build_export_filename(
+            title.name, episode.episode_no, tv.target_language, tv.variant
+        ),
     }

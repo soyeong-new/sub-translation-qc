@@ -204,6 +204,41 @@ async def test_export_records_an_export_row():
 
 
 @pytest.mark.asyncio
+async def test_export_returns_filename_with_title_and_language_when_no_episode():
+    async with async_session() as session:
+        title = Title(name="보통의 연애", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200
+        assert r.json()["filename"] == "보통의 연애_es_LATAM.srt"
+
+
+@pytest.mark.asyncio
+async def test_export_returns_filename_with_episode_when_present():
+    async with async_session() as session:
+        title = Title(name="보통의 연애", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, episode_no=3, video_path="/x.mp4")
+        session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200
+        assert r.json()["filename"] == "보통의 연애_3화_es_LATAM.srt"
+
+
+@pytest.mark.asyncio
 async def test_export_returns_404_for_unknown_target_version():
     """존재하지 않는 target_version_id로 export하면 404여야 한다. ExportRow에
     target_versions를 참조하는 FK가 있어, 가드가 없으면 감사 행을 넣는 순간
