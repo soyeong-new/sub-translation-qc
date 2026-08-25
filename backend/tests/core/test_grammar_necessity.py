@@ -108,6 +108,16 @@ def test_raises_for_unsupported_language():
             [{"id": "p1", "target_text": "hello"}], {"language": "fr"})
 
 
+def test_flags_gender_for_portuguese_predicate_adjective():
+    """다국어 확장: LANGUAGE_TO_SPACY_MODEL에 pt가 추가된 뒤에도 스페인어와
+    동일하게 spaCy 범용 Gender 형태소 기반으로 성별 후보를 잡아야 한다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Ela é bonita."}],
+        {"language": "pt", "variant": "BR"})
+    assert result[0]["gender_check_needed"] is True
+    assert result[0]["candidate_words"] == ["bonita"]
+
+
 def test_resolves_formality_as_formal_from_korean_honorific_ending():
     result = check_grammar_necessity(
         [{"id": "p1", "target_text": "¿Puede venir aquí?",

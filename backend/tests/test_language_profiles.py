@@ -49,6 +49,19 @@ def test_list_profiles_includes_es_latam():
     assert {"language": "es", "variant": "LATAM"} in profiles
 
 
+def test_load_pt_br_profile_has_expected_shape():
+    profile = load_profile("pt", "BR")
+    assert profile["language"] == "pt"
+    assert profile["variant"] == "BR"
+    assert "포르투갈어" in profile["naturalness_check"]["llm_instruction"]
+    assert "você" in profile["formality_instruction"]
+
+
+def test_list_profiles_includes_pt_br():
+    profiles = list_profiles()
+    assert any(p["language"] == "pt" and p["variant"] == "BR" for p in profiles)
+
+
 def test_list_profiles_ignores_non_yaml_files(tmp_path, monkeypatch):
     import app.language_profiles.loader as loader_module
     monkeypatch.setattr(loader_module, "_DIR", tmp_path)

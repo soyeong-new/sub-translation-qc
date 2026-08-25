@@ -1,0 +1,9 @@
+language: pt
+variant: BR
+display_name: 포르투갈어 (브라질)
+naturalness_check:
+  llm_instruction: >
+    브라질 포르투갈어 원어민이 어색하게 느낄 직역투 표현을 찾아 자연스러운 대안을 제안하라.
+formality_instruction: >
+  informal이면 você 활용형(구어체 2인칭, 3인칭 단수 동사 활용)으로, formal이면
+  o senhor/a senhora 활용형(3인칭 단수 활용 기반 존칭)으로.

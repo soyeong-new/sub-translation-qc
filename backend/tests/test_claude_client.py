@@ -163,3 +163,28 @@ async def test_back_translate_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):
         await client.back_translate([], {})
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_uses_target_language_from_profile_not_spanish():
+    """스페인어가 프롬프트에 하드코딩돼 있으면 다른 언어 프로파일로 호출해도
+    Claude에게 "스페인어로서 자연스러운가"를 검증하라고 지시하게 된다 —
+    profile의 언어가 그대로 반영돼야 한다."""
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.correct_primary(
+        pairs=[], profile={"language": "pt", "variant": "BR"},
+        pending_sensitive_hits=[], knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert "스페인어" not in sent_system
+    assert "pt(BR)" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_back_translate_uses_target_language_from_profile_not_spanish():
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.back_translate(
+        texts=[], profile={"language": "pt", "variant": "BR"},
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert "스페인어" not in sent_system

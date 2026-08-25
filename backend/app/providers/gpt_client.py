@@ -66,6 +66,11 @@ _FORMALITY_SCHEMA_INSTRUCTION = (
     "원문 그대로)."
 )
 
+_DEFAULT_FORMALITY_INSTRUCTION = (
+    "informal이면 tú 활용형(2인칭 단수 반말)으로, formal이면 usted 활용형"
+    "(3인칭 단수 활용 기반 존댓말)으로."
+)
+
 _SCENE_SPLIT_SYSTEM_PREFIX = (
     "다음은 한 영화/영상의 대사 목록이다(korean_text=한국어 원문, "
     "target_text=대상언어 자막, start/end=초 단위 타임코드). 처음부터 끝까지 "
@@ -373,13 +378,13 @@ class GptClient:
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
+        formality_instruction = profile.get("formality_instruction") or _DEFAULT_FORMALITY_INSTRUCTION
         system = (
             f"다음은 {language_label} 문장(target_text) 목록과 각 문장이 "
             "존댓말(formal)이어야 하는지 반말(informal)이어야 하는지 확정된 "
             "값(formality)이다. 오직 그 문장의 격식(2인칭 대명사·동사 활용)"
-            "만 formality 값에 맞게 바꿔라 — informal이면 tú 활용형(2인칭 "
-            "단수 반말)으로, formal이면 usted 활용형(3인칭 단수 활용 기반 "
-            "존댓말)으로. 이미 formality와 일치하면 그대로 둬라. 어휘 선택, "
+            f"만 formality 값에 맞게 바꿔라 — {formality_instruction} "
+            "이미 formality와 일치하면 그대로 둬라. 어휘 선택, "
             "의미, 어순 등 격식과 무관한 건 절대 바꾸지 마라 — 오직 격식만 "
             "조정하는 게 유일한 임무다.\n" + _FORMALITY_SCHEMA_INSTRUCTION
         )

@@ -236,3 +236,29 @@ async def test_resolve_gender_from_context_raises_on_empty_choices():
     client._sdk_client.chat.completions.create.return_value.choices = []
     with pytest.raises(ValueError):
         await client.resolve_gender_from_context(items=[], profile={})
+
+
+@pytest.mark.asyncio
+async def test_apply_formality_uses_instruction_from_profile():
+    """스페인어 tú/usted가 코드에 하드코딩돼 있으면 다른 언어 프로파일이
+    적용되지 않는다 — profile의 formality_instruction을 프롬프트에 그대로
+    실어 보내야 언어별로 다른 격식 활용 규칙을 줄 수 있다."""
+    client = _make_client_with_fake_sdk(json.dumps({"results": []}))
+    profile = {
+        "language": "pt", "variant": "BR",
+        "formality_instruction": "informal이면 você 활용형으로, formal이면 o senhor/a senhora 활용형으로.",
+    }
+    await client.apply_formality(items=[], profile=profile)
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "você" in sent_system
+    assert "tú" not in sent_system
+
+
+@pytest.mark.asyncio
+async def test_apply_formality_falls_back_to_default_instruction_when_profile_empty():
+    """profile={}(테스트 더미)로 호출해도 예외 없이 동작해야 한다 — 기존
+    테스트들이 이 계약에 의존한다."""
+    client = _make_client_with_fake_sdk(json.dumps({"results": []}))
+    await client.apply_formality(items=[], profile={})
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "tú" in sent_system

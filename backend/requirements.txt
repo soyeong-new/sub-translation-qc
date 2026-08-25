@@ -16,4 +16,5 @@ anthropic>=0.40.0
 openai>=1.55.0
 spacy>=3.8.0
 es_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/es_core_news_sm-3.8.0/es_core_news_sm-3.8.0-py3-none-any.whl
+pt_core_news_sm @ https://github.com/explosion/spacy-models/releases/download/pt_core_news_sm-3.8.0/pt_core_news_sm-3.8.0-py3-none-any.whl
 kiwipiepy>=0.23.0

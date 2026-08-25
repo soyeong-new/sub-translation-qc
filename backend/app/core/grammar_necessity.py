@@ -29,6 +29,7 @@ from kiwipiepy import Kiwi
 
 LANGUAGE_TO_SPACY_MODEL = {
     "es": "es_core_news_sm",
+    "pt": "pt_core_news_sm",
 }
 
 # 한국어 존댓말/성별 단서는 형태소 분석기(kiwipiepy)로 판단한다. 정규식으로
