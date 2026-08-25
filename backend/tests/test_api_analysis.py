@@ -23,6 +23,31 @@ async def _setup_db():
 
 
 @pytest.mark.asyncio
+async def test_get_target_version_returns_null_video_url_for_stale_proxy_path():
+    """회귀(사용자 재현): video_proxy_path가 지금 MEDIA_ROOT 밖을 가리키면
+    (다른 환경에서 만들어진 stale 절대경로, 파일 유실 등) Path.relative_to()가
+    ValueError를 던지는데, 이걸 그대로 두면 화면 전체가 500으로 죽어서
+    findings/segments 조회까지 막힌다 — 영상 미리보기만 못 보여주고 나머지는
+    정상 응답해야 한다."""
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(
+            episode_id=episode.id, target_language="es", variant="LATAM", status="review",
+            video_proxy_path="/completely/different/root/video_proxy/x.mp4",
+        )
+        session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}")
+    assert r.status_code == 200
+    assert r.json()["video_proxy_url"] is None
+
+
+@pytest.mark.asyncio
 async def test_run_analysis_then_list_findings(tmp_path, monkeypatch):
     import asyncio
     monkeypatch.setenv("QC_PROVIDER", "mock")

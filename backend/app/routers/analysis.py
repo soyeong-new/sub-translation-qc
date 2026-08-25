@@ -45,10 +45,18 @@ async def get_target_version(target_version_id: str):
         if tv is None:
             raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
-        video_proxy_url = (
-            f"/media/video_proxy/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT / 'video_proxy')}"
-            if tv.video_proxy_path else None
-        )
+        video_proxy_url = None
+        if tv.video_proxy_path:
+            try:
+                video_proxy_url = (
+                    f"/media/video_proxy/{Path(tv.video_proxy_path).relative_to(MEDIA_ROOT / 'video_proxy')}"
+                )
+            except ValueError:
+                # 저장된 경로가 지금 MEDIA_ROOT 밖을 가리키면(다른 환경에서
+                # 만들어진 stale 경로, 파일 유실 등) 영상 미리보기만 못 보여줄
+                # 뿐 화면 전체가 500으로 죽으면 안 된다 — findings/segments는
+                # 이 값과 무관하게 정상 조회돼야 한다.
+                video_proxy_url = None
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
                 "video_proxy_url": video_proxy_url, "warnings": tv.warnings or [],
                 "video_offset_seconds": tv.video_offset_seconds or 0.0,
