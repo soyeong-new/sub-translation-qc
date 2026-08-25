@@ -24,12 +24,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # e1b3c9a7f204가 명시한 이름(fk_segments_resolved_*)이 아니라 실제 DB에
-    # 생성된 Postgres 기본 자동 명명 규칙(<table>_<column>_fkey)을 쓴다 — 개발
-    # DB가 순수 alembic 마이그레이션 이력이 아니라 SQLAlchemy create_all로
-    # 세팅된 이력이 섞여 있어(README §알려진 제약) 실제 제약 이름이 다르다.
-    op.drop_constraint('segments_resolved_relationship_id_fkey', 'segments', type_='foreignkey')
-    op.drop_constraint('segments_resolved_character_id_fkey', 'segments', type_='foreignkey')
+    # e1b3c9a7f204가 이 제약을 만들 때 명시한 이름 그대로 드롭해야 한다.
+    # 예전엔 여기서 Postgres 자동 명명 규칙(<table>_<column>_fkey)을 썼는데,
+    # 그건 개발 DB가 순수 alembic 이력이 아니라 SQLAlchemy create_all로 세팅된
+    # 이력이 섞여 있어 우연히 맞았던 것뿐이다 — alembic만으로 처음부터
+    # 새로 세팅하는 DB(배포용 등)에서는 e1b3c9a7f204가 만든 이름
+    # (fk_segments_resolved_*)만 존재해서, 자동 명명 규칙으로 드롭하면
+    # UndefinedObject 에러로 마이그레이션 체인 전체가 실패한다.
+    op.drop_constraint('fk_segments_resolved_relationship_id', 'segments', type_='foreignkey')
+    op.drop_constraint('fk_segments_resolved_character_id', 'segments', type_='foreignkey')
     op.drop_column('segments', 'formality_anchor_candidates')
     op.drop_column('segments', 'gender_anchor_candidates')
     op.drop_column('segments', 'resolved_relationship_id')
