@@ -2,6 +2,7 @@ import pytest
 from app.core.grammar_necessity import (
     check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
     _detect_korean_formality, _detect_korean_gender, _has_any_gender_hint,
+    _inflect_gender_word,
 )
 
 PROFILE = {"language": "es", "variant": "LATAM"}
@@ -105,7 +106,7 @@ def test_preserves_id_and_order_across_multiple_pairs():
 def test_raises_for_unsupported_language():
     with pytest.raises(ValueError):
         check_grammar_necessity(
-            [{"id": "p1", "target_text": "hello"}], {"language": "fr"})
+            [{"id": "p1", "target_text": "hello"}], {"language": "xx"})
 
 
 def test_flags_gender_for_portuguese_predicate_adjective():
@@ -375,3 +376,64 @@ def test_resolve_gender_groups_in_texts_skips_indices_beyond_current_candidate_c
         "es",
     )
     assert result["p1"] == "Estoy cansada."
+
+
+# 프랑스어 어미 변환(_inflect_gender_word) — spaCy 태깅 결과에 의존하지 않고
+# 규칙/예외 사전 자체를 직접 검증한다(design §2026-08 프랑스어 확장:
+# fr_core_news_sm이 모든 술어 형용사에 Gender 형태소를 안정적으로 안 붙여서
+# resolve_gender_in_texts 통합 테스트만으로는 이 규칙들을 다 exercise 못 함).
+def test_inflect_gender_word_fr_suffix_rules():
+    assert _inflect_gender_word("acteur", "female", "fr") == "actrice"
+    assert _inflect_gender_word("actrice", "male", "fr") == "acteur"
+    assert _inflect_gender_word("chanteur", "female", "fr") == "chanteuse"
+    assert _inflect_gender_word("chanteuse", "male", "fr") == "chanteur"
+    assert _inflect_gender_word("heureux", "female", "fr") == "heureuse"
+    assert _inflect_gender_word("heureuse", "male", "fr") == "heureux"
+    assert _inflect_gender_word("actif", "female", "fr") == "active"
+    assert _inflect_gender_word("active", "male", "fr") == "actif"
+    assert _inflect_gender_word("mignon", "female", "fr") == "mignonne"
+    assert _inflect_gender_word("mignonne", "male", "fr") == "mignon"
+    assert _inflect_gender_word("coréen", "female", "fr") == "coréenne"
+    assert _inflect_gender_word("coréenne", "male", "fr") == "coréen"
+    assert _inflect_gender_word("naturel", "female", "fr") == "naturelle"
+    assert _inflect_gender_word("naturelle", "male", "fr") == "naturel"
+    assert _inflect_gender_word("muet", "female", "fr") == "muette"
+    assert _inflect_gender_word("muette", "male", "fr") == "muet"
+    assert _inflect_gender_word("premier", "female", "fr") == "première"
+    assert _inflect_gender_word("première", "male", "fr") == "premier"
+
+
+def test_inflect_gender_word_fr_irregular_exceptions():
+    assert _inflect_gender_word("beau", "female", "fr") == "belle"
+    assert _inflect_gender_word("belle", "male", "fr") == "beau"
+    assert _inflect_gender_word("blanc", "female", "fr") == "blanche"
+    assert _inflect_gender_word("blanche", "male", "fr") == "blanc"
+    assert _inflect_gender_word("public", "female", "fr") == "publique"
+    assert _inflect_gender_word("complet", "female", "fr") == "complète"
+    assert _inflect_gender_word("meilleur", "female", "fr") == "meilleure"
+
+
+def test_inflect_gender_word_fr_default_rule_adds_e_for_female():
+    assert _inflect_gender_word("content", "female", "fr") == "contente"
+
+
+def test_inflect_gender_word_fr_leaves_invariant_adjective_untouched():
+    """이미 -e로 끝나는 무변화 형용사(rouge, triste 등)는 남/여 전환 둘
+    다 건드리지 않는다 — 원래 붙어있던 -e인지 여성형으로 붙은 -e인지
+    표면 문자열만으로 구분 불가능해서, 남성 전환 시 blind하게 벗기는
+    규칙은 아예 두지 않았다(design 논의 참고)."""
+    assert _inflect_gender_word("rouge", "female", "fr") == "rouge"
+    assert _inflect_gender_word("rouge", "male", "fr") == "rouge"
+
+
+def test_resolve_gender_in_texts_flips_mismatched_ending_for_french():
+    """resolve_gender_in_texts는 성별이 확정된 형용사/분사 어미만 고친다 —
+    인칭대명사(Il/Elle) 자체를 바꾸는 건 이 함수의 책임이 아니다.
+
+    acteur/chanteur 같은 직업 명사가 아니라 heureux(형용사)로 검증한다 —
+    fr_core_news_lg는 "Il est acteur."의 acteur를 (언어학적으로 맞게) NOUN으로
+    태깅하는데, _is_gendered_token은 ADJ/VERB+Part만 후보로 보므로 명사
+    술어는 지금 범위 밖이다(design 논의: 후보 탐지 확장은 별도 작업)."""
+    result = resolve_gender_in_texts(
+        [{"id": "p1", "text": "Il est heureux.", "gender": "female"}], "fr")
+    assert result["p1"] == "Il est heureuse."

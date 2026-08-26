@@ -1,0 +1,9 @@
+language: fr
+variant: FR
+display_name: 프랑스어 (프랑스)
+naturalness_check:
+  llm_instruction: >
+    프랑스어 원어민이 어색하게 느낄 직역투 표현을 찾아 자연스러운 대안을 제안하라.
+formality_instruction: >
+  informal이면 tu 활용형(2인칭 단수 반말)으로, formal이면 vous 활용형(2인칭 복수 활용
+  기반 존댓말)으로.

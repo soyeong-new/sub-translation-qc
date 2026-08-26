@@ -75,6 +75,19 @@ def test_list_profiles_includes_en_us():
     assert any(p["language"] == "en" and p["variant"] == "US" for p in profiles)
 
 
+def test_load_fr_fr_profile_has_expected_shape():
+    profile = load_profile("fr", "FR")
+    assert profile["language"] == "fr"
+    assert profile["variant"] == "FR"
+    assert "프랑스어" in profile["naturalness_check"]["llm_instruction"]
+    assert "vous" in profile["formality_instruction"]
+
+
+def test_list_profiles_includes_fr_fr():
+    profiles = list_profiles()
+    assert any(p["language"] == "fr" and p["variant"] == "FR" for p in profiles)
+
+
 def test_list_profiles_ignores_non_yaml_files(tmp_path, monkeypatch):
     import app.language_profiles.loader as loader_module
     monkeypatch.setattr(loader_module, "_DIR", tmp_path)

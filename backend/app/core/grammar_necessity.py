@@ -31,6 +31,7 @@ LANGUAGE_TO_SPACY_MODEL = {
     "es": "es_core_news_sm",
     "pt": "pt_core_news_sm",
     "en": "en_core_web_sm",
+    "fr": "fr_core_news_lg",
 }
 
 # 한국어 존댓말/성별 단서는 형태소 분석기(kiwipiepy)로 판단한다. 정규식으로
@@ -229,14 +230,22 @@ def _detect_korean_gender(korean_text: str, is_plural_candidate: bool = False) -
 _GENDER_TO_MORPH = {"male": "Masc", "female": "Fem"}
 
 
-def _inflect_gender_word(word: str, target_gender: str) -> str:
-    """스페인어 형용사/분사 어미를 규칙 기반으로 다른 성별로 바꾼다.
+def _inflect_gender_word(word: str, target_gender: str, language: str) -> str:
+    """형용사/분사 어미를 규칙 기반으로 다른 성별로 바꾼다. 언어별로 갈라
+    처리한다 — 스페인어/포르투갈어와 프랑스어는 굴절 규칙 자체가 다르다."""
+    if not word:
+        return word
+    if language == "fr":
+        return _inflect_gender_word_fr(word, target_gender)
+    return _inflect_gender_word_es_pt(word, target_gender)
+
+
+def _inflect_gender_word_es_pt(word: str, target_gender: str) -> str:
+    """스페인어/포르투갈어 형용사/분사 어미 변환.
     ponytail: -o/-a, -or/-ora 같은 흔한 규칙형만 처리한다 — 원래 성별
     무관한 형용사(feliz, inteligente, optimista 등)는 이 패턴에 안 걸려
     그대로 반환되니 안전하다. 커버리지가 부족해지면 스페인어 굴절
     라이브러리로 승급."""
-    if not word:
-        return word
     lower = word.lower()
     upper = word[-1].isupper()
     if target_gender == "female":
@@ -249,6 +258,66 @@ def _inflect_gender_word(word: str, target_gender: str) -> str:
             return word[:-1]
         if lower.endswith("a") and not lower.endswith("ista"):
             return word[:-1] + ("O" if upper else "o")
+    return word
+
+
+# 규칙으로 못 묶는 완전 불규칙/모호한 쌍 — -eur로 끝나는 단어는 여성형이
+# -euse(chanteur/chanteuse)로 가는 것도, -trice(acteur/actrice)로 가는
+# 것도 있어서 표면형만으로 못 가른다. 반대로 -euse에서 남성형으로 되돌릴
+# 때도 "-eur euse"(chanteuse→chanteur)인지 "-eux euse"(heureuse→heureux
+# 는 실제론 이 패턴)인지 -euse 하나로는 구분 불가능 — 그래서 -eur 어미는
+# 접미사 규칙에 아예 안 넣고, 대화에 자주 나올 법한 단어만 예외로 등록한다
+# (design 논의 참고). 목록에 없는 -eur 단어는 안전하게 그대로 둔다.
+_FRENCH_GENDER_EXCEPTIONS = {
+    "blanc": "blanche", "public": "publique", "turc": "turque",
+    "grec": "grecque", "sec": "sèche",
+    "complet": "complète", "secret": "secrète", "discret": "discrète",
+    "concret": "concrète", "inquiet": "inquiète",
+    "beau": "belle", "nouveau": "nouvelle", "doux": "douce",
+    "faux": "fausse", "fou": "folle", "meilleur": "meilleure",
+    "acteur": "actrice", "directeur": "directrice",
+    "chanteur": "chanteuse", "danseur": "danseuse", "menteur": "menteuse",
+    "vendeur": "vendeuse", "joueur": "joueuse", "coiffeur": "coiffeuse",
+    "trompeur": "trompeuse", "rêveur": "rêveuse", "moqueur": "moqueuse",
+    "voleur": "voleuse", "tricheur": "tricheuse",
+}
+_FRENCH_GENDER_EXCEPTIONS_REV = {v: k for k, v in _FRENCH_GENDER_EXCEPTIONS.items()}
+
+# (남성 어미, 여성 어미) 순서쌍. -eur는 위에서 이미 예외로 처리하니 여기엔
+# 없다.
+_FRENCH_SUFFIX_RULES = (
+    ("eux", "euse"),
+    ("if", "ive"),
+    ("on", "onne"),
+    ("en", "enne"),
+    ("el", "elle"),
+    ("et", "ette"),
+    ("er", "ère"),
+)
+
+
+def _apply_fr_suffix(word: str, old_suffix: str, new_suffix: str) -> str:
+    stem = word[: len(word) - len(old_suffix)] if old_suffix else word
+    result = stem + new_suffix
+    return result.upper() if word.isupper() else result
+
+
+def _inflect_gender_word_fr(word: str, target_gender: str) -> str:
+    lower = word.lower()
+    if target_gender == "female":
+        if lower in _FRENCH_GENDER_EXCEPTIONS:
+            return _apply_fr_suffix(word, lower, _FRENCH_GENDER_EXCEPTIONS[lower])
+        for male_suf, female_suf in _FRENCH_SUFFIX_RULES:
+            if lower.endswith(male_suf):
+                return _apply_fr_suffix(word, male_suf, female_suf)
+        if not lower.endswith("e"):
+            return _apply_fr_suffix(word, "", "e")
+    elif target_gender == "male":
+        if lower in _FRENCH_GENDER_EXCEPTIONS_REV:
+            return _apply_fr_suffix(word, lower, _FRENCH_GENDER_EXCEPTIONS_REV[lower])
+        for male_suf, female_suf in _FRENCH_SUFFIX_RULES:
+            if lower.endswith(female_suf):
+                return _apply_fr_suffix(word, female_suf, male_suf)
     return word
 
 
@@ -267,13 +336,13 @@ def _apply_span_replacements(text: str, replacements: List[tuple]) -> str:
 _GENDER_SLASH_RE = re.compile(r"\b(\w+)/(\w{1,3})\b")
 
 
-def _collapse_gender_slashes(text: str, target_gender: str) -> str:
+def _collapse_gender_slashes(text: str, target_gender: str, language: str) -> str:
     """번역문에 "cansado/a"처럼 두 성별 형태를 슬래시로 같이 적어둔 미확정
     표기가 남아있으면, 목표 성별 하나로 접어서 지운다. spaCy 토큰화에
     기대지 않는다 — 슬래시 뒤 짧은 접미사가 ADJ로 오태깅되며 이 표기를
     놓치는 문제를 애초에 피해간다."""
     def repl(match: "re.Match[str]") -> str:
-        return _inflect_gender_word(match.group(1), target_gender)
+        return _inflect_gender_word(match.group(1), target_gender, language)
     return _GENDER_SLASH_RE.sub(repl, text)
 
 
@@ -290,7 +359,7 @@ def resolve_gender_in_texts(items: List[dict], language: str) -> dict:
     # 잘못 태깅되며 뒤 토큰 루프가 그 표기를 놓치는 문제를 피하고, 이후
     # 토큰화도 접힌 문장 기준으로 정확히 이뤄지게 하기 위해서다.
     texts = [
-        _collapse_gender_slashes(i["text"], i["gender"]) if _GENDER_TO_MORPH.get(i["gender"]) else i["text"]
+        _collapse_gender_slashes(i["text"], i["gender"], language) if _GENDER_TO_MORPH.get(i["gender"]) else i["text"]
         for i in items
     ]
     docs = nlp.pipe(texts)
@@ -302,7 +371,7 @@ def resolve_gender_in_texts(items: List[dict], language: str) -> dict:
             for tok in _candidate_tokens(doc):
                 if tok.morph.get("Gender")[0] == target_morph:
                     continue
-                new_word = _inflect_gender_word(tok.text, item["gender"])
+                new_word = _inflect_gender_word(tok.text, item["gender"], language)
                 if new_word != tok.text:
                     replacements.append((tok.idx, tok.idx + len(tok.text), new_word))
         results[item["id"]] = _apply_span_replacements(text, replacements)
@@ -346,7 +415,7 @@ def resolve_gender_groups_in_texts(items: List[dict], language: str) -> dict:
             target_morph = _GENDER_TO_MORPH[target_gender]
             if tok.morph.get("Gender")[0] == target_morph:
                 continue
-            new_word = _inflect_gender_word(tok.text, target_gender)
+            new_word = _inflect_gender_word(tok.text, target_gender, language)
             if new_word != tok.text:
                 replacements.append((tok.idx, tok.idx + len(tok.text), new_word))
         results[item["id"]] = _apply_span_replacements(text, replacements)
