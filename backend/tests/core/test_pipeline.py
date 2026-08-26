@@ -1852,7 +1852,7 @@ async def test_pipeline_merges_sentence_split_across_target_cues_with_korean_srt
     합쳐져야 한다 — 예전(단어 단위)엔 한국어 문장이 중간에서 잘렸다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(
-        "1\n00:00:00,000 --> 00:00:01,000\nEs todo tu culpa.\n\n"
+        "1\n00:00:00,000 --> 00:00:01,000\nEsto es normal.\n\n"
         "2\n00:00:01,000 --> 00:00:02,000\n¿Lo sabías?\n",
         encoding="utf-8",
     )
@@ -1885,7 +1885,16 @@ async def test_pipeline_merges_sentence_split_across_target_cues_with_korean_srt
     # MockProvider가 격식 자동판정 결과를 "[informal] " 접두어로 표시한다
     # (한국어 "때문이야"가 반말 어미라 자동 확정됨) — 큐 기반 정렬로 두 스페인어
     # 큐가 하나로 합쳐졌는지가 이 테스트의 핵심이라, 접두어는 그대로 반영한다.
-    assert korean_pairs[0].target.text == "[informal] Es todo tu culpa. ¿Lo sabías?"
+    # 문장 자체는 성별 후보(형용사/분사/술어 명사)가 하나도 없는 걸로
+    # 고른다 — MockProvider.resolve_gender_from_context는 후보가 있으면
+    # 항상 사람에게 확인받는 것으로 처리해서(design 참고), 이 테스트의
+    # 관심사(큐 병합)와 무관하게 파이프라인이 S2 전에 멈춰버린다. 그렇다고
+    # 격식 확인(formality_check_needed)까지 죽이면 안 된다 — 이게 False가
+    # 되면 이 pair가 flagged_pairs에서 아예 빠져서 resolved_formality가
+    # segment_resolutions에 실리지 않고 "[informal]" 접두어 자체가 안
+    # 붙는다. "normal"은 성별 무관 형용사(무형태소)라 후보는 안 되면서도
+    # "es"가 활용된 동사라 격식 확인은 그대로 필요하다고 판단된다.
+    assert korean_pairs[0].target.text == "[informal] Esto es normal. ¿Lo sabías?"
 
 
 @pytest.mark.asyncio

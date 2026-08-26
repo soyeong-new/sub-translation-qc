@@ -152,15 +152,24 @@ def _is_gendered_token(tok) -> bool:
     대시("-No", "-Lim Ho-young"처럼 화자 구분용)가 다음 단어에 그대로
     붙어 spaCy가 통째로 하나의 (잘못된) 형용사로 오태깅하는 사례가
     반복 관찰됐다(design §2026-08 성별판정 정확도 개선) — 이건 문법
-    형태소 자체가 실재하지 않는 파싱 아티팩트라 "사람 얘기인지 판단"
-    이전 단계에서 걸러도 안전하다."""
+    형태소 자체가 실재하지 않는 파싱 아티팩트라 "사람 얘기인가 판단"
+    이전 단계에서 걸러도 안전하다.
+
+    술어 명사("Él es actor.")도 후보다 — 계사(cop) 의존관계로 문장의
+    술어인지("그건 책이다"도 문법적으로 동일 구조라 같이 잡힘) 판단하고,
+    그중 사람 얘기인지는 형용사 때와 마찬가지로 여기서 안 가리고 LLM에게
+    넘긴다. 목적어로 쓰인 명사("책을 읽는다"의 "책")는 cop 자식이 없어
+    자동으로 제외된다. 영어는 명사에 Gender 형태소가 없고 계사 구조도
+    cop이 아니라 attr 라벨이라 이 조건에 안 걸린다(design 논의)."""
     if tok.text.startswith("-"):
         return False
     if not tok.morph.get("Gender"):
         return False
     if tok.pos_ == "ADJ":
         return True
-    return tok.pos_ == "VERB" and tok.morph.get("VerbForm") == ["Part"]
+    if tok.pos_ == "VERB" and tok.morph.get("VerbForm") == ["Part"]:
+        return True
+    return tok.pos_ == "NOUN" and any(child.dep_ == "cop" for child in tok.children)
 
 
 def _candidate_tokens(doc) -> list:

@@ -430,10 +430,56 @@ def test_resolve_gender_in_texts_flips_mismatched_ending_for_french():
     """resolve_gender_in_texts는 성별이 확정된 형용사/분사 어미만 고친다 —
     인칭대명사(Il/Elle) 자체를 바꾸는 건 이 함수의 책임이 아니다.
 
-    acteur/chanteur 같은 직업 명사가 아니라 heureux(형용사)로 검증한다 —
-    fr_core_news_lg는 "Il est acteur."의 acteur를 (언어학적으로 맞게) NOUN으로
-    태깅하는데, _is_gendered_token은 ADJ/VERB+Part만 후보로 보므로 명사
-    술어는 지금 범위 밖이다(design 논의: 후보 탐지 확장은 별도 작업)."""
+    acteur 같은 직업 명사가 아니라 heureux(형용사)로 검증한다 — 이 함수는
+    _inflect_gender_word_fr(형용사 어미 규칙)만 검증하면 충분하고, 술어
+    명사 후보 탐지(NOUN+cop) 자체는 test_flags_gender_for_predicate_noun_*
+    테스트가 따로 검증한다."""
     result = resolve_gender_in_texts(
         [{"id": "p1", "text": "Il est heureux.", "gender": "female"}], "fr")
     assert result["p1"] == "Il est heureuse."
+
+
+# 술어 명사(predicate noun, "그는 배우다"류) 후보 탐지 — es/pt/fr 공통.
+# 계사(cop) 의존관계로 문장의 술어로 쓰인 명사인지 구분한다(design 논의:
+# "그건 책이다"처럼 사람이 아닌 술어 명사도 문법적으로는 똑같이 잡히고,
+# 사람인지 사물인지 판단은 지금처럼 LLM에게 넘긴다 — 형용사 쪽과 동일한
+# 설계).
+def test_flags_gender_for_predicate_noun_spanish():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Él es actor."}], PROFILE)
+    assert result[0]["gender_check_needed"] is True
+    assert result[0]["candidate_words"] == ["actor"]
+
+
+def test_flags_gender_for_predicate_noun_portuguese():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Ela é atriz."}],
+        {"language": "pt", "variant": "BR"})
+    assert result[0]["gender_check_needed"] is True
+    assert result[0]["candidate_words"] == ["atriz"]
+
+
+def test_flags_gender_for_predicate_noun_french():
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Il est acteur."}],
+        {"language": "fr", "variant": "FR"})
+    assert result[0]["gender_check_needed"] is True
+    assert result[0]["candidate_words"] == ["acteur"]
+
+
+def test_does_not_flag_gendered_noun_used_as_direct_object():
+    """술어(predicate)가 아니라 목적어로 쓰인 명사는 안 잡는다 — "그가 책을
+    읽는다"의 "책"은 cop 관계가 없어 술어가 아니다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Él lee el libro."}], PROFILE)
+    assert result[0]["gender_check_needed"] is False
+
+
+def test_does_not_flag_gender_for_english_predicate_noun():
+    """회귀: 영어는 명사에 문법적 Gender 형태소가 없고(actor/actress 둘 다
+    Gender 없음), 계사 구조도 cop이 아니라 attr 라벨을 쓴다 — 별도
+    예외처리 없이 범용 로직만으로 자연스럽게 제외된다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "She is an actress."}],
+        {"language": "en", "variant": "US", "formality_applicable": False})
+    assert result[0]["gender_check_needed"] is False
