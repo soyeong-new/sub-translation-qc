@@ -118,6 +118,35 @@ def test_flags_gender_for_portuguese_predicate_adjective():
     assert result[0]["candidate_words"] == ["bonita"]
 
 
+def test_does_not_flag_gender_for_english_adjective_without_gender_morph():
+    """영어 형용사는 spaCy에 성별 형태소가 없어(cansado/cansada 같은 게
+    없음) 성별 후보로 안 잡혀야 한다 — 별도 예외처리 없이 범용 로직만으로
+    자연스럽게 그렇게 된다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "She became beautiful."}],
+        {"language": "en", "variant": "US"})
+    assert result[0]["gender_check_needed"] is False
+
+
+def test_does_not_flag_formality_for_english_even_with_finite_verb():
+    """회귀: 영어는 tú/usted 같은 문법적 존댓말/반말 구분이 없다. profile에
+    formality_applicable: false가 없으면, "동사가 활용형으로 끝나는가"만
+    보는 기존 판단 로직이 거의 모든 영어 문장에 걸려 줄마다 격식 확인을
+    요구하는 잘못된 화면이 된다."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "Could you help me?"}],
+        {"language": "en", "variant": "US", "formality_applicable": False})
+    assert result[0]["formality_check_needed"] is False
+
+
+def test_flags_formality_by_default_when_profile_omits_formality_applicable():
+    """formality_applicable 필드가 아예 없는 기존 프로파일(es/pt)은 계속
+    기본값 True로 동작해야 한다 — 하위호환 회귀 방지."""
+    result = check_grammar_necessity(
+        [{"id": "p1", "target_text": "¿Puede venir aquí?"}], PROFILE)
+    assert result[0]["formality_check_needed"] is True
+
+
 def test_resolves_formality_as_formal_from_korean_honorific_ending():
     result = check_grammar_necessity(
         [{"id": "p1", "target_text": "¿Puede venir aquí?",

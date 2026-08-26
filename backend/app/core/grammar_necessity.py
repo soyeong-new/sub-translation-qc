@@ -30,6 +30,7 @@ from kiwipiepy import Kiwi
 LANGUAGE_TO_SPACY_MODEL = {
     "es": "es_core_news_sm",
     "pt": "pt_core_news_sm",
+    "en": "en_core_web_sm",
 }
 
 # 한국어 존댓말/성별 단서는 형태소 분석기(kiwipiepy)로 판단한다. 정규식으로
@@ -369,6 +370,12 @@ def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
     책임이 아니다."""
     language = profile.get("language")
     nlp = _resolve_model(language)
+    # 영어처럼 문법적으로 존댓말/반말 구분이 없는 언어는 profile에
+    # formality_applicable: false로 표시한다 — 없으면(기존 언어들) 기본
+    # True. 없다고 끄지 않으면, 격식 필요 판단이 "동사가 활용형으로
+    # 끝나는가"(VerbForm=Fin)만 보는데 영어는 거의 모든 문장이 여기 걸려서
+    # 줄마다 "존댓말/반말 확인해주세요"가 뜨는 잘못된 화면이 된다.
+    formality_applicable = profile.get("formality_applicable", True)
     texts = [_strip_html_tags(p.get("target_text", "")) for p in pairs]
     docs = nlp.pipe(texts)
     results = []
@@ -384,7 +391,7 @@ def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
         results.append({
             "id": p["id"],
             "gender_check_needed": bool(candidates),
-            "formality_check_needed": _formality_check_needed(doc),
+            "formality_check_needed": formality_applicable and _formality_check_needed(doc),
             "resolved_formality": _detect_korean_formality(p.get("korean_text", "")),
             "resolved_gender_from_korean": resolved_gender_from_korean,
             "candidate_words": candidate_words,
