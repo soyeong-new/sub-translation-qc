@@ -24,6 +24,17 @@ function isRequeryable(finding) {
   return Boolean(finding.model) && !NOT_REQUERYABLE_MODELS.includes(finding.model);
 }
 
+// backend build_srt(app/core/ingest.py)의 타임스탬프 포맷과 동일하게 맞춘다 —
+// 포맷 경고에 이 값을 보여주면 아래 SRT 미리보기에서 그대로 찾을(Cmd+F) 수 있다.
+function formatSrtTimestamp(seconds) {
+  const totalMs = Math.round(seconds * 1000);
+  const h = Math.floor(totalMs / 3600000);
+  const m = Math.floor((totalMs % 3600000) / 60000);
+  const s = Math.floor((totalMs % 60000) / 1000);
+  const ms = totalMs % 1000;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
 // 카테고리 라벨/색상: frontend/tailwind.config.js의 theme.extend.colors.finding.*
 // 6종 팔레트를 그대로 재사용한다. 새 색상을 만들지 않는다.
 const CATEGORY_LABELS = {
@@ -1195,7 +1206,13 @@ export default function ReviewView({ targetVersionId, onBack }) {
       const result = await exportTargetVersion(targetVersionId);
       const warnings = result.format_warnings ?? [];
       if (warnings.length > 0) {
-        const detail = warnings.map((w) => `- [${w.rule}] ${w.detail}`).join("\n");
+        const detail = warnings
+          .map((w) => {
+            const seg = segments?.find((s) => s.id === w.segment_id);
+            const where = seg ? ` (${formatSrtTimestamp(seg.start)})` : "";
+            return `- [${w.rule}]${where} ${w.detail}`;
+          })
+          .join("\n");
         const proceed = window.confirm(
           `포맷 경고 ${warnings.length}건이 있습니다:\n${detail}\n\n그래도 내보내시겠습니까?`
         );
@@ -1546,12 +1563,15 @@ export default function ReviewView({ targetVersionId, onBack }) {
                         포맷 경고 {formatWarnings.length}건 (내보내기는 차단되지 않음)
                       </p>
                       <ul className="ml-4 list-disc space-y-0.5 text-xs text-warning">
-                        {formatWarnings.map((w, i) => (
-                          <li key={`${w.segment_id}-${i}`}>
-                            [{w.rule}] {w.detail}
-                            {w.auto_fixed ? " (자동 수정됨)" : ""}
-                          </li>
-                        ))}
+                        {formatWarnings.map((w, i) => {
+                          const seg = segmentsById[w.segment_id];
+                          return (
+                            <li key={`${w.segment_id}-${i}`}>
+                              [{w.rule}]{seg ? ` (${formatSrtTimestamp(seg.start)})` : ""} {w.detail}
+                              {w.auto_fixed ? " (자동 수정됨)" : ""}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                   )}
