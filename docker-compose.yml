@@ -18,6 +18,14 @@ services:
     build: ./frontend
     ports:
       - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+      - BASIC_AUTH_USER=${BASIC_AUTH_USER}
+      - BASIC_AUTH_HASH=${BASIC_AUTH_HASH}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       - backend
 
@@ -27,8 +35,9 @@ services:
       POSTGRES_DB: sub_translation_qc
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
+    # 호스트에 5432를 노출하지 않는다 — backend는 Docker 내부 네트워크로
+    # postgres:5432에 그대로 접근 가능하고, 포트 매핑이 없으면 EC2
+    # 보안그룹 설정 실수로도 DB가 인터넷에 열릴 수 없다.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -40,3 +49,5 @@ services:
 volumes:
   postgres_data:
   backend_media:
+  caddy_data:
+  caddy_config:
