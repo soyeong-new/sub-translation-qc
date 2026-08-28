@@ -354,7 +354,7 @@ async def _run_grammar_necessity_check(
                         for group in groups:
                             name = group.get("character_name")
                             fact_gender = (
-                                known_gender_facts.get(name)
+                                known_gender_facts.get(name.strip().casefold())
                                 if known_gender_facts and name else None
                             )
                             group["suggested_gender"] = fact_gender

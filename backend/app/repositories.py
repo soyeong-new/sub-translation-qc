@@ -216,29 +216,38 @@ async def get_findings_for_segment(session: AsyncSession, segment_id: str) -> Li
     return list(rows.scalars().all())
 
 
+def _normalize_character_name(name: str) -> str:
+    """언어별로 독립적으로 도는 LLM이 같은 인물 이름을 대소문자만 다르게
+    뽑는 사례가 실측으로 확인됐다("Bo-Na" vs "Bo-na") — casefold해서 이런
+    차이로 재사용이 조용히 실패하지 않게 한다. 한글은 대소문자가 없어
+    casefold가 no-op이라 기존 동작에 영향 없다."""
+    return name.strip().casefold()
+
+
 async def get_character_gender_facts(session: AsyncSession, title_id: str) -> dict:
     """이 title(작품)에서 이미 확인된 캐릭터별 성별을 돌려준다
-    ({character_name: gender}). 다른 title의 기록은 절대 섞이지 않는다."""
+    ({character_name(casefold): gender}). 다른 title의 기록은 절대 섞이지
+    않는다. 키가 casefold되어 있으니 호출자도 조회 전 casefold해야 한다."""
     rows = (await session.execute(
         select(CharacterGenderFact).where(CharacterGenderFact.title_id == title_id)
     )).scalars().all()
-    return {r.character_name: r.gender for r in rows}
+    return {_normalize_character_name(r.character_name): r.gender for r in rows}
 
 
 async def upsert_character_gender_facts(session: AsyncSession, title_id: str, facts: dict) -> None:
-    """확정된 캐릭터별 성별을 title 단위로 upsert한다. 커밋은 호출자
-    책임(confirm_registers가 다른 변경사항과 함께 한 번에 커밋한다)."""
+    """확정된 캐릭터별 성별을 title 단위로 upsert한다. 이름은 대소문자
+    무시하고 매칭한다(_normalize_character_name) — 안 그러면 다른 언어
+    실행이 이름을 조금 다르게 뽑을 때마다 같은 인물의 기록이 여러 row로
+    흩어진다. 커밋은 호출자 책임(confirm_registers가 다른 변경사항과
+    함께 한 번에 커밋한다)."""
     if not facts:
         return
     existing = (await session.execute(
-        select(CharacterGenderFact).where(
-            CharacterGenderFact.title_id == title_id,
-            CharacterGenderFact.character_name.in_(facts.keys()),
-        )
+        select(CharacterGenderFact).where(CharacterGenderFact.title_id == title_id)
     )).scalars().all()
-    existing_by_name = {r.character_name: r for r in existing}
+    existing_by_name = {_normalize_character_name(r.character_name): r for r in existing}
     for name, gender in facts.items():
-        row = existing_by_name.get(name)
+        row = existing_by_name.get(_normalize_character_name(name))
         if row is not None:
             row.gender = gender
         else:

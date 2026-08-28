@@ -549,6 +549,45 @@ async def test_upsert_character_gender_facts_overwrites_existing_value():
 
 
 @pytest.mark.asyncio
+async def test_get_character_gender_facts_lookup_is_case_insensitive():
+    """회귀(design 논의): 언어마다 독립적으로 도는 LLM이 같은 인물 이름을
+    대소문자만 다르게 뽑는 사례가 실측으로 확인됐다("Bo-Na" vs "Bo-na") —
+    조회 키를 casefold해서 대소문자 차이로 재사용이 조용히 실패하지 않게
+    한다."""
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        await upsert_character_gender_facts(session, title.id, {"Bo-Na": "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title.id)
+        assert facts.get("bo-na") == "female"
+
+
+@pytest.mark.asyncio
+async def test_upsert_character_gender_facts_matches_existing_name_case_insensitively():
+    """회귀: 다른 언어 실행이 이름을 대소문자만 다르게 뽑아도 새 row를
+    또 만들지 않고 기존 값을 갱신해야 한다 — 안 그러면 같은 인물의 기록이
+    여러 개로 흩어진다."""
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        await upsert_character_gender_facts(session, title.id, {"Bo-Na": "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        await upsert_character_gender_facts(session, title.id, {"bo-na": "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title.id)
+        assert len(facts) == 1
+
+
+@pytest.mark.asyncio
 async def test_get_character_gender_facts_scoped_to_title():
     async with async_session() as session:
         title_a = Title(name="Drama A", type="series", created_at=datetime.now())
