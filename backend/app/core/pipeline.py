@@ -23,7 +23,7 @@ from app.knowledge.loader import (
 from app.core.pretreatment import run_pretreatment
 from app.core.grammar_necessity import (
     check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
-    _strip_html_tags,
+    _strip_html_tags, _detect_korean_gender,
 )
 from app.schemas import SegmentText, AlignedPair, Finding
 
@@ -339,6 +339,18 @@ async def _run_grammar_necessity_check(
                         continue
                     for group in llm_groups_by_id.get(item["id"], []):
                         group["gender"] = None
+                # 위에서 gender를 지웠어도(또는 LLM이 애초에 null로 남겼어도),
+                # referent 서술 자체에 이미 성별을 알 수 있는 한국어 지칭어가
+                # 담긴 사례가 실측으로 확인됐다("아빠", "특정 여성 인물" 등) —
+                # LLM이 referent와 gender 필드를 항상 일관되게 연결하지는
+                # 않는다는 뜻이다. LLM의 "gender" 주장을 다시 믿는 게 아니라,
+                # 이미 신뢰하는 한국어 호칭 사전(_detect_korean_gender, 대사
+                # 문장 판정과 동일한 기준)으로 referent를 독립적으로 재검증
+                # 하는 것이라 위 안전장치와 상충하지 않는다.
+                for groups in llm_groups_by_id.values():
+                    for group in groups:
+                        if group["gender"] is None and group["referent"]:
+                            group["gender"] = _detect_korean_gender(group["referent"])
                 gender_groups_by_id.update(llm_groups_by_id)
 
                 # 이 title에서 이미 확인된 캐릭터 이름이면 gender를 바로

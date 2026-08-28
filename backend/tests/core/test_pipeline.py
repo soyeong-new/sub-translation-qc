@@ -1604,6 +1604,39 @@ async def test_run_grammar_necessity_check_auto_resolves_when_llm_gives_confiden
 
 
 @pytest.mark.asyncio
+async def test_run_grammar_necessity_check_auto_resolves_when_referent_names_a_gendered_term(monkeypatch):
+    """회귀(design 논의): LLM이 gender는 null로 남겼지만 referent 자체에
+    이미 성별을 알 수 있는 한국어 지칭어("아빠", "여성" 등)가 담긴 사례가
+    실측으로 45건 확인됐다 — LLM이 referent 서술과 gender 필드를 항상
+    일관되게 연결하지는 않는다. referent를 한국어 호칭 사전
+    (_detect_korean_gender)으로 한 번 더 검사해서, gender가 null이어도
+    referent가 명확하면 사람에게 다시 묻지 않는다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class ReferentOnlyProvider(MockProvider):
+        async def resolve_gender_from_context(self, items, profile):
+            return [
+                {"id": item["id"], "words": [
+                    {"index": 0, "is_person": True, "group_id": 0,
+                     "gender": None, "referent": "아빠"},
+                ]}
+                for item in items
+            ]
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="그 사람이 피곤해해."),
+        target=SegmentText(start=0.0, end=1.0, text="Está cansado."),
+    )]
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, ReferentOnlyProvider(), "tv1")
+    assert warnings == []
+    groups = resolutions[0]["resolved_gender_groups"]
+    assert groups[0]["gender"] == "male"
+
+
+@pytest.mark.asyncio
 async def test_run_grammar_necessity_check_carries_character_name_into_group():
     """LLM이 인물의 고유 이름을 판단해 돌려주면, 그 이름이 세그먼트별
     그룹(resolved_gender_groups)에 그대로 실려야 한다 — 다음 회차/언어판
