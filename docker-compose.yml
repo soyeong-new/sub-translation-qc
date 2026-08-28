@@ -1,8 +1,12 @@
 services:
   backend:
     build: ./backend
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      # 127.0.0.1 바인딩 — 0.0.0.0으로 열면 Caddy의 Basic Auth를 완전히
+      # 우회해 인터넷에서 인증 없이 /titles, /docs에 접근할 수 있게 된다.
+      # 로컬 curl과 vite dev 프록시(localhost:8000)는 그대로 동작한다.
+      - "127.0.0.1:8000:8000"
     env_file: ./backend/.env
     environment:
       # asyncpg 드라이버 — app/db.py의 create_async_engine이 요구한다(plain
@@ -16,6 +20,7 @@ services:
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
@@ -31,6 +36,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: sub_translation_qc
       POSTGRES_USER: postgres

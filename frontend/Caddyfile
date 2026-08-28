@@ -1,7 +1,7 @@
 # {$DOMAIN}/{$BASIC_AUTH_USER}/{$BASIC_AUTH_HASH}는 docker-compose.yml의
 # frontend 서비스 environment로 주입된다 — Caddy는 Caddyfile 안에서
 # {$VAR} 문법으로 환경변수를 그대로 읽는다(별도 템플릿 엔진 불필요).
-{$DOMAIN} {
+{$DOMAIN:localhost} {
 	basic_auth {
 		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
 	}

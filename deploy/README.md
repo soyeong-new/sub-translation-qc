@@ -84,6 +84,7 @@ git push origin main
 cd sub_translation_qc
 git pull
 docker compose up -d --build
+docker image prune -f   # 재빌드할 때마다 이전 이미지가 dangling으로 쌓인다
 ```
 
 ## 알려진 제약 (지금은 손 안 댐)
@@ -92,3 +93,4 @@ docker compose up -d --build
 - 인증서 갱신 실패 알림 없음 — `docker compose logs frontend`로만 확인 가능
 - 미디어(영상) 저장 공간이 EBS 기본 30GB를 넘으면 AWS 콘솔에서 볼륨
   확장 필요 — 지금은 모니터링만 (`df -h`)
+- 이미지 누적도 디스크를 잠식할 수 있음 — `docker image prune -f`로 관리
