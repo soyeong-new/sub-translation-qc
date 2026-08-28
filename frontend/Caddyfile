@@ -1,0 +1,27 @@
+# {$DOMAIN}/{$BASIC_AUTH_USER}/{$BASIC_AUTH_HASH}는 docker-compose.yml의
+# frontend 서비스 environment로 주입된다 — Caddy는 Caddyfile 안에서
+# {$VAR} 문법으로 환경변수를 그대로 읽는다(별도 템플릿 엔진 불필요).
+{$DOMAIN} {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	# 기존 nginx.conf의 "location /api/ { proxy_pass http://backend:8000/; }"와
+	# 동일하게 /api 접두어를 떼고 나머지 경로만 백엔드로 넘긴다.
+	handle_path /api/* {
+		reverse_proxy backend:8000
+	}
+
+	# /media는 접두어를 유지한 채 그대로 넘긴다 — 백엔드가
+	# /media/video_proxy에 StaticFiles를 마운트해 같은 경로로 서빙한다
+	# (app/main.py).
+	handle /media/* {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /usr/share/nginx/html
+		try_files {path} /index.html
+		file_server
+	}
+}
