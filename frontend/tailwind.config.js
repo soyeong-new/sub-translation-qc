@@ -110,6 +110,15 @@ export default {
           "monospace",
         ],
       },
+      keyframes: {
+        "qq-shine": {
+          "0%": { transform: "translateX(-60%)" },
+          "100%": { transform: "translateX(160%)" },
+        },
+      },
+      animation: {
+        "qq-shine": "qq-shine 4s ease-in-out infinite",
+      },
     },
   },
   plugins: [],

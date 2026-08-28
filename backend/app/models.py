@@ -67,6 +67,10 @@ class TargetVersion(Base):
     # segment.start - video_offset_seconds로 영상 파일 자체의 시계로
     # 변환해야 한다. 오프셋이 없었으면(또는 아직 계산 전이면) None.
     video_offset_seconds: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    # Title과 동일한 소프트 삭제 패턴 — 언어 하나만 지울 때 이 값만 세팅한다.
+    # episode.video_path/video_proxy_path는 같은 episode의 다른 언어판과
+    # 공유되므로 여기서는 건드리지 않는다(title을 통째로 지울 때만 지운다).
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
 
 class Segment(Base):

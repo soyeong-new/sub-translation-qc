@@ -8,6 +8,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
+// 자막 타이밍이 실제 발화와 살짝 안 맞거나 씬이 잘리는 경우가 있어,
+// 재생 구간 앞뒤로 여유를 준다. 뒤쪽이 실제로 더 많이 어긋나는 경우가
+// 있어 앞뒤를 다르게 둔다.
+export const PREVIEW_PAD_START_SECONDS = 0;
+export const PREVIEW_PAD_END_SECONDS = 0.5;
+
 const btnBase =
   "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium " +
   "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
@@ -162,8 +168,8 @@ export default function FlaggedSegmentStepper({
     // 영상 파일 시계가 어긋나 있으면(detect_global_offset이 감지),
     // videoOffsetSeconds를 빼서 영상 파일 자체의 시계로 변환해야 실제
     // 그 대사가 나오는 장면으로 seek된다. 오프셋이 없으면(0) 그대로다.
-    const seekStart = currentSegment.start - videoOffsetSeconds;
-    const seekEnd = currentSegment.end - videoOffsetSeconds;
+    const seekStart = Math.max(0, currentSegment.start - videoOffsetSeconds - PREVIEW_PAD_START_SECONDS);
+    const seekEnd = currentSegment.end - videoOffsetSeconds + PREVIEW_PAD_END_SECONDS;
     // 구간 끝에 도달하면 멈춘다. 회귀(사용자 재현): 예전엔 "한 번만 멈춘다"는
     // 플래그(pausedAtEnd)로 이 재정지를 막았는데, 그 결과 검수자가 자동정지
     // 후 재생 버튼을 다시 누르면 그 플래그가 계속 true로 남아 있어 구간
@@ -203,7 +209,7 @@ export default function FlaggedSegmentStepper({
   function replayCurrentSegment() {
     const video = videoRef.current;
     if (!video || !currentSegment) return;
-    video.currentTime = currentSegment.start - videoOffsetSeconds;
+    video.currentTime = Math.max(0, currentSegment.start - videoOffsetSeconds - PREVIEW_PAD_START_SECONDS);
     video.play().catch(() => {});
   }
 

@@ -474,6 +474,56 @@ async def test_confirm_registers_does_not_save_auto_resolved_unconfirmed_gender(
 
 
 @pytest.mark.asyncio
+async def test_delete_target_version_soft_deletes_without_touching_video(tmp_path):
+    """언어 하나만 삭제하는 건 title 삭제와 달리 소프트 삭제만 한다 —
+    video_proxy_path가 같은 episode의 다른 언어판과 공유될 수 있어서 파일은
+    지우지 않고, Segment/Finding 이력도 title 삭제와 동일하게 남긴다."""
+    from app.models import FindingRow
+
+    async with async_session() as session:
+        title = Title(name="T", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="review", video_proxy_path=str(tmp_path / "proxy.mp4"))
+        session.add(tv)
+        await session.flush()
+        seg = Segment(id="seg1", target_version_id=tv.id, index=0, start=0.0, end=1.0)
+        session.add(seg)
+        await session.flush()
+        session.add(FindingRow(
+            id="f1", target_version_id=tv.id, segment_id="seg1", category="mistranslation",
+            description="d", original_text="a", suggested_text="b", confidence=1.0))
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete(f"/target-versions/{tv_id}")
+        assert r.status_code == 200
+
+        title_res = await client.get("/titles")
+        title_json = next(t for t in title_res.json() if t["id"] == title.id)
+        assert title_json["episodes"][0]["target_versions"] == []
+
+        second = await client.delete(f"/target-versions/{tv_id}")
+        assert second.status_code == 404
+
+    async with async_session() as session:
+        tv_row = await session.get(TargetVersion, tv_id)
+        assert tv_row is not None and tv_row.deleted_at is not None
+        assert await session.get(Segment, "seg1") is not None
+        assert await session.get(FindingRow, "f1") is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_target_version_returns_404_for_missing():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.delete("/target-versions/does-not-exist")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_get_target_version_includes_title_id(monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")

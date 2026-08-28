@@ -1,6 +1,7 @@
 """대상언어 버전(TargetVersion) 생성/조회 및 분석 실행 엔드포인트."""
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
@@ -36,6 +37,21 @@ async def create_target_version(episode_id: str, payload: TargetVersionIn):
         session.add(tv)
         await session.commit()
         return {"id": tv.id, "status": tv.status}
+
+
+@router.delete("/target-versions/{target_version_id}")
+async def delete_target_version(target_version_id: str):
+    """언어 하나만 지운다(title 소프트 삭제와 동일 패턴) — Segment/Finding 등
+    교정 이력은 남기고, 영상 파일도 지우지 않는다(같은 episode의 다른
+    언어판과 공유되므로 title을 통째로 지울 때만 지운다: titles.py
+    delete_title)."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None or tv.deleted_at is not None:
+            raise HTTPException(404, "target version not found")
+        tv.deleted_at = datetime.now(timezone.utc)
+        await session.commit()
+    return {"deleted": True}
 
 
 @router.get("/target-versions/{target_version_id}")

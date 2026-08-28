@@ -15,7 +15,7 @@ import {
   resolveGenderGroup,
   excludeSegment,
 } from "../api.js";
-import { GenderQuestion, isGenderResolved } from "./FlaggedSegmentStepper.jsx";
+import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 
 // 재질문은 GPT만 가능하다 (backend/app/core/requery.py의 requery_finding 참고).
 // Claude finding은 재질문 불가능.
@@ -964,8 +964,8 @@ export default function ReviewView({ targetVersionId, onBack }) {
   useEffect(() => {
     const video = previewVideoRef.current;
     if (!video || !previewSegment) return undefined;
-    const seekStart = previewSegment.start - videoOffsetSeconds;
-    const seekEnd = previewSegment.end - videoOffsetSeconds;
+    const seekStart = Math.max(0, previewSegment.start - videoOffsetSeconds - PREVIEW_PAD_START_SECONDS);
+    const seekEnd = previewSegment.end - videoOffsetSeconds + PREVIEW_PAD_END_SECONDS;
     // 구간 끝에 도달하면 멈춘다. 회귀(사용자 재현): 예전엔 "한 번만 멈춘다"는
     // 플래그(pausedAtEnd)로 이 재정지를 막았는데, 그 결과 검수자가 자동정지
     // 후 재생 버튼을 다시 누르면 그 플래그가 계속 true로 남아 있어 구간

@@ -138,6 +138,9 @@ export const rerunAnalysis = (targetVersionId) =>
 export const deleteTitle = (titleId) =>
   request(`/titles/${titleId}`, { method: "DELETE" });
 
+export const deleteTargetVersion = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}`, { method: "DELETE" });
+
 // 분석(S1) 또는 재검증(S2)이 끝날 때까지 target_version 상태를 폴링한다.
 // "review"/"awaiting_confirmation"에서 멈추고(호출자가 그 status를 보고
 // 어느 화면으로 갈지 정함), "failed"면 에러로 reject한다. isMounted를

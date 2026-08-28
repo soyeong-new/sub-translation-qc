@@ -95,7 +95,9 @@ async def list_titles():
         episodes = (await session.execute(
             select(Episode).order_by(Episode.episode_no)
         )).scalars().all()
-        target_versions = (await session.execute(select(TargetVersion))).scalars().all()
+        target_versions = (await session.execute(
+            select(TargetVersion).where(TargetVersion.deleted_at.is_(None))
+        )).scalars().all()
         reviewer_rows = (await session.execute(
             select(FindingRow.target_version_id, FindingRow.reviewer_name)
             .where(FindingRow.reviewer_name != "")

@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  listTitles, deleteTitle, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
+  listTitles, deleteTitle, deleteTargetVersion, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
   listLanguageProfiles, uploadSrt, uploadSrtKo, uploadVideo, createEpisode,
   createTargetVersion, runAnalysis, updateTitleType,
 } from "../api.js";
@@ -26,6 +26,19 @@ function profileKey(p) {
 
 function formatGB(bytes) {
   return (bytes / 1024 ** 3).toFixed(1);
+}
+
+// 펼쳐놓은 title 카드 id들 — 새로고침해도 유지되도록 App.jsx의 qc_screen과
+// 같은 패턴으로 localStorage에 저장한다.
+const EXPANDED_STORAGE_KEY = "qc_archive_expanded";
+
+function loadExpandedIds() {
+  try {
+    const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
 }
 
 const STATUS_LABELS = {
@@ -307,6 +320,18 @@ export default function TitleArchiveList({ onOpen }) {
   const [addLanguageProgress, setAddLanguageProgress] = useState(null);
   const [addLanguageStatus, setAddLanguageStatus] = useState(null);
 
+  const [expandedIds, setExpandedIds] = useState(loadExpandedIds);
+
+  function toggleExpanded(titleId, isOpen) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (isOpen) next.add(titleId);
+      else next.delete(titleId);
+      localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }
+
   const isMountedRef = useRef(true);
   useEffect(() => {
     isMountedRef.current = true;
@@ -410,6 +435,20 @@ export default function TitleArchiveList({ onOpen }) {
     }
   }
 
+  async function handleDeleteVersion(tv) {
+    if (!window.confirm(`"${tv.display_name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`)) return;
+    setBusyId(tv.id);
+    setError(null);
+    try {
+      await deleteTargetVersion(tv.id);
+      refresh();
+    } catch (err) {
+      setError(err.message ?? "삭제 중 오류가 발생했습니다.");
+    } finally {
+      if (isMountedRef.current) setBusyId(null);
+    }
+  }
+
   function openAddLanguage(episodeId) {
     setAddLanguageEpisodeId(episodeId);
     setAddLanguageProfile(null);
@@ -459,26 +498,26 @@ export default function TitleArchiveList({ onOpen }) {
   if (titles === null || titles.length === 0) return null;
 
   return (
-    <div className="flex min-w-0 max-w-2xl flex-1 flex-col gap-4">
-      {storage && (
-        <div className="rounded-2xl border border-border/50 bg-muted/30 p-5 backdrop-blur-md">
-          <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-            <span>Storage</span>
-            <span>
-              {formatGB(storage.used)}GB / {formatGB(storage.total)}GB 사용 중
-            </span>
-          </div>
-          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-            <div
-              className={`h-full rounded-full ${
-                storage.used / storage.total > 0.9 ? "bg-destructive" : "bg-primary"
-              }`}
-              style={{ width: `${Math.min(100, (storage.used / storage.total) * 100)}%` }}
-            />
-          </div>
-        </div>
-      )}
+    <div className="flex min-w-0 w-[calc(50%-1rem)] max-w-2xl flex-col gap-4">
       <div className="rounded-2xl border border-border/50 bg-muted/30 p-6 backdrop-blur-md">
+        {storage && (
+          <div className="mb-4 border-b border-border/40 pb-4">
+            <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+              <span>Storage</span>
+              <span>
+                {formatGB(storage.used)}GB / {formatGB(storage.total)}GB 사용 중
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={`h-full rounded-full ${
+                  storage.used / storage.total > 0.9 ? "bg-destructive" : "bg-primary"
+                }`}
+                style={{ width: `${Math.min(100, (storage.used / storage.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-2xl font-semibold text-foreground">Archive</h2>
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
@@ -509,14 +548,37 @@ export default function TitleArchiveList({ onOpen }) {
           <p role="status" aria-live="polite" className="mb-2 text-sm text-destructive">{error}</p>
         )}
         <ul className="space-y-4">
-        {(filterType === "all" ? titles : titles.filter((t) => t.type === filterType)).map((title) => (
+        {(filterType === "all" ? titles : titles.filter((t) => t.type === filterType)).map((title) => {
+          const titleReviewers = [...new Set(
+            title.episodes.flatMap((ep) => ep.target_versions.flatMap((tv) => tv.reviewers)),
+          )];
+          return (
           <li
             key={title.id}
             className="rounded-2xl border border-border/50 bg-card/70 p-5 shadow-sm backdrop-blur-sm transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-0.5 hover:shadow-md"
           >
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-foreground">{title.name}</span>
+            <details
+              className="group"
+              open={expandedIds.has(title.id)}
+              onToggle={(e) => toggleExpanded(title.id, e.target.open)}
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
+                <div className="flex min-w-0 items-center gap-2">
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90"
+                  >
+                    <path d="M7 5l6 5-6 5V5z" />
+                  </svg>
+                  <span className="truncate text-sm font-medium text-foreground">{title.name}</span>
+                </div>
+                {titleReviewers.length > 0 && (
+                  <span className="shrink-0 text-xs text-muted-foreground">{titleReviewers.join(", ")}</span>
+                )}
+              </summary>
+              <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-3">
                 <select
                   aria-label="유형"
                   value={title.type}
@@ -527,17 +589,16 @@ export default function TitleArchiveList({ onOpen }) {
                   <option value="movie">영화</option>
                   <option value="series">드라마</option>
                 </select>
+                <button
+                  disabled={busyId === title.id}
+                  onClick={() => handleDelete(title)}
+                  aria-label="삭제"
+                  className={deleteBtnClass}
+                >
+                  ×
+                </button>
               </div>
-              <button
-                disabled={busyId === title.id}
-                onClick={() => handleDelete(title)}
-                aria-label="삭제"
-                className={deleteBtnClass}
-              >
-                ×
-              </button>
-            </div>
-            {title.episodes.map((ep) => {
+              {title.episodes.map((ep) => {
               const usedKeys = new Set(ep.target_versions.map((tv) => `${tv.target_language}_${tv.variant}`));
               const availableProfiles = languageProfiles.filter((p) => !usedKeys.has(profileKey(p)));
               return (
@@ -572,6 +633,14 @@ export default function TitleArchiveList({ onOpen }) {
                         </button>
                         <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
                           재분석
+                        </button>
+                        <button
+                          disabled={busyId === tv.id}
+                          onClick={() => handleDeleteVersion(tv)}
+                          aria-label="언어 삭제"
+                          className={deleteBtnClass}
+                        >
+                          ×
                         </button>
                       </li>
                     ))}
@@ -618,8 +687,10 @@ export default function TitleArchiveList({ onOpen }) {
                 + 회차 추가
               </button>
             ))}
+            </details>
           </li>
-        ))}
+          );
+        })}
         </ul>
       </div>
     </div>

@@ -6,6 +6,7 @@ import {
   listLanguageProfiles, uploadSrtKo, pollTargetVersionStatus,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
+import QQLogo from "../components/QQLogo.jsx";
 import TitleArchiveList from "./TitleArchiveList.jsx";
 
 const STATUS_STYLES = {
@@ -173,8 +174,12 @@ export default function TitleListView({ onSelect }) {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-6xl items-stretch gap-8 bg-background px-4 py-12">
-      <div className="min-w-0 max-w-2xl flex-1 rounded-2xl border border-border/50 bg-card/80 p-8 shadow-sm backdrop-blur-md">
+    <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 bg-background px-4 py-12">
+      <header className="flex items-center justify-center">
+        <QQLogo className="h-20 w-auto" />
+      </header>
+      <div className="flex flex-1 items-stretch justify-center gap-8">
+      <div className="min-w-0 w-[calc(50%-1rem)] max-w-2xl rounded-2xl border border-border/50 bg-card/80 p-8 shadow-sm backdrop-blur-md">
         <div className="mb-6">
           <h1 className="text-2xl font-semibold text-card-foreground">New Title</h1>
         </div>
@@ -302,6 +307,7 @@ export default function TitleListView({ onSelect }) {
       </div>
 
       <TitleArchiveList onOpen={onSelect} />
+      </div>
     </div>
   );
 }
