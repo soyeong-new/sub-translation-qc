@@ -40,10 +40,17 @@ async def save_upload(
     (FastAPI UploadFile.read와 동일한 시그니처). 메모리에 전체를 올리지 않고
     청크 단위로 디스크에 스트리밍해 수백 MB~수 GB 영상 파일도 안전하게 저장한다."""
     dest = build_upload_destination(kind, filename, allowed_extensions)
-    with open(dest, "wb") as out:
-        while True:
-            chunk = await read_chunk(_CHUNK_SIZE)
-            if not chunk:
-                break
-            out.write(chunk)
+    try:
+        with open(dest, "wb") as out:
+            while True:
+                chunk = await read_chunk(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                out.write(chunk)
+    except Exception:
+        # 실측(프로덕션): 디스크가 꽉 차 쓰기 도중 실패하면 쓰다 만 파일이
+        # 그대로 남아, 다음 시도 때 오히려 공간을 더 까먹었다. 실패 시
+        # 부분 파일을 지워야 재시도할 여유 공간이 확보된다.
+        Path(dest).unlink(missing_ok=True)
+        raise
     return str(dest)
