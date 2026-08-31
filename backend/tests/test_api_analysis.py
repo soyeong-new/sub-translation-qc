@@ -474,6 +474,61 @@ async def test_confirm_registers_does_not_save_auto_resolved_unconfirmed_gender(
 
 
 @pytest.mark.asyncio
+async def test_confirm_registers_skips_character_gender_when_answers_conflict(monkeypatch):
+    """같은 캐릭터 이름이 이번 배치의 서로 다른 줄에서 다른 성별로 확인되면
+    (다인물이 섞인 줄의 referent에 그 캐릭터 이름이 잘못 붙는 등 실측 사고,
+    2026-08-31) 어느 쪽이 맞는지 판단할 수 없으므로 title 단위 fact를 아예
+    저장하지 않아야 한다 — 틀린 값이 다른 회차/언어판까지 자동 전파되는
+    사고를 막기 위해서다."""
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+
+    async with async_session() as session:
+        title = Title(name="Test Drama 3", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="awaiting_confirmation"); session.add(tv)
+        await session.flush()
+        seg_male = Segment(
+            target_version_id=tv.id, index=0, start=0.0, end=1.0,
+            korean_text="화자와 성경, 함께 사는 두 사람", target_text="Viven juntos.",
+            gender_check_needed=True,
+            resolved_gender_groups_raw=[{
+                "group_index": 0, "referent": "화자와 성경, 함께 사는 두 사람",
+                "character_name": "성경", "words": ["Viven"],
+                "target_word_lemmas": ["vivir"], "candidate_indices": [0],
+                "gender": "male", "suggested_gender": None, "human_confirmed": True,
+            }],
+        )
+        seg_female = Segment(
+            target_version_id=tv.id, index=1, start=1.0, end=2.0,
+            korean_text="성경이 왔어.", target_text="Llegó Seong-gyeong.",
+            gender_check_needed=True,
+            resolved_gender_groups_raw=[{
+                "group_index": 0, "referent": "특정 인물의 이름",
+                "character_name": "성경", "words": ["Seong-gyeong"],
+                "target_word_lemmas": ["seong-gyeong"], "candidate_indices": [0],
+                "gender": "female", "suggested_gender": None, "human_confirmed": True,
+            }],
+        )
+        session.add_all([seg_male, seg_female])
+        await session.commit()
+        tv_id, title_id = tv.id, title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/target-versions/{tv_id}/confirm-registers")
+        assert r.status_code == 200
+        if app.state.background_tasks:
+            await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title_id)
+        assert facts == {}
+
+
+@pytest.mark.asyncio
 async def test_delete_target_version_soft_deletes_without_touching_video(tmp_path):
     """언어 하나만 삭제하는 건 title 삭제와 달리 소프트 삭제만 한다 —
     video_proxy_path가 같은 episode의 다른 언어판과 공유될 수 있어서 파일은

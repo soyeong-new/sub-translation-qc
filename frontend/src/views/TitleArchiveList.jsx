@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   listTitles, deleteTitle, deleteTargetVersion, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
   listLanguageProfiles, uploadSrt, uploadSrtKo, uploadVideo, createEpisode,
-  createTargetVersion, runAnalysis, updateTitleType,
+  createTargetVersion, runAnalysis, updateTitleType, updateCharacterGender,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -421,6 +421,23 @@ export default function TitleArchiveList({ onOpen }) {
     }
   }
 
+  // 확인 화면에서 잘못 체크된 캐릭터 성별을 여기서 바로 고친다(design
+  // 2026-08-31) — 다인물이 섞인 줄의 referent에 이름이 잘못 붙는 등으로
+  // title 단위 fact가 틀리게 저장되는 사고가 실측으로 확인됐다.
+  async function handleChangeCharacterGender(fact, newGender) {
+    if (newGender === fact.gender) return;
+    setBusyId(fact.id);
+    setError(null);
+    try {
+      await updateCharacterGender(fact.id, newGender);
+      refresh();
+    } catch (err) {
+      setError(err.message ?? "캐릭터 성별 변경 중 오류가 발생했습니다.");
+    } finally {
+      if (isMountedRef.current) setBusyId(null);
+    }
+  }
+
   function handleDelete(title) {
     setConfirmState({
       message: `"${title.name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`,
@@ -613,6 +630,28 @@ export default function TitleArchiveList({ onOpen }) {
                   ×
                 </button>
               </div>
+              {title.character_genders?.length > 0 && (
+                <div className="mt-3 border-t border-border/40 pt-3">
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">캐릭터 성별</div>
+                  <ul className="space-y-1">
+                    {title.character_genders.map((fact) => (
+                      <li key={fact.id} className="flex items-center gap-2 text-xs">
+                        <span className="text-foreground">{fact.character_name}</span>
+                        <select
+                          aria-label={`${fact.character_name} 성별`}
+                          value={fact.gender}
+                          disabled={busyId === fact.id}
+                          onChange={(e) => handleChangeCharacterGender(fact, e.target.value)}
+                          className="rounded-lg border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <option value="male">남성</option>
+                          <option value="female">여성</option>
+                        </select>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {title.episodes.map((ep) => {
               const usedKeys = new Set(ep.target_versions.map((tv) => `${tv.target_language}_${tv.variant}`));
               const availableProfiles = languageProfiles.filter((p) => !usedKeys.has(profileKey(p)));

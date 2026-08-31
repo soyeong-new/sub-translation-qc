@@ -1,6 +1,7 @@
 """대상언어 버전(TargetVersion) 생성/조회 및 분석 실행 엔드포인트."""
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import BaseModel
@@ -13,6 +14,8 @@ from app.repositories import delete_target_version_results, upsert_character_gen
 from app.background import analyze_and_save, _run_phase2_and_save
 from app.providers.base import get_provider
 from app.core.pipeline import gender_groups_all_resolved
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -162,14 +165,35 @@ async def confirm_registers(target_version_id: str, request: Request):
         # 저장해, 다음 회차/언어판에서 재사용한다(design §시리즈/다국어
         # 간 캐릭터 성별 재사용). LLM의 1차 판정이 아니라 여기(확인 화면
         # 통과 시점)의 최종값만 저장한다.
+        #
+        # 같은 이름이 이번 배치 안에서 서로 다른 성별로 확인되는 경우가
+        # 실측으로 확인됐다(다인물이 섞인 줄의 referent가 특정 캐릭터
+        # 이름을 달고 있지만 실제로는 그 줄의 다른 사람을 가리켜, 사람이
+        # 문맥상 맞는 답을 눌러도 그 캐릭터 이름엔 틀린 성별이 붙는 경우 —
+        # 2026-08-31 실측: "차은상" 줄 하나는 male, 다른 줄은 female로
+        # 확인됨). 어느 쪽이 맞는지 이 시점엔 판단할 수 없으므로, 충돌이
+        # 있는 이름은 title 단위 fact를 아예 덮어쓰지 않는다 — 잘못된 값이
+        # 다른 회차/언어판까지 자동 전파되는 것이 반반의 확률로 맞는 값을
+        # 저장하는 것보다 더 나쁘다.
         episode = await session.get(Episode, tv.episode_id)
-        new_facts: dict = {}
+        confirmed_by_name: dict = {}
         for seg in candidates:
             for group in (seg.resolved_gender_groups_raw or []):
                 name = group.get("character_name")
                 gender = group.get("gender")
                 if name and gender in ("male", "female") and group.get("human_confirmed"):
-                    new_facts[name] = gender
+                    confirmed_by_name.setdefault(name.strip().casefold(), set()).add((name, gender))
+        new_facts: dict = {}
+        for entries in confirmed_by_name.values():
+            genders = {gender for _, gender in entries}
+            if len(genders) == 1:
+                name = next(iter(entries))[0]
+                new_facts[name] = genders.pop()
+            else:
+                logger.warning(
+                    "캐릭터 성별 확인 충돌, title 단위 fact 저장 건너뜀 (target_version_id=%s, entries=%s)",
+                    target_version_id, entries,
+                )
         if new_facts:
             await upsert_character_gender_facts(session, episode.title_id, new_facts)
 

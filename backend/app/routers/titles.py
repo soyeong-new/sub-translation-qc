@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion, FindingRow
+from app.models import Title, Episode, TargetVersion, FindingRow, CharacterGenderFact
 from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
 from app.core.uploads import MEDIA_ROOT
@@ -28,6 +28,10 @@ class EpisodeIn(BaseModel):
     episode_no: int | None = None
     video_path: str
     korean_srt_path: str | None = None
+
+
+class CharacterGenderUpdateIn(BaseModel):
+    gender: str
 
 
 @router.get("/language-profiles")
@@ -106,6 +110,15 @@ async def list_titles():
         for tv_id, name in reviewer_rows:
             reviewers_by_tv.setdefault(tv_id, set()).add(name)
 
+        gender_facts = (await session.execute(
+            select(CharacterGenderFact).order_by(CharacterGenderFact.character_name)
+        )).scalars().all()
+        gender_facts_by_title: dict = {}
+        for fact in gender_facts:
+            gender_facts_by_title.setdefault(fact.title_id, []).append({
+                "id": fact.id, "character_name": fact.character_name, "gender": fact.gender,
+            })
+
         display_names = {
             (p["language"], p["variant"]): p["display_name"] for p in list_profiles()
         }
@@ -128,9 +141,26 @@ async def list_titles():
 
         return [
             {"id": t.id, "name": t.name, "type": t.type,
-             "episodes": episodes_by_title.get(t.id, [])}
+             "episodes": episodes_by_title.get(t.id, []),
+             "character_genders": gender_facts_by_title.get(t.id, [])}
             for t in titles
         ]
+
+
+@router.patch("/character-genders/{fact_id}")
+async def update_character_gender(fact_id: str, payload: CharacterGenderUpdateIn):
+    """확인 화면에서 잘못 체크된 캐릭터 성별을 작품 목록에서 바로 고친다
+    (design 2026-08-31 — 다인물 줄의 referent에 이름이 잘못 붙는 등으로
+    생기는 오기입을 사후에 눈으로 훑어보고 고치기 위함)."""
+    if payload.gender not in ("male", "female"):
+        raise HTTPException(400, "gender는 male 또는 female이어야 합니다")
+    async with async_session() as session:
+        fact = await session.get(CharacterGenderFact, fact_id)
+        if fact is None:
+            raise HTTPException(404, "character gender fact not found")
+        fact.gender = payload.gender
+        await session.commit()
+        return {"id": fact.id, "character_name": fact.character_name, "gender": fact.gender}
 
 
 @router.delete("/titles/{title_id}")

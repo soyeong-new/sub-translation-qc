@@ -230,3 +230,83 @@ async def test_delete_title_returns_404_when_already_deleted():
         assert first.status_code == 200
         second = await client.delete(f"/titles/{title_id}")
         assert second.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_titles_includes_character_gender_facts():
+    """작품 목록 화면에서 잘못 확인된 캐릭터 성별을 바로 눈으로 훑어보고
+    고칠 수 있으려면, 목록 응답에 title 단위 character_gender_facts가
+    같이 내려와야 한다(episodes/target_versions와 동일한 N+1 방지 패턴)."""
+    from app.models import CharacterGenderFact
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+    async with async_session() as session:
+        session.add(CharacterGenderFact(title_id=title_id, character_name="Bo-Na", gender="male"))
+        await session.commit()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/titles")
+    title = next(t for t in r.json() if t["id"] == title_id)
+    assert len(title["character_genders"]) == 1
+    assert title["character_genders"][0]["character_name"] == "Bo-Na"
+    assert title["character_genders"][0]["gender"] == "male"
+
+
+@pytest.mark.asyncio
+async def test_update_character_gender_changes_stored_value():
+    """확인 화면에서 잘못 체크된 성별을 목록 화면에서 바로 고칠 수 있어야
+    한다 — PATCH가 실제 DB 행을 갱신하고, 이후 목록 조회에도 반영돼야
+    한다."""
+    from app.models import CharacterGenderFact
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+    async with async_session() as session:
+        fact = CharacterGenderFact(title_id=title_id, character_name="Bo-Na", gender="male")
+        session.add(fact)
+        await session.commit()
+        fact_id = fact.id
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch(f"/character-genders/{fact_id}", json={"gender": "female"})
+        assert r.status_code == 200
+        assert r.json()["gender"] == "female"
+
+        listed = await client.get("/titles")
+    title = next(t for t in listed.json() if t["id"] == title_id)
+    assert title["character_genders"][0]["gender"] == "female"
+
+
+@pytest.mark.asyncio
+async def test_update_character_gender_rejects_invalid_value():
+    from app.models import CharacterGenderFact
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+    async with async_session() as session:
+        fact = CharacterGenderFact(title_id=title_id, character_name="Bo-Na", gender="male")
+        session.add(fact)
+        await session.commit()
+        fact_id = fact.id
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch(f"/character-genders/{fact_id}", json={"gender": "unknown"})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_update_character_gender_returns_404_for_unknown_id():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch("/character-genders/does-not-exist", json={"gender": "female"})
+    assert r.status_code == 404
