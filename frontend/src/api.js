@@ -212,7 +212,10 @@ function uploadWithProgress(path, file, onProgress) {
 // multipart 파싱(원본 전체를 먼저 통째로 임시 저장)을 거치지 않아야
 // 순간 필요 용량이 원본 크기와 무관해진다. 파일명은 본문이 아니라
 // 헤더로 보낸다(한글 등 비ASCII 파일명 대응을 위해 encodeURIComponent).
-// 업로드 전 로컬에서 faststart로 변환해야 한다 — 안 그러면 서버가 못 읽는다.
+// faststart(메타데이터가 파일 앞쪽) 영상이면 서버가 받으면서 바로
+// 흘려보내 처리하고, 아니면 서버가 자동으로 감지해서 임시로 받아 적은
+// 뒤 압축한다 — 어느 쪽이든 자동으로 성공하니 업로드 전에 미리 변환할
+// 필요 없다.
 function uploadRawWithProgress(path, file, onProgress) {
   return sendWithProgress(path, file, onProgress, {
     "X-Filename": encodeURIComponent(file.name),
