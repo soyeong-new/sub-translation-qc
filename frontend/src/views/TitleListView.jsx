@@ -82,9 +82,6 @@ export default function TitleListView({ onSelect }) {
       .then((profiles) => {
         if (!isMountedRef.current) return;
         setLanguageProfiles(profiles);
-        if (profiles.length > 0) {
-          setSelectedProfile(profiles[0]);
-        }
       })
       .catch((err) => {
         if (!isMountedRef.current) return;
@@ -223,6 +220,7 @@ export default function TitleListView({ onSelect }) {
                 className={inputClass}
               >
                 {languageProfiles.length === 0 && <option value="">불러오는 중...</option>}
+                {languageProfiles.length > 0 && <option value="">언어 선택...</option>}
                 {languageProfiles.map((p) => (
                   <option key={profileKey(p)} value={profileKey(p)}>
                     {p.display_name}
