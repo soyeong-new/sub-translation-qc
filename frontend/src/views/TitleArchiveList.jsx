@@ -605,22 +605,23 @@ export default function TitleArchiveList({ onOpen }) {
                     <path d="M7 5l6 5-6 5V5z" />
                   </svg>
                   <span className="truncate text-sm font-medium text-foreground">{title.name}</span>
+                  <select
+                    aria-label="유형"
+                    value={title.type}
+                    disabled={busyId === title.id}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => handleChangeType(title, e.target.value)}
+                    className="shrink-0 rounded-lg border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value="movie">영화</option>
+                    <option value="series">드라마</option>
+                  </select>
                 </div>
                 {titleReviewers.length > 0 && (
                   <span className="shrink-0 text-xs text-muted-foreground">{titleReviewers.join(", ")}</span>
                 )}
               </summary>
-              <div className="mt-3 flex items-center justify-between gap-2 border-t border-border/40 pt-3">
-                <select
-                  aria-label="유형"
-                  value={title.type}
-                  disabled={busyId === title.id}
-                  onChange={(e) => handleChangeType(title, e.target.value)}
-                  className="rounded-lg border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <option value="movie">영화</option>
-                  <option value="series">드라마</option>
-                </select>
+              <div className="mt-3 flex items-center justify-end gap-2 border-t border-border/40 pt-3">
                 <button
                   disabled={busyId === title.id}
                   onClick={() => handleDelete(title)}
