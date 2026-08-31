@@ -170,10 +170,13 @@ export function pollTargetVersionStatus(targetVersionId, { isMounted = () => tru
   });
 }
 
-function uploadWithProgress(path, file, onProgress) {
+function sendWithProgress(path, body, onProgress, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${BASE}${path}`);
+    for (const [key, value] of Object.entries(extraHeaders)) {
+      xhr.setRequestHeader(key, value);
+    }
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
         onProgress(Math.round((e.loaded / e.total) * 100));
@@ -194,14 +197,30 @@ function uploadWithProgress(path, file, onProgress) {
       }
     };
     xhr.onerror = () => reject(new Error("업로드 중 네트워크 오류가 발생했습니다."));
-    const formData = new FormData();
-    formData.append("file", file);
-    xhr.send(formData);
+    xhr.send(body);
+  });
+}
+
+function uploadWithProgress(path, file, onProgress) {
+  const formData = new FormData();
+  formData.append("file", file);
+  return sendWithProgress(path, formData, onProgress);
+}
+
+// 영상은 multipart가 아니라 파일 그대로(raw body)로 보낸다 — 서버가 받는
+// 즉시 ffmpeg으로 압축해 저장하므로(design 2026-08-31), FastAPI의 자동
+// multipart 파싱(원본 전체를 먼저 통째로 임시 저장)을 거치지 않아야
+// 순간 필요 용량이 원본 크기와 무관해진다. 파일명은 본문이 아니라
+// 헤더로 보낸다(한글 등 비ASCII 파일명 대응을 위해 encodeURIComponent).
+// 업로드 전 로컬에서 faststart로 변환해야 한다 — 안 그러면 서버가 못 읽는다.
+function uploadRawWithProgress(path, file, onProgress) {
+  return sendWithProgress(path, file, onProgress, {
+    "X-Filename": encodeURIComponent(file.name),
   });
 }
 
 export const uploadVideo = (file, onProgress) =>
-  uploadWithProgress("/uploads/video", file, onProgress);
+  uploadRawWithProgress("/uploads/video", file, onProgress);
 
 export const uploadSrt = (file, onProgress) =>
   uploadWithProgress("/uploads/srt", file, onProgress);

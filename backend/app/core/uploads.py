@@ -1,8 +1,9 @@
 """업로드된 파일을 경로 조작 없이 로컬 디스크에 스트리밍 저장하는 모듈."""
 
+import asyncio
 import uuid
 from pathlib import Path
-from typing import Awaitable, Callable, Set
+from typing import Awaitable, AsyncIterator, Callable, Set
 
 MEDIA_ROOT = Path(__file__).resolve().parents[2] / "media"
 
@@ -52,5 +53,53 @@ async def save_upload(
         # 그대로 남아, 다음 시도 때 오히려 공간을 더 까먹었다. 실패 시
         # 부분 파일을 지워야 재시도할 여유 공간이 확보된다.
         Path(dest).unlink(missing_ok=True)
+        raise
+    return str(dest)
+
+
+async def save_video_upload_streamed(filename: str, body_stream: AsyncIterator[bytes]) -> str:
+    """받은 영상을 디스크에 원본 그대로 복사하지 않고, 받는 즉시 ffmpeg으로
+    압축하며 저장한다(design 2026-08-31 — 실측: 9GB 영상 하나에 순간적으로
+    18GB가 필요해 디스크가 꽉 차던 장애). FastAPI의 자동 UploadFile 파싱은
+    원본 전체를 먼저 통째로 임시 저장하는데, 거기에 우리가 또 원본 크기만큼
+    복사본을 만들면 최대 원본의 2배 용량이 필요하다. 라우터가
+    request.form() 대신 request.stream()으로 받은 원본 바이트를 그대로
+    ffmpeg stdin에 흘려보내면, 디스크엔 압축된 작은 결과물만 남는다.
+
+    전제 조건: 입력 영상이 faststart(moov 원자가 파일 앞쪽)여야 한다 —
+    아니면 ffmpeg이 파이프(seek 불가능한 입력)에서 스트림 정보를 못 찾아
+    실패한다(실측 확인: 수백KB급 작은 파일은 우연히 성공하지만, 수백MB급
+    이상은 거의 항상 "Invalid data found when processing input"로 실패).
+    업로드 전 로컬에서 `ffmpeg -c copy -movflags +faststart`로 변환해야
+    한다 — 재인코딩이 아니라 메타데이터 위치만 옮기는 거라 순식간에 끝난다."""
+    dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-i", "pipe:0",
+        "-vf", "scale=-2:720", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "copy",
+        str(dest),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async for chunk in body_stream:
+            proc.stdin.write(chunk)
+            await proc.stdin.drain()
+        proc.stdin.close()
+        await proc.stdin.wait_closed()
+        stderr = await proc.stderr.read()
+        returncode = await proc.wait()
+        if returncode != 0:
+            raise RuntimeError(
+                "영상 변환 실패 — 업로드 전 영상을 faststart로 변환했는지 "
+                "확인하세요(ffmpeg -c copy -movflags +faststart). "
+                f"ffmpeg 오류: {stderr.decode(errors='replace')[-500:]}"
+            )
+    except Exception:
+        Path(dest).unlink(missing_ok=True)
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
         raise
     return str(dest)
