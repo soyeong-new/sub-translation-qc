@@ -310,3 +310,24 @@ async def test_update_character_gender_returns_404_for_unknown_id():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.patch("/character-genders/does-not-exist", json={"gender": "female"})
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_storage_usage_reports_media_folder_size_separately(monkeypatch, tmp_path):
+    """디스크가 꽉 차기 전에 "영상을 지우면 되는지, Docker/스왑 정리가
+    필요한지" 판단하려면 전체 디스크 사용량과 별개로 MEDIA_ROOT(지우면
+    실제로 공간이 확보되는 영상/프록시/업로드 파일) 크기를 따로 알아야
+    한다 — disk_usage는 전체 파티션 기준이라 이 구분이 안 된다."""
+    monkeypatch.setattr("app.routers.titles.MEDIA_ROOT", tmp_path)
+    (tmp_path / "video_proxy").mkdir()
+    (tmp_path / "video_proxy" / "a.mp4").write_bytes(b"x" * 1000)
+    (tmp_path / "chart_image").mkdir()
+    (tmp_path / "chart_image" / "b.png").write_bytes(b"y" * 500)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/storage")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["media_used"] == 1500
+    assert "used" in data and "total" in data

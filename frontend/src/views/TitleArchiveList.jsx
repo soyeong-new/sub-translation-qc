@@ -537,16 +537,29 @@ export default function TitleArchiveList({ onOpen }) {
             <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
               <span>Storage</span>
               <span>
-                {formatGB(storage.used)}GB / {formatGB(storage.total)}GB 사용 중
+                고정 {formatGB(storage.used - storage.media_used)}GB + 영상 {formatGB(storage.media_used)}GB
+                {" "}/ {formatGB(storage.total)}GB 사용 중
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className={`h-full rounded-full ${
-                  storage.used / storage.total > 0.9 ? "bg-destructive" : "bg-primary"
-                }`}
-                style={{ width: `${Math.min(100, (storage.used / storage.total) * 100)}%` }}
+                className="h-full bg-muted-foreground/40"
+                style={{ width: `${Math.min(100, ((storage.used - storage.media_used) / storage.total) * 100)}%` }}
               />
+              <div
+                className={`h-full ${storage.used / storage.total > 0.9 ? "bg-destructive" : "bg-primary"}`}
+                style={{ width: `${Math.min(100, (storage.media_used / storage.total) * 100)}%` }}
+              />
+            </div>
+            <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                고정 (OS/Docker 등, 삭제 불가)
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-primary" />
+                영상 등 (삭제 가능)
+              </span>
             </div>
           </div>
         )}

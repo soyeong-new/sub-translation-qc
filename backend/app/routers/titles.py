@@ -80,10 +80,15 @@ async def create_episode(title_id: str, payload: EpisodeIn):
 
 @router.get("/storage")
 async def get_storage_usage():
-    """MEDIA_ROOT가 놓인 디스크(EC2라면 EBS 볼륨)의 전체/사용 용량을 바이트로 반환한다."""
+    """MEDIA_ROOT가 놓인 디스크(EC2라면 EBS 볼륨)의 전체/사용 용량과, 그중
+    MEDIA_ROOT(영상/프록시/업로드 파일 — title/episode를 지우면 실제로
+    줄어드는 용량) 자체가 차지하는 크기를 따로 반환한다. used에는 OS/
+    Docker 이미지/스왑처럼 지워도 못 줄이는 용량이 섞여 있어, media_used를
+    따로 줘야 "영상을 지우면 되는지" 판단할 수 있다."""
     MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
     usage = shutil.disk_usage(MEDIA_ROOT)
-    return {"used": usage.used, "total": usage.total}
+    media_used = sum(f.stat().st_size for f in MEDIA_ROOT.rglob("*") if f.is_file())
+    return {"used": usage.used, "total": usage.total, "media_used": media_used}
 
 
 @router.get("/titles")
