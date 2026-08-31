@@ -6,7 +6,11 @@ from openai import AsyncOpenAI
 
 _JSON_INSTRUCTION = (
     '반드시 {"findings": [...]} 형태의 JSON 객체만 출력하라. 수정이 필요 없는 '
-    "세그먼트는 findings에 포함하지 마라."
+    "세그먼트는 findings에 포함하지 마라. "
+    "검토 도중 판단을 바꿔 결국 수정이 필요 없다고 결론 내렸다면, 그 항목은 "
+    "findings에서 완전히 빼라 — description에 '다시 검토하니', '재검토 결과' 같은 "
+    "번복 과정을 남기지 마라. findings에 포함하는 항목은 처음부터 끝까지 하나의 "
+    "최종 결론만 담아야 한다."
 )
 
 _VERIFY_SCHEMA_INSTRUCTION = (
