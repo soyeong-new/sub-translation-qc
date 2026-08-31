@@ -361,6 +361,41 @@ async def test_back_translate_proposals_survives_one_chunk_failing():
 
 
 @pytest.mark.asyncio
+async def test_back_translate_proposals_recovers_from_transient_failure_via_retry():
+    """실측(프로덕션, 2026-08-31): "GPT 제안 역번역: Claude 응답이 JSON
+    배열이 아님" 경고가 가끔씩 뜸 — LLM이 포맷을 한 번 깨는 건 보통
+    일시적 노이즈라, 완전히 포기하기 전에 한 번 더 시도해서 성공하면
+    그 청크의 역번역을 살려야 한다."""
+    from app.core.pipeline import _back_translate_proposals
+
+    call_count = {"n": 0}
+
+    async def _gpt_back_translates(texts, profile):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ValueError("Claude 응답이 JSON 배열이 아님: ```json [ ...")
+        return [{"id": t["id"], "korean_text": f"역번역:{t['text']}"} for t in texts]
+
+    class _FakeProvider:
+        back_translate_with_gpt = staticmethod(_gpt_back_translates)
+
+        @staticmethod
+        async def back_translate_with_claude(texts, profile):
+            return []
+
+    claude_only = [{"segment_id": "p0", "corrected_text": "texto 0"}]
+
+    backtranslation_by_id, _, _, warnings = await _back_translate_proposals(
+        _FakeProvider(), {"language": "es"}, agreed=[], claude_only=claude_only, gpt_only=[],
+        target_version_id="tv1", pairs=[],
+    )
+
+    assert call_count["n"] == 2  # 첫 시도 실패 후 한 번 더 시도함
+    assert warnings == []  # 재시도로 복구됐으니 경고 없음
+    assert backtranslation_by_id[("p0", "claude_authored")] == "역번역:texto 0"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_continues_when_claude_pass_raises(tmp_path, monkeypatch):
     """design §에러 처리: Claude/GPT 패스 중 하나가 실패해도 전체 분석이
     실패 처리되면 안 되고, 해당 패스만 스킵한 채 나머지 파이프라인(GPT 2차,

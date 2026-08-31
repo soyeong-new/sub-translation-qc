@@ -667,11 +667,20 @@ async def _back_translate_all(
     항목마다 독립적인 번역이라 씬 경계를 지킬 필요가 없어 단순 고정 크기
     청킹으로 충분하다. 청크 하나가 실패해도(_safe_call) 그 청크만 역번역
     없이 넘어가고 나머지는 살아남는다 — 전체를 한 콜로 보낼 때보다 실패
-    영향 범위가 훨씬 작다."""
+    영향 범위가 훨씬 작다. 실패 자체는 한 번 재시도한다 — 실측(프로덕션):
+    LLM이 JSON 포맷을 한 번 깨는 건 대개 일시적 노이즈라, 완전히
+    포기하기 전에 한 번 더 시도하면 대부분 복구된다."""
     if not texts:
         return []
+
+    async def _call_with_one_retry(chunk):
+        try:
+            return await call_fn(chunk, profile)
+        except Exception:
+            return await call_fn(chunk, profile)
+
     chunk_results = await asyncio.gather(*[
-        _safe_call(call_fn(chunk, profile), label,
+        _safe_call(_call_with_one_retry(chunk), label,
                    "해당 구간은 역번역 없이 계속 진행", target_version_id, warnings)
         for chunk in _chunk_list(texts, CHUNK_MAX_SIZE)
     ])
