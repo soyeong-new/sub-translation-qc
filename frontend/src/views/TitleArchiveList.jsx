@@ -551,16 +551,6 @@ export default function TitleArchiveList({ onOpen }) {
                 style={{ width: `${Math.min(100, (storage.media_used / storage.total) * 100)}%` }}
               />
             </div>
-            <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
-                고정 (OS/Docker 등, 삭제 불가)
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="h-2 w-2 rounded-full bg-primary" />
-                영상 등 (삭제 가능)
-              </span>
-            </div>
           </div>
         )}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
