@@ -617,20 +617,20 @@ export default function TitleArchiveList({ onOpen }) {
                     <option value="series">드라마</option>
                   </select>
                 </div>
-                {titleReviewers.length > 0 && (
-                  <span className="shrink-0 text-xs text-muted-foreground">{titleReviewers.join(", ")}</span>
-                )}
+                <div className="flex shrink-0 items-center gap-2">
+                  {titleReviewers.length > 0 && (
+                    <span className="text-xs text-muted-foreground">{titleReviewers.join(", ")}</span>
+                  )}
+                  <button
+                    disabled={busyId === title.id}
+                    onClick={(e) => { e.stopPropagation(); handleDelete(title); }}
+                    aria-label="삭제"
+                    className={deleteBtnClass}
+                  >
+                    ×
+                  </button>
+                </div>
               </summary>
-              <div className="mt-3 flex items-center justify-end gap-2 border-t border-border/40 pt-3">
-                <button
-                  disabled={busyId === title.id}
-                  onClick={() => handleDelete(title)}
-                  aria-label="삭제"
-                  className={deleteBtnClass}
-                >
-                  ×
-                </button>
-              </div>
               {title.character_genders?.length > 0 && (
                 <details className="mt-3 border-t border-border/40 pt-3">
                   <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
