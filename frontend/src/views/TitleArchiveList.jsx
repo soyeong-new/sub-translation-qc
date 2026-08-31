@@ -321,6 +321,7 @@ export default function TitleArchiveList({ onOpen }) {
   const [addLanguageStatus, setAddLanguageStatus] = useState(null);
 
   const [expandedIds, setExpandedIds] = useState(loadExpandedIds);
+  const [confirmState, setConfirmState] = useState(null); // { message, onConfirm } | null
 
   function toggleExpanded(titleId, isOpen) {
     setExpandedIds((prev) => {
@@ -420,8 +421,15 @@ export default function TitleArchiveList({ onOpen }) {
     }
   }
 
-  async function handleDelete(title) {
-    if (!window.confirm(`"${title.name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`)) return;
+  function handleDelete(title) {
+    setConfirmState({
+      message: `"${title.name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`,
+      onConfirm: () => runDelete(title),
+    });
+  }
+
+  async function runDelete(title) {
+    setConfirmState(null);
     setBusyId(title.id);
     setError(null);
     try {
@@ -435,8 +443,15 @@ export default function TitleArchiveList({ onOpen }) {
     }
   }
 
-  async function handleDeleteVersion(tv) {
-    if (!window.confirm(`"${tv.display_name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`)) return;
+  function handleDeleteVersion(tv) {
+    setConfirmState({
+      message: `"${tv.display_name}"을(를) 삭제할까요? 되돌릴 수 없습니다.`,
+      onConfirm: () => runDeleteVersion(tv),
+    });
+  }
+
+  async function runDeleteVersion(tv) {
+    setConfirmState(null);
     setBusyId(tv.id);
     setError(null);
     try {
@@ -693,6 +708,24 @@ export default function TitleArchiveList({ onOpen }) {
         })}
         </ul>
       </div>
+      {confirmState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-border/50 bg-card p-5 shadow-lg">
+            <p className="text-sm text-foreground">{confirmState.message}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setConfirmState(null)} className={rerunBtnClass}>
+                취소
+              </button>
+              <button
+                onClick={confirmState.onConfirm}
+                className={`${smallBtnBase} border-destructive bg-destructive text-destructive-foreground hover:bg-destructive/90`}
+              >
+                확인
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
