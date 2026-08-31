@@ -159,7 +159,7 @@ export default function TitleListView({ onSelect }) {
         title.id, episodeNoValue, videoUpload.path, koreanSrtPath,
       );
       const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
-      setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
+      setStatus({ kind: "loading", message: "분석 중..." });
       await runAnalysis(tv.id, srtUpload.path);
       const doneStatus = await pollUntilDone(tv.id);
       setStatus({ kind: "success", message: "완료" });

@@ -201,7 +201,7 @@ function AddEpisodeForm({ titleId, languageProfiles, isMountedRef, onDone, onCan
       setStatus({ kind: "loading", message: "대상언어 SRT 업로드 중..." });
       const srtUpload = await uploadSrt(srtFile, setSrtProgress);
       const tv = await createTargetVersion(episode.id, selectedProfile.language, selectedProfile.variant);
-      setStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
+      setStatus({ kind: "loading", message: "분석 중..." });
       await runAnalysis(tv.id, srtUpload.path);
       const doneStatus = await pollTargetVersionStatus(tv.id, { isMounted: () => isMountedRef.current });
       if (!isMountedRef.current) return;
@@ -511,7 +511,7 @@ export default function TitleArchiveList({ onOpen }) {
     try {
       const srtUpload = await uploadSrt(addLanguageSrtFile, setAddLanguageProgress);
       const tv = await createTargetVersion(episodeId, addLanguageProfile.language, addLanguageProfile.variant);
-      setAddLanguageStatus({ kind: "loading", message: "분석 중... (STT + 번역검토 진행중, 시간이 걸릴 수 있습니다)" });
+      setAddLanguageStatus({ kind: "loading", message: "분석 중..." });
       await runAnalysis(tv.id, srtUpload.path);
       const doneStatus = await pollTargetVersionStatus(tv.id, { isMounted: () => isMountedRef.current });
       if (!isMountedRef.current) return;
