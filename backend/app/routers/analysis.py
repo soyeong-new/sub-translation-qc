@@ -10,7 +10,9 @@ from sqlalchemy import select
 from app.db import async_session
 from app.models import Episode, TargetVersion, Segment
 from app.core.uploads import MEDIA_ROOT
-from app.repositories import delete_target_version_results, upsert_character_gender_facts
+from app.repositories import (
+    delete_target_version_results, upsert_character_gender_facts, normalize_character_name,
+)
 from app.background import analyze_and_save, _run_phase2_and_save
 from app.providers.base import get_provider
 from app.core.pipeline import gender_groups_all_resolved
@@ -182,7 +184,7 @@ async def confirm_registers(target_version_id: str, request: Request):
                 name = group.get("character_name")
                 gender = group.get("gender")
                 if name and gender in ("male", "female") and group.get("human_confirmed"):
-                    confirmed_by_name.setdefault(name.strip().casefold(), set()).add((name, gender))
+                    confirmed_by_name.setdefault(normalize_character_name(name), set()).add((name, gender))
         new_facts: dict = {}
         for entries in confirmed_by_name.values():
             genders = {gender for _, gender in entries}

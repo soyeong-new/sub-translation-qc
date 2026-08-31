@@ -6,6 +6,7 @@ from pathlib import Path
 from statistics import median
 from typing import Optional
 from app.providers.base import ModelProvider
+from app.repositories import normalize_character_name
 from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split_audio_into_chunks
 from app.core.stt_srt_matching import match_stt_words_to_korean_srt, merge_words_by_korean_cue
 from app.core.alignment import align, align_by_korean_cue, detect_global_offset
@@ -366,7 +367,7 @@ async def _run_grammar_necessity_check(
                         for group in groups:
                             name = group.get("character_name")
                             fact_gender = (
-                                known_gender_facts.get(name.strip().casefold())
+                                known_gender_facts.get(normalize_character_name(name))
                                 if known_gender_facts and name else None
                             )
                             group["suggested_gender"] = fact_gender

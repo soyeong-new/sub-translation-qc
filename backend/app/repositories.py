@@ -1,5 +1,6 @@
 """파이프라인 실행 결과(세그먼트/findings)를 DB에 영속화하는 모듈."""
 
+import unicodedata
 from typing import List
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -216,38 +217,43 @@ async def get_findings_for_segment(session: AsyncSession, segment_id: str) -> Li
     return list(rows.scalars().all())
 
 
-def _normalize_character_name(name: str) -> str:
+def normalize_character_name(name: str) -> str:
     """언어별로 독립적으로 도는 LLM이 같은 인물 이름을 대소문자만 다르게
     뽑는 사례가 실측으로 확인됐다("Bo-Na" vs "Bo-na") — casefold해서 이런
     차이로 재사용이 조용히 실패하지 않게 한다. 한글은 대소문자가 없어
-    casefold가 no-op이라 기존 동작에 영향 없다."""
-    return name.strip().casefold()
+    casefold가 no-op이지만, 유니코드 정규화 형태(NFC 완성형 vs NFD 분리형)가
+    달라 화면엔 똑같아 보여도 바이트가 다른 경우가 실측으로 확인됐다
+    (title 이름 중복 사고와 같은 원인 클래스) — NFC로 정규화해서 이것도
+    같은 이름으로 인식한다. 이 함수는 title.py/pipeline.py에서도 같은
+    이름 매칭에 재사용된다 — 한 군데만 고치면 전부 일관되게 적용된다."""
+    return unicodedata.normalize("NFC", name.strip()).casefold()
 
 
 async def get_character_gender_facts(session: AsyncSession, title_id: str) -> dict:
     """이 title(작품)에서 이미 확인된 캐릭터별 성별을 돌려준다
-    ({character_name(casefold): gender}). 다른 title의 기록은 절대 섞이지
-    않는다. 키가 casefold되어 있으니 호출자도 조회 전 casefold해야 한다."""
+    ({character_name(정규화됨): gender}). 다른 title의 기록은 절대 섞이지
+    않는다. 키가 정규화되어 있으니 호출자도 조회 전 normalize_character_name을
+    거쳐야 한다."""
     rows = (await session.execute(
         select(CharacterGenderFact).where(CharacterGenderFact.title_id == title_id)
     )).scalars().all()
-    return {_normalize_character_name(r.character_name): r.gender for r in rows}
+    return {normalize_character_name(r.character_name): r.gender for r in rows}
 
 
 async def upsert_character_gender_facts(session: AsyncSession, title_id: str, facts: dict) -> None:
-    """확정된 캐릭터별 성별을 title 단위로 upsert한다. 이름은 대소문자
-    무시하고 매칭한다(_normalize_character_name) — 안 그러면 다른 언어
-    실행이 이름을 조금 다르게 뽑을 때마다 같은 인물의 기록이 여러 row로
-    흩어진다. 커밋은 호출자 책임(confirm_registers가 다른 변경사항과
-    함께 한 번에 커밋한다)."""
+    """확정된 캐릭터별 성별을 title 단위로 upsert한다. 이름은
+    normalize_character_name으로 매칭한다 — 안 그러면 다른 언어 실행이
+    이름을 조금 다르게 뽑을 때마다 같은 인물의 기록이 여러 row로 흩어진다.
+    커밋은 호출자 책임(confirm_registers가 다른 변경사항과 함께 한 번에
+    커밋한다)."""
     if not facts:
         return
     existing = (await session.execute(
         select(CharacterGenderFact).where(CharacterGenderFact.title_id == title_id)
     )).scalars().all()
-    existing_by_name = {_normalize_character_name(r.character_name): r for r in existing}
+    existing_by_name = {normalize_character_name(r.character_name): r for r in existing}
     for name, gender in facts.items():
-        row = existing_by_name.get(_normalize_character_name(name))
+        row = existing_by_name.get(normalize_character_name(name))
         if row is not None:
             row.gender = gender
         else:

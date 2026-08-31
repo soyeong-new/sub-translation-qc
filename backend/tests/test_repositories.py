@@ -588,6 +588,34 @@ async def test_upsert_character_gender_facts_matches_existing_name_case_insensit
 
 
 @pytest.mark.asyncio
+async def test_upsert_character_gender_facts_matches_existing_name_across_unicode_normalization():
+    """회귀(실측: title 이름 중복 사고와 같은 원인 클래스): 같은 한글이라도
+    유니코드 정규화 형태가 다르면(NFC 완성형 vs NFD 분리형) 화면엔 똑같이
+    보여도 바이트가 달라, casefold만으로는 다른 이름으로 인식돼 row가
+    갈라진다. 저장/조회 모두 NFC로 정규화해서 표기 형태가 달라도 같은
+    인물로 인식해야 한다."""
+    import unicodedata
+
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        nfc_name = "은상"
+        await upsert_character_gender_facts(session, title.id, {nfc_name: "female"})
+        await session.commit()
+
+    async with async_session() as session:
+        nfd_name = unicodedata.normalize("NFD", "은상")
+        assert nfd_name != nfc_name  # 바이트로는 실제로 다른 문자열임을 확인
+        await upsert_character_gender_facts(session, title.id, {nfd_name: "male"})
+        await session.commit()
+
+    async with async_session() as session:
+        facts = await get_character_gender_facts(session, title.id)
+        assert len(facts) == 1  # 같은 인물로 인식돼 하나로 합쳐져야 한다
+
+
+@pytest.mark.asyncio
 async def test_get_character_gender_facts_scoped_to_title():
     async with async_session() as session:
         title_a = Title(name="Drama A", type="series", created_at=datetime.now())
