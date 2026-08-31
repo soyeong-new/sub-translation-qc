@@ -364,7 +364,7 @@ function FindingCard({
                 onClick={onStartSttEdit}
                 className={`${btnBase} border border-input bg-background px-2 py-0.5 text-xs text-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50`}
               >
-                STT 수정
+                한국어 수정
               </button>
             )}
           </div>
@@ -424,7 +424,7 @@ function FindingCard({
           )}
           {originalBackTranslation && (
             <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
-              역번역 참고: {originalBackTranslation}
+              번역: {originalBackTranslation}
             </p>
           )}
         </div>
@@ -436,7 +436,7 @@ function FindingCard({
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
             <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
-              역번역 참고: {proposalBackTranslation || backTranslation}
+              번역: {proposalBackTranslation || backTranslation}
             </p>
           )}
         </div>
@@ -619,7 +619,7 @@ function PairedFindingCard({
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
             <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-muted-foreground">
-              역번역 참고: {proposalBackTranslation || backTranslation}
+              번역: {proposalBackTranslation || backTranslation}
             </p>
           )}
         </div>
@@ -760,7 +760,7 @@ function PairedFindingCard({
                 onClick={onStartSttEdit}
                 className={`${btnBase} border border-input bg-background px-2 py-0.5 text-xs text-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50`}
               >
-                STT 수정
+                한국어 수정
               </button>
             )}
           </div>
@@ -1137,7 +1137,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
     } catch (err) {
       setSttErrors((prev) => ({
         ...prev,
-        [segmentId]: err.message ?? "STT 수정 중 오류가 발생했습니다.",
+        [segmentId]: err.message ?? "한국어 수정 중 오류가 발생했습니다.",
       }));
     } finally {
       setSttPendingId(null);
