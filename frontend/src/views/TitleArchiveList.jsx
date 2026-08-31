@@ -631,9 +631,11 @@ export default function TitleArchiveList({ onOpen }) {
                 </button>
               </div>
               {title.character_genders?.length > 0 && (
-                <div className="mt-3 border-t border-border/40 pt-3">
-                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">캐릭터 성별</div>
-                  <ul className="space-y-1">
+                <details className="mt-3 border-t border-border/40 pt-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+                    캐릭터 성별 ({title.character_genders.length}명)
+                  </summary>
+                  <ul className="mt-1.5 space-y-1">
                     {title.character_genders.map((fact) => (
                       <li key={fact.id} className="flex items-center gap-2 text-xs">
                         <span className="text-foreground">{fact.character_name}</span>
@@ -650,7 +652,7 @@ export default function TitleArchiveList({ onOpen }) {
                       </li>
                     ))}
                   </ul>
-                </div>
+                </details>
               )}
               {title.episodes.map((ep) => {
               const usedKeys = new Set(ep.target_versions.map((tv) => `${tv.target_language}_${tv.variant}`));
