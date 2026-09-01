@@ -15,7 +15,6 @@ from app.core.pipeline import (
 )
 from app.repositories import get_pending_findings_for_segment
 
-_LLM_REQUERYABLE_MODELS = ("claude", "gpt", "claude+gpt")
 _FORMAT_CONSTRAINT = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
 
@@ -25,18 +24,23 @@ class RequeryNotSupportedError(ValueError):
 
 async def requery_finding(finding: FindingRow, segment: Segment, instruction: str,
                            provider: ModelProvider, knowledge: str, profile: dict) -> str:
-    """finding을 만든 모델이 무엇이었든(claude/gpt/claude+gpt) GPT 하나로만
-    단일 재검증한다 — 검수자가 이미 지시사항으로 방향을 정한 상태라, 원래의
-    이중 독립검증(합의 필요)만큼 신중할 필요가 없다. 순수 규칙 기반(사전필터,
-    그리고 안전망 중 rewrap_line만으로 해결된 "자동재배치")은 재질문 대상이
-    아니다 — 판단을 내린 LLM이 없으므로 검수자가 직접 "수정"을 쓰는 게 맞다."""
+    """finding을 만든 모델에게 단일 재검증을 맡긴다(claude는 correct_primary,
+    gpt/claude+gpt는 verify_and_refine) — 검수자가 이미 지시사항으로 방향을
+    정한 상태라, 원래의 이중 독립검증(합의 필요)만큼 신중할 필요가 없다.
+    순수 규칙 기반(사전필터, 그리고 안전망 중 rewrap_line만으로 해결된
+    "자동재배치")은 재질문 대상이 아니다 — 판단을 내린 LLM이 없으므로
+    검수자가 직접 "수정"을 쓰는 게 맞다."""
     current_text = finding.final_text or finding.suggested_text or segment.target_text
     extra_instruction = instruction
+    item = [{"id": segment.id, "korean_text": segment.korean_text, "target_text": current_text}]
 
-    if finding.model in _LLM_REQUERYABLE_MODELS:
+    if finding.model == "claude":
+        results = await provider.correct_primary(
+            item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
+        )
+    elif finding.model in ("gpt", "claude+gpt"):
         results = await provider.verify_and_refine(
-            [{"id": segment.id, "korean_text": segment.korean_text, "target_text": current_text}],
-            profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
+            item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
         )
     elif finding.model == "안전망":
         return await provider.shrink_line(

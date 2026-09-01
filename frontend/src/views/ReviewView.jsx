@@ -17,9 +17,12 @@ import {
 } from "../api.js";
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 
-// 재질문은 GPT만 가능하다 (backend/app/core/requery.py의 requery_finding 참고).
-// Claude finding은 재질문 불가능.
-const NOT_REQUERYABLE_MODELS = ["사전필터", "자동재배치", "claude"];
+// 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
+// 아니다(backend/app/core/requery.py의 requery_finding 참고) — 검수자가
+// 직접 "수정"을 써야 한다. 그 외(claude/gpt/claude+gpt/안전망)는 재질문
+// 가능하며, 어느 모델이 만든 finding이었는지에 맞춰 그 모델에게 다시
+// 묻는다(claude는 correct_primary, gpt/claude+gpt는 verify_and_refine).
+const NOT_REQUERYABLE_MODELS = ["사전필터", "자동재배치"];
 function isRequeryable(finding) {
   return Boolean(finding.model) && !NOT_REQUERYABLE_MODELS.includes(finding.model);
 }
@@ -628,7 +631,10 @@ function PairedFindingCard({
           >
             수정해서 채택
           </button>
-          {isRequeryable(finding) && (
+          {/* 이견(pair) 카드에서는 GPT 쪽만 재질문 가능 — 클로드 쪽은 이미
+              옆에 클로드 자신의 제안이 나와 있어(원본 유지/제안 채택으로
+              바로 판단 가능), 재질문까지 열면 대칭이 깨져 혼란만 는다. */}
+          {isRequeryable(finding) && finding.model !== "claude" && (
             <button
               disabled={!canAct}
               onClick={() => onStartRequery(finding)}

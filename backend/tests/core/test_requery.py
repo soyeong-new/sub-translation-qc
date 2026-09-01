@@ -18,6 +18,9 @@ def _segment():
 
 class _StubProvider:
     def __init__(self):
+        self.correct_primary = AsyncMock(
+            return_value=[{"segment_id": "seg1", "category": "mistranslation",
+                            "corrected_text": "hola verificado (claude)", "description": "재질문 반영"}])
         self.verify_and_refine = AsyncMock(
             return_value=[{"segment_id": "seg1", "category": "mistranslation",
                             "corrected_text": "hola verificado", "description": "재질문 반영"}])
@@ -25,17 +28,29 @@ class _StubProvider:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["claude", "gpt", "claude+gpt"])
-async def test_requery_llm_finding_calls_verify_and_refine_with_instruction(model):
-    """finding.model이 뭐였든(claude/gpt/claude+gpt) 재질문은 GPT 단일
-    모델(verify_and_refine)만 쓴다 — 검수자가 이미 지시사항으로 방향을
-    정했으니 원래의 이중 독립검증(합의 필요)까지는 안 해도 된다."""
+async def test_requery_claude_finding_calls_correct_primary_with_instruction():
+    """model="claude" finding은 claude에게, gpt/claude+gpt finding은 gpt에게
+    다시 묻는다 — 원래 그 문제를 지적한 모델이 검수자의 추가 지시를 반영해
+    재검토하는 게, 지적하지도 않은 모델에게 대신 묻는 것보다 타당하다."""
+    provider = _StubProvider()
+    result = await requery_finding(_finding("claude"), _segment(), "직역투 다시 봐줘",
+                                    provider, knowledge="", profile={})
+    assert result == "hola verificado (claude)"
+    provider.correct_primary.assert_awaited_once()
+    assert provider.correct_primary.call_args.kwargs["extra_instruction"] == "직역투 다시 봐줘"
+    provider.verify_and_refine.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt", "claude+gpt"])
+async def test_requery_gpt_or_consensus_finding_calls_verify_and_refine_with_instruction(model):
     provider = _StubProvider()
     result = await requery_finding(_finding(model), _segment(), "직역투 다시 봐줘",
                                     provider, knowledge="", profile={})
     assert result == "hola verificado"
     provider.verify_and_refine.assert_awaited_once()
     assert provider.verify_and_refine.call_args.kwargs["extra_instruction"] == "직역투 다시 봐줘"
+    provider.correct_primary.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -66,12 +81,12 @@ async def test_requery_null_model_finding_raises_not_supported():
 @pytest.mark.asyncio
 async def test_requery_returns_current_text_unchanged_when_provider_returns_no_results():
     provider = _StubProvider()
-    provider.verify_and_refine = AsyncMock(return_value=[])
+    provider.correct_primary = AsyncMock(return_value=[])
     result = await requery_finding(_finding("claude", suggested_text="hola corregido"),
                                     _segment(), "더 격식있게", provider,
                                     knowledge="", profile={})
     assert result == "hola corregido"
-    provider.verify_and_refine.assert_awaited_once()
+    provider.correct_primary.assert_awaited_once()
 
 
 def test_apply_resolved_gender_to_text_handles_legacy_groups_without_candidate_indices():
