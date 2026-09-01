@@ -855,7 +855,12 @@ function VideoPreviewPanel({ videoProxyUrl, videoRef }) {
 export default function ReviewView({ targetVersionId, onBack }) {
   const [findings, setFindings] = useState(null); // null = 로딩 중
   const [loadError, setLoadError] = useState(null);
-  const [reviewerName, setReviewerName] = useState("");
+  const [reviewerName, setReviewerName] = useState(
+    () => localStorage.getItem("qc_reviewer_name") || ""
+  );
+  useEffect(() => {
+    localStorage.setItem("qc_reviewer_name", reviewerName);
+  }, [reviewerName]);
   const [pendingActions, setPendingActions] = useState({}); // findingId -> action in flight
   const [findingErrors, setFindingErrors] = useState({});
   const [editingId, setEditingId] = useState(null);
