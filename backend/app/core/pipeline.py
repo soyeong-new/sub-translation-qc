@@ -769,9 +769,6 @@ def _make_dual_verification_finding(
     original_text = pair.target.text
     corrected_text = correction["corrected_text"]
     description = correction["description"]
-    original_meaning = correction.get("original_meaning")
-    if original_meaning:
-        description = f"{description} (원본 뜻 참고: {original_meaning})"
     backtranslation = backtranslation_by_id.get((correction["segment_id"], source))
     if backtranslation:
         description = f"{description} (한국어 역번역 참고: {backtranslation})"

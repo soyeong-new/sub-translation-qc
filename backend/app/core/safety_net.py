@@ -106,11 +106,10 @@ async def shrink_violating_lines(pairs: List[AlignedPair],
         existing = mergeable_by_segment.get(v.segment_id)
         if existing is not None and shrunk_text != original_text:
             # 실제로 텍스트가 변경된 경우만 업데이트. description은 안 건드린다
-            # — 프론트(splitDescription)가 "(원본 뜻 참고: ...)"/"(한국어 역번역
-            # 참고: ...)" 같은 태그를 문자열 끝(정규식 $)에서 잘라내는 방식이라,
-            # 여기서 뒤에 뭘 덧붙이면 그 파싱이 전부 깨져서 원본 뜻/역번역이
-            # 안 보이게 된다("제안" 박스의 글자수 표시만으로 축약됐다는 건
-            # 알 수 있으니 충분하다).
+            # — 프론트(splitDescription)가 "(한국어 역번역 참고: ...)" 같은 태그를
+            # 문자열 끝(정규식 $)에서 잘라내는 방식이라, 여기서 뒤에 뭘 덧붙이면
+            # 그 파싱이 전부 깨져서 역번역이 안 보이게 된다("제안" 박스의 글자수
+            # 표시만으로 축약됐다는 건 알 수 있으니 충분하다).
             existing.suggested_text = shrunk_text
             existing.final_text = shrunk_text
             continue

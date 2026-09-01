@@ -423,11 +423,9 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
         checked_text = current_text if current_text is not None else seg.target_text
         if correction and correction["corrected_text"] != checked_text:
             # 검수자가 스페인어를 몰라도 "원본"(수정 전 문장)이 무슨 뜻인지
-            # 알아야 "제안"과 비교 판단이 가능하다 — GPT의 original_meaning이
-            # 원본 뜻을 이미 풀어주지만, 그건 GPT 자신의 이해일 뿐이라 실제
-            # 원본 문장 자체를 기계적으로 역번역한 것도 별도로 붙인다(서로
-            # 다른 방식의 교차 확인). 실패해도(네트워크 등) STT 재검증
-            # 자체는 막지 않는다 — 역번역은 참고용 보조 정보다.
+            # 알아야 "제안"과 비교 판단이 가능하다 — 원본 문장 자체를 기계적으로
+            # 역번역해 붙인다. 실패해도(네트워크 등) STT 재검증 자체는 막지
+            # 않는다 — 역번역은 참고용 보조 정보다.
             original_backtranslation = None
             try:
                 backtranslated = await provider.back_translate_with_claude(
@@ -438,9 +436,6 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
                 logger.exception(
                     "원본 역번역 실패, 역번역 없이 계속 진행 (segment_id=%s)", segment_id)
             description = f"[STT 수정 후 재검증] {correction['description']}"
-            original_meaning = correction.get("original_meaning")
-            if original_meaning:
-                description += f" (원본 뜻 참고: {original_meaning})"
             if original_backtranslation:
                 description += f" (원본 한국어 역번역 참고: {original_backtranslation})"
 

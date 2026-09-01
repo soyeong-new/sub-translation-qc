@@ -42,17 +42,14 @@ _PRIMARY_SCHEMA_INSTRUCTION = (
     '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
     '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
     "corrected_text (문자열, 교정된 전체 대상언어 텍스트 — 절대 한국어로 쓰면 "
-    "안 된다. 아래 '한국어로 써라' 지침은 original_meaning/description "
-    "두 필드에만 적용되고 corrected_text에는 적용되지 않는다), "
-    "original_meaning (문자열, 지금 target_text(수정 전 원문)가 실제로 무슨 "
-    "뜻인지 한국어로 간단히 설명 — \"~라는 뜻이다\"처럼. 대상언어를 모르는 "
-    "검수자가 이 문장만 보고 원문이 뭘 말하는지 바로 알 수 있어야 한다), "
+    "안 된다. 아래 '한국어로 써라' 지침은 description 필드에만 적용되고 "
+    "corrected_text에는 적용되지 않는다), "
     "description (문자열, 무엇을 왜 그렇게 고쳤는지 한국어로 설명). "
     "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라. "
-    "original_meaning과 description(이 두 필드만)의 설명 문장 자체는 예외 없이 "
-    "한국어로 써라 — 다른 언어로 설명하지 마라. corrected_text는 정반대로 "
-    "한국어를 절대 섞지 말고 대상언어로만 써라. 단, 대상언어 원문 표현을 예시로 "
-    "인용하는 것은 괜찮다(예: \"'경비아저씨' 표현이 어색해 'el guardia'로 수정\")."
+    "description의 설명 문장 자체는 예외 없이 한국어로 써라 — 다른 언어로 "
+    "설명하지 마라. corrected_text는 정반대로 한국어를 절대 섞지 말고 대상언어로만 "
+    "써라. 단, 대상언어 원문 표현을 예시로 인용하는 것은 괜찮다(예: \"'경비아저씨' "
+    "표현이 어색해 'el guardia'로 수정\")."
 )
 
 _SHRINK_SCHEMA_INSTRUCTION = (

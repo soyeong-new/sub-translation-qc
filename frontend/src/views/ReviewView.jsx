@@ -183,14 +183,13 @@ function splitDescription(rawDescription) {
     : withoutOriginalBackTranslation;
   const backTranslation = backTranslationMatch ? backTranslationMatch[1] : null;
 
-  // 원본 뜻 설명은 역번역 태그들보다 안쪽에 붙는다(pipeline.py의
-  // _make_dual_verification_finding, findings.py의 correct_stt) — 그래서
-  // 역번역 태그들을 먼저 떼어낸 뒤에 이걸 떼어내야 한다.
-  const originalMeaningMatch = withoutBackTranslation.match(/ \(원본 뜻 참고: (.+)\)$/s);
+  // "원본 뜻" 태그는 더 이상 새로 안 붙지만(원본 뜻 설명은 화면에서 없앰),
+  // 이전에 이미 생성된 finding의 description에는 이 태그가 그대로 저장돼
+  // 있다 — 값은 버리고 문자열에서만 떼어내 화면에 안 새게 한다.
+  const originalMeaningMatch = withoutBackTranslation.match(/ \(원본 뜻 참고: .+\)$/s);
   const withoutOriginalMeaning = originalMeaningMatch
     ? withoutBackTranslation.slice(0, originalMeaningMatch.index)
     : withoutBackTranslation;
-  const originalMeaning = originalMeaningMatch ? originalMeaningMatch[1] : null;
 
   // 재질문 지시문도 여러 줄일 수 있어(검수자가 textarea에 줄바꿈 입력) 같은
   // 이유로 s 플래그가 필요하다.
@@ -199,7 +198,7 @@ function splitDescription(rawDescription) {
     ? withoutOriginalMeaning.slice(requeryMatch[0].length)
     : withoutOriginalMeaning;
   const requeryInstruction = requeryMatch ? requeryMatch[1] : null;
-  return { description, backTranslation, originalBackTranslation, proposalBackTranslation, originalMeaning, requeryInstruction };
+  return { description, backTranslation, originalBackTranslation, proposalBackTranslation, requeryInstruction };
 }
 
 // 문장 중간이 아니라 문장부호(.!?) 뒤에서 줄바꿈되도록, 문장마다 줄을
@@ -295,7 +294,7 @@ function FindingCard({
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
   const koreanText = segment?.korean_text;
-  const { description, backTranslation, originalBackTranslation, proposalBackTranslation, originalMeaning, requeryInstruction } =
+  const { description, backTranslation, originalBackTranslation, proposalBackTranslation, requeryInstruction } =
     splitDescription(finding.description);
   const busy = pending != null;
   const canAct = Boolean(reviewerName.trim()) && !busy;
@@ -417,11 +416,6 @@ function FindingCard({
         <div className="rounded-md border border-border bg-muted/40 p-3">
           <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.original_text}</p>
-          {originalMeaning && (
-            <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
-              원본 뜻: {originalMeaning}
-            </p>
-          )}
           {originalBackTranslation && (
             <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
               번역: {originalBackTranslation}
@@ -565,9 +559,6 @@ function PairedFindingCard({
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
   const koreanText = segment?.korean_text;
-  // 원본 뜻은 Claude/GPT 어느 쪽 설명이든 같은 원본 문장을 가리키므로 a쪽만
-  // 대표로 쓴다(원본 텍스트 자체를 a.original_text 하나로 쓰는 것과 동일한 이유).
-  const { originalMeaning } = splitDescription(a.description);
 
   function handleCardClick(e) {
     if (!segment || !onPreview) return;
@@ -823,11 +814,6 @@ function PairedFindingCard({
           </button>
         </div>
         <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{a.original_text}</p>
-        {originalMeaning && (
-          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
-            원본 뜻: {originalMeaning}
-          </p>
-        )}
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
