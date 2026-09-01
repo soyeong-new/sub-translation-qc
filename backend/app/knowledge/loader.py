@@ -16,10 +16,14 @@ def load_knowledge(dir_path: Optional[str] = None) -> str:
             continue
         data = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
         for rule in data.get("rules", []):
-            lines.append(
-                f"- {rule.get('term', '')}: {rule.get('rule', '')}"
-                f" (나쁜 예: {rule.get('bad', '-')} / 좋은 예: {rule.get('good', '-')})"
-            )
+            line = f"- {rule.get('term', '')}: {rule.get('rule', '')}"
+            # bad/good은 특정 언어 예문이라(예: 스페인어) 다른 언어에도 그대로
+            # 섞여 들어가면 안 된다 — 언어 무관 규칙만 담는 이 지식베이스에는
+            # 아예 없는 게 정상이라, 있을 때만 붙인다(빈 "-" 표시로 프롬프트
+            # 토큰을 낭비하지 않는다).
+            if rule.get("bad") or rule.get("good"):
+                line += f" (나쁜 예: {rule.get('bad', '-')} / 좋은 예: {rule.get('good', '-')})"
+            lines.append(line)
     return "\n".join(lines)
 
 
