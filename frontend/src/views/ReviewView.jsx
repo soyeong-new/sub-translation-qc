@@ -907,6 +907,24 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [excludePendingId, setExcludePendingId] = useState(null);
   const [excludeErrors, setExcludeErrors] = useState({});
 
+  // Hard(전체 표시)/Normal(클로드+지피티 둘 다 합의한 건만 카드로 안
+  // 보여줌) 화면 필터. 단일모델만 지적한 건은 한쪽 의견이라 부정확할 수
+  // 있어 Normal에서도 계속 보여준다 — 사람 확인이 꼭 필요하기 때문. 합의
+  // 건은 이미 최종 SRT에 제안문이 반영돼 있으므로(모델 검증을 통과했으니)
+  // 숨겨도 데이터 유실은 없다. 백엔드는 항상 전체를 그대로 저장하므로
+  // 재분석 없이 즉시 전환 가능.
+  const [displayMode, setDisplayMode] = useState(
+    () => localStorage.getItem("qc_display_mode") || "normal"
+  );
+  useEffect(() => {
+    localStorage.setItem("qc_display_mode", displayMode);
+  }, [displayMode]);
+  const visibleFindings = findings
+    ? displayMode === "normal"
+      ? findings.filter((f) => f.model !== "claude+gpt")
+      : findings
+    : findings;
+
   useEffect(() => {
     let cancelled = false;
     setFindings(null);
@@ -1313,9 +1331,37 @@ export default function ReviewView({ targetVersionId, onBack }) {
 
           <div className="space-y-8">
             <section aria-labelledby="findings-heading">
-              <h2 id="findings-heading" className="mb-3 text-lg font-semibold text-foreground">
-                Findings {findings ? `(${findings.length})` : ""}
-              </h2>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h2 id="findings-heading" className="text-lg font-semibold text-foreground">
+                  Findings {visibleFindings ? `(${visibleFindings.length})` : ""}
+                </h2>
+                <div className="flex overflow-hidden rounded-md border border-border text-sm">
+                  <button
+                    type="button"
+                    onClick={() => setDisplayMode("hard")}
+                    aria-pressed={displayMode === "hard"}
+                    className={`px-3 py-1 transition-colors ${
+                      displayMode === "hard"
+                        ? "bg-foreground text-background"
+                        : "bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Hard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDisplayMode("normal")}
+                    aria-pressed={displayMode === "normal"}
+                    className={`px-3 py-1 transition-colors ${
+                      displayMode === "normal"
+                        ? "bg-foreground text-background"
+                        : "bg-card text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Normal
+                  </button>
+                </div>
+              </div>
 
               {findings === null && !loadError && (
                 <p className="text-sm text-muted-foreground">불러오는 중...</p>
@@ -1325,13 +1371,13 @@ export default function ReviewView({ targetVersionId, onBack }) {
                   {loadError}
                 </p>
               )}
-              {findings && findings.length === 0 && (
+              {visibleFindings && visibleFindings.length === 0 && (
                 <p className="text-sm text-muted-foreground">표시할 finding이 없습니다.</p>
               )}
 
-              {findings && findings.length > 0 && (
+              {visibleFindings && visibleFindings.length > 0 && (
                 <ul className="space-y-4">
-                  {groupFindingsForDisplay(findings).map((item) => {
+                  {groupFindingsForDisplay(visibleFindings).map((item) => {
                     if (item.type === "pair") {
                       const { a, b } = item;
                       return (
