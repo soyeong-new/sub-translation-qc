@@ -1493,7 +1493,7 @@ export default function ReviewView({ targetVersionId, onBack }) {
               )}
             </section>
 
-            {halfPairSegments.length > 0 && (() => {
+            {displayMode === "hard" && halfPairSegments.length > 0 && (() => {
               const koreanOnlySegments = halfPairSegments.filter((s) => !s.target_text?.trim());
               const targetOnlySegments = halfPairSegments.filter((s) => Boolean(s.target_text?.trim()));
 
