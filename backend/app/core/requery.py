@@ -24,18 +24,14 @@ class RequeryNotSupportedError(ValueError):
 
 
 async def requery_finding(finding: FindingRow, segment: Segment, instruction: str,
-                           provider: ModelProvider, knowledge: str, profile: dict,
-                           context: str = "") -> str:
+                           provider: ModelProvider, knowledge: str, profile: dict) -> str:
     """finding을 만든 모델이 무엇이었든(claude/gpt/claude+gpt) GPT 하나로만
     단일 재검증한다 — 검수자가 이미 지시사항으로 방향을 정한 상태라, 원래의
     이중 독립검증(합의 필요)만큼 신중할 필요가 없다. 순수 규칙 기반(사전필터,
     그리고 안전망 중 rewrap_line만으로 해결된 "자동재배치")은 재질문 대상이
     아니다 — 판단을 내린 LLM이 없으므로 검수자가 직접 "수정"을 쓰는 게 맞다."""
     current_text = finding.final_text or finding.suggested_text or segment.target_text
-
     extra_instruction = instruction
-    if context:
-        extra_instruction = f"상황:\n{context}\n\n지시:\n{instruction}"
 
     if finding.model in _LLM_REQUERYABLE_MODELS:
         results = await provider.verify_and_refine(

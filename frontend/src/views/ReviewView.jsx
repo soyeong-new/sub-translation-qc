@@ -289,7 +289,7 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
 
 function FindingCard({
   finding, segment, isPreviewing, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
-  requerying, requeryText, requeryContext, requeryPending, onRequeryTextChange, onRequeryContextChange, onStartRequery, onCancelRequery, onSubmitRequery,
+  requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
@@ -503,17 +503,6 @@ function FindingCard({
 
       {requerying && (
         <div className="mt-3 space-y-2 rounded-md border border-border bg-background p-3">
-          <Field id={`requery-context-${finding.id}`} label="상황 설명 (선택사항)">
-            <textarea
-              id={`requery-context-${finding.id}`}
-              value={requeryContext}
-              onChange={(e) => onRequeryContextChange(e.target.value)}
-              rows={2}
-              disabled={requeryPending}
-              placeholder="예: 남편이 아내에게 화내며 말하는 장면, 격식 높은 상황"
-              className={inputClass}
-            />
-          </Field>
           <Field id={`requery-${finding.id}`} label="AI에게 다시 지시할 내용">
             <textarea
               id={`requery-${finding.id}`}
@@ -521,7 +510,7 @@ function FindingCard({
               onChange={(e) => onRequeryTextChange(e.target.value)}
               rows={2}
               disabled={requeryPending}
-              placeholder="예: 더 자연스러운 표현으로, 직역투를 줄여서"
+              placeholder="예: 남편이 아내에게 화내며 말하는 장면이라 더 거칠고 직설적인 표현으로, 직역투를 줄여서"
               className={inputClass}
             />
           </Field>
@@ -554,7 +543,7 @@ function PairedFindingCard({
   a, b, segment, isPreviewing, onPreview, reviewerName,
   pendingActions, findingErrors, editingId, editText, onEditTextChange,
   onPick, onReject, onRejectBoth, onStartEdit, onCancelEdit,
-  requeryingId, requeryText, requeryContext, requeryPendingId, onRequeryTextChange, onRequeryContextChange, onStartRequery, onCancelRequery, onSubmitRequery,
+  requeryingId, requeryText, requeryPendingId, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
@@ -683,17 +672,6 @@ function PairedFindingCard({
 
         {requerying && (
           <div className="mt-2 space-y-2 rounded-md border border-border bg-background p-2">
-            <Field id={`requery-context-${finding.id}`} label="상황 설명 (선택사항)">
-              <textarea
-                id={`requery-context-${finding.id}`}
-                value={requeryContext}
-                onChange={(e) => onRequeryContextChange(e.target.value)}
-                rows={2}
-                disabled={requeryPending}
-                placeholder="예: 남편이 아내에게 화내며 말하는 장면, 격식 높은 상황"
-                className={inputClass}
-              />
-            </Field>
             <Field id={`requery-${finding.id}`} label="AI에게 다시 지시할 내용">
               <textarea
                 id={`requery-${finding.id}`}
@@ -701,7 +679,7 @@ function PairedFindingCard({
                 onChange={(e) => onRequeryTextChange(e.target.value)}
                 rows={2}
                 disabled={requeryPending}
-                placeholder="예: 더 자연스러운 표현으로, 직역투를 줄여서"
+                placeholder="예: 남편이 아내에게 화내며 말하는 장면이라 더 거칠고 직설적인 표현으로, 직역투를 줄여서"
                 className={inputClass}
               />
             </Field>
@@ -867,7 +845,6 @@ export default function ReviewView({ targetVersionId, onBack }) {
   const [editText, setEditText] = useState("");
   const [requeryingId, setRequeryingId] = useState(null);
   const [requeryText, setRequeryText] = useState("");
-  const [requeryContext, setRequeryContext] = useState("");
   const [requeryPendingId, setRequeryPendingId] = useState(null);
   // STT 원문 수정은 finding이 아니라 segment 단위라 별도 state로 관리한다
   // (editingId/requeryingId는 finding.id 기준이라 재사용하면 segment.id와
@@ -1114,10 +1091,9 @@ export default function ReviewView({ targetVersionId, onBack }) {
   async function handleRequery(findingId) {
     setRequeryPendingId(findingId);
     try {
-      await requeryFinding(findingId, requeryText, reviewerName, requeryContext);
+      await requeryFinding(findingId, requeryText, reviewerName);
       setFindings(await getFindings(targetVersionId));
       setRequeryingId((cur) => (cur === findingId ? null : cur));
-      setRequeryContext("");
     } catch (err) {
       setFindingErrors((prev) => ({
         ...prev,
@@ -1395,19 +1371,13 @@ export default function ReviewView({ targetVersionId, onBack }) {
                           onCancelEdit={() => setEditingId(null)}
                           requeryingId={requeryingId}
                           requeryText={requeryText}
-                          requeryContext={requeryContext}
                           requeryPendingId={requeryPendingId}
                           onRequeryTextChange={setRequeryText}
-                          onRequeryContextChange={setRequeryContext}
                           onStartRequery={(finding) => {
                             setRequeryingId(finding.id);
                             setRequeryText("");
-                            setRequeryContext("");
                           }}
-                          onCancelRequery={() => {
-                            setRequeryingId(null);
-                            setRequeryContext("");
-                          }}
+                          onCancelRequery={() => setRequeryingId(null)}
                           onSubmitRequery={(findingId) => handleRequery(findingId)}
                           sttEditing={sttEditingId === a.segment_id}
                           sttEditText={sttEditText}
@@ -1448,19 +1418,13 @@ export default function ReviewView({ targetVersionId, onBack }) {
                         onSaveEdit={() => handleAction(f.id, "modified", editText)}
                         requerying={requeryingId === f.id}
                         requeryText={requeryText}
-                        requeryContext={requeryContext}
                         requeryPending={requeryPendingId === f.id}
                         onRequeryTextChange={setRequeryText}
-                        onRequeryContextChange={setRequeryContext}
                         onStartRequery={() => {
                           setRequeryingId(f.id);
                           setRequeryText("");
-                          setRequeryContext("");
                         }}
-                        onCancelRequery={() => {
-                          setRequeryingId(null);
-                          setRequeryContext("");
-                        }}
+                        onCancelRequery={() => setRequeryingId(null)}
                         onSubmitRequery={() => handleRequery(f.id)}
                         sttEditing={sttEditingId === f.segment_id}
                         sttEditText={sttEditText}

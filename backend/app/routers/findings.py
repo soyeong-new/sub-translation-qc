@@ -85,7 +85,6 @@ class RejectPairIn(BaseModel):
 
 class RequeryIn(BaseModel):
     instruction: str
-    context: str = ""
     reviewer_name: str
 
 
@@ -344,7 +343,7 @@ async def requery(finding_id: str, payload: RequeryIn):
 
         try:
             new_suggested_text = await requery_finding(
-                finding, segment, payload.instruction, provider, knowledge, profile, payload.context)
+                finding, segment, payload.instruction, provider, knowledge, profile)
         except RequeryNotSupportedError as exc:
             raise HTTPException(400, str(exc))
 
