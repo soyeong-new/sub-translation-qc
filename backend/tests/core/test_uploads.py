@@ -2,25 +2,20 @@ import subprocess
 import pytest
 from pathlib import Path
 from app.core.uploads import (
-    build_upload_destination, save_upload, save_video_upload_streamed, _probably_faststart,
+    build_upload_destination, save_upload, save_video_upload_streamed,
     UnsupportedFileType, VIDEO_EXTENSIONS,
 )
 
 
-def _make_test_video(path: Path, duration: int, size: str, faststart: bool) -> None:
-    """실제 ffmpeg으로 테스트용 mp4를 생성한다 — subprocess를 모킹하면
-    "파이프 입력에서 seek 불가능해 실패한다"는 실제 ffmpeg 동작 자체를
-    검증할 수 없어(이 버그를 처음 찾을 때도 실제 ffmpeg으로만 재현됐다),
-    이 파일만은 예외적으로 진짜 ffmpeg을 돌린다."""
+def _make_test_video(path: Path, duration: int, size: str) -> None:
+    """실제 ffmpeg으로 테스트용 mp4를 생성한다."""
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"testsrc=duration={duration}:size={size}:rate=30",
         "-f", "lavfi", "-i", f"sine=frequency=1000:duration={duration}",
         "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+        str(path),
     ]
-    if faststart:
-        cmd += ["-movflags", "+faststart"]
-    cmd += [str(path)]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -84,35 +79,14 @@ async def test_save_upload_deletes_partial_file_when_write_fails(tmp_path, monke
     assert leftover == []
 
 
-def test_probably_faststart_detects_moov_before_mdat():
-    header = b"\x00\x00\x00\x14ftyp" + b"x" * 12 + b"\x00\x00\x00\x08moov"
-    assert _probably_faststart(header) is True
-
-
-def test_probably_faststart_detects_mdat_before_moov():
-    header = b"\x00\x00\x00\x14ftyp" + b"x" * 12 + b"\x00\x00\x00\x08mdat"
-    assert _probably_faststart(header) is False
-
-
-def test_probably_faststart_skips_boxes_using_declared_size():
-    # ftyp(24바이트) 다음에 바로 moov가 오는 걸, size 필드로 건너뛰어 찾아야 한다.
-    ftyp = (24).to_bytes(4, "big") + b"ftyp" + b"x" * 16
-    moov = (8).to_bytes(4, "big") + b"moov"
-    assert _probably_faststart(ftyp + moov) is True
-
-
-def test_probably_faststart_returns_false_when_neither_box_found():
-    assert _probably_faststart(b"not a real mp4 header at all") is False
-
-
 @pytest.mark.asyncio
-async def test_save_video_upload_streamed_transcodes_faststart_video_via_pipe(tmp_path, monkeypatch):
-    """design 2026-08-31: 원본을 통째로 복사하지 않고, 받으면서 바로
-    ffmpeg에 흘려보내 압축된 결과만 저장해야 한다 — faststart(moov가
-    앞쪽) 입력이면 파이프로도 정상 처리된다."""
+async def test_save_video_upload_streamed_saves_then_compresses(tmp_path, monkeypatch):
+    """design 2026-09-01: 원본을 먼저 디스크에 그대로 받아 적은 뒤, 그
+    파일을 입력으로 ffmpeg 압축을 돌린다(파이프 스트리밍에서 되돌림 —
+    네트워크 연결이 끊기면 파이프에 물린 ffmpeg까지 함께 죽는 문제)."""
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
     src = tmp_path / "src.mp4"
-    _make_test_video(src, duration=1, size="320x240", faststart=True)
+    _make_test_video(src, duration=20, size="640x480")
 
     path = await save_video_upload_streamed("clip.mp4", _bytes_stream(src.read_bytes()))
 
@@ -120,27 +94,9 @@ async def test_save_video_upload_streamed_transcodes_faststart_video_via_pipe(tm
     assert out.exists()
     assert out.stat().st_size > 0
     assert out.parent == tmp_path / "video"
-    # 임시 파일이 하나도 안 남아야 한다(원자적 교체).
-    assert list(tmp_path.glob("video/.out_*")) == []
-
-
-@pytest.mark.asyncio
-async def test_save_video_upload_streamed_falls_back_automatically_for_non_faststart_video(tmp_path, monkeypatch):
-    """design 2026-08-31, 갱신: moov가 파일 끝에 있는(faststart 아닌)
-    영상도 사용자가 미리 아무것도 안 해도 자동으로 성공해야 한다 —
-    파이프로 안 되면 서버가 알아서 임시 파일에 받아 적어 압축한다."""
-    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    src = tmp_path / "src.mp4"
-    _make_test_video(src, duration=20, size="640x480", faststart=False)
-
-    path = await save_video_upload_streamed("clip.mp4", _bytes_stream(src.read_bytes()))
-
-    out = Path(path)
-    assert out.exists()
-    assert out.stat().st_size > 0
-    # 원본(2.x MB대)보다 압축 결과물이 작아야 한다.
+    # 원본보다 압축 결과물이 작아야 한다.
     assert out.stat().st_size < src.stat().st_size
-    # 폴백 경로가 쓰는 임시 파일(원본 받는 용/ffmpeg 출력용)이 안 남아야 한다.
+    # 임시 파일(원본 받는 용/ffmpeg 출력용)이 하나도 안 남아야 한다.
     assert list(tmp_path.glob("video/.in_*")) == []
     assert list(tmp_path.glob("video/.out_*")) == []
 

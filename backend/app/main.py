@@ -20,12 +20,12 @@ app = FastAPI(title="Sub Translation QC ES")
 # 업로드는 원본 크기만큼 그대로 저장하므로 이 값을 계속 쓴다.
 UPLOAD_SAFETY_MARGIN_BYTES = 1024 ** 3
 
-# /uploads/video는 이제 원본을 그대로 저장하지 않고 받으면서 바로 ffmpeg으로
-# 압축한다(save_video_upload_streamed, design 2026-08-31) — 그래서 필요
-# 용량이 원본 크기와 무관해졌다. 압축 결과물 + 이후 480p 프록시/오디오
-# 추출 여유분만 고정으로 확인하면 된다(원본 Content-Length 기준 계산은
-# 더 이상 의미가 없다 — 오히려 큰 원본을 불필요하게 거부하게 된다).
-VIDEO_UPLOAD_MIN_FREE_BYTES = 2 * 1024 ** 3
+# /uploads/video는 다시 원본을 먼저 디스크에 그대로 받아 적은 뒤 압축한다
+# (design 2026-09-01 — save_video_upload_streamed 참고, 네트워크 끊김에
+# 파이프째로 죽는 문제 때문에 되돌림). 그래서 필요 용량이 다시 원본
+# 크기(Content-Length)에 비례한다. 압축 결과물 + 480p 프록시/오디오
+# 추출까지 겹치는 여유분으로 srt류보다 넉넉히 잡는다.
+VIDEO_UPLOAD_SAFETY_MARGIN_BYTES = 2 * 1024 ** 3
 
 
 def _insufficient_storage_response(needed: int, free: int) -> JSONResponse:
@@ -46,15 +46,15 @@ async def _reject_uploads_when_disk_low(request: Request, call_next):
     본문을 읽기 시작하기도 전에 명확한 에러로 막는다."""
     if request.method == "POST" and request.url.path.startswith("/uploads/"):
         free = shutil.disk_usage(MEDIA_ROOT).free
-        if request.url.path == "/uploads/video":
-            if free < VIDEO_UPLOAD_MIN_FREE_BYTES:
-                return _insufficient_storage_response(VIDEO_UPLOAD_MIN_FREE_BYTES, free)
-        else:
-            content_length = request.headers.get("content-length")
-            if content_length is not None:
-                needed = int(content_length) + UPLOAD_SAFETY_MARGIN_BYTES
-                if needed > free:
-                    return _insufficient_storage_response(needed, free)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            margin = (
+                VIDEO_UPLOAD_SAFETY_MARGIN_BYTES if request.url.path == "/uploads/video"
+                else UPLOAD_SAFETY_MARGIN_BYTES
+            )
+            needed = int(content_length) + margin
+            if needed > free:
+                return _insufficient_storage_response(needed, free)
     return await call_next(request)
 
 (MEDIA_ROOT / "video_proxy").mkdir(parents=True, exist_ok=True)

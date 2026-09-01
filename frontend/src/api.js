@@ -207,15 +207,13 @@ function uploadWithProgress(path, file, onProgress) {
   return sendWithProgress(path, formData, onProgress);
 }
 
-// 영상은 multipart가 아니라 파일 그대로(raw body)로 보낸다 — 서버가 받는
-// 즉시 ffmpeg으로 압축해 저장하므로(design 2026-08-31), FastAPI의 자동
-// multipart 파싱(원본 전체를 먼저 통째로 임시 저장)을 거치지 않아야
-// 순간 필요 용량이 원본 크기와 무관해진다. 파일명은 본문이 아니라
-// 헤더로 보낸다(한글 등 비ASCII 파일명 대응을 위해 encodeURIComponent).
-// faststart(메타데이터가 파일 앞쪽) 영상이면 서버가 받으면서 바로
-// 흘려보내 처리하고, 아니면 서버가 자동으로 감지해서 임시로 받아 적은
-// 뒤 압축한다 — 어느 쪽이든 자동으로 성공하니 업로드 전에 미리 변환할
-// 필요 없다.
+// 영상은 multipart가 아니라 파일 그대로(raw body)로 보낸다 — FastAPI의
+// 자동 multipart 파싱은 원본 전체를 먼저 통째로 임시 저장해버려서, 그
+// 위에 서버가 또 복사본을 만들면 순간 필요 용량이 원본의 2배가 된다.
+// 파일명은 본문이 아니라 헤더로 보낸다(한글 등 비ASCII 파일명 대응을
+// 위해 encodeURIComponent). 서버는 원본을 먼저 디스크에 그대로 받아
+// 적은 뒤(design 2026-09-01) ffmpeg으로 압축한다 — 그래서 원본 크기만큼의
+// 여유 공간은 필요하다(2배는 아님).
 function uploadRawWithProgress(path, file, onProgress) {
   return sendWithProgress(path, file, onProgress, {
     "X-Filename": encodeURIComponent(file.name),
