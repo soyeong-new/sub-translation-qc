@@ -3,29 +3,39 @@
 from urllib.parse import unquote
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from app.core.uploads import (
-    save_upload, save_video_upload_streamed, UnsupportedFileType, VIDEO_EXTENSIONS, SRT_EXTENSIONS,
+    save_upload, save_video_chunk, UnsupportedFileType, SRT_EXTENSIONS,
 )
 
 router = APIRouter()
 
 
-@router.post("/uploads/video")
-async def upload_video(request: Request):
-    """multipart가 아니라 요청 본문 그대로(raw body) 받는다 — FastAPI의
-    UploadFile은 원본 전체를 먼저 통째로 임시 저장해버려서, 그 위에 우리가
-    또 복사본을 만들면 순간적으로 원본의 2배 용량이 필요하다(design
-    2026-08-31, 실측 장애). request.stream()으로 받은 바이트를 그대로
-    ffmpeg에 흘려보내 압축된 결과만 저장한다. 파일명은 멀티파트 본문 안이
-    아니라 헤더로 받는다(프론트는 encodeURIComponent로 인코딩해서 보낸다)."""
+@router.post("/uploads/video/chunk")
+async def upload_video_chunk(request: Request):
+    """영상을 청크(조각) 단위로 순서대로 받는다(design 2026-09-02) —
+    한 청크가 네트워크 문제로 실패해도 그 청크만 재전송하면 되고, 파일
+    전체를 처음부터 다시 보낼 필요가 없다. 마지막 청크를 받으면 그 자리에서
+    압축까지 마치고 최종 경로를 반환하며, 그 전까지는 다음 청크를
+    요청하는 응답만 돌려준다. 파일명/청크 정보는 본문이 아니라 헤더로
+    받는다(프론트는 encodeURIComponent로 인코딩해서 보낸다)."""
     filename = request.headers.get("x-filename")
-    if not filename:
-        raise HTTPException(400, "X-Filename 헤더가 필요합니다")
+    upload_id = request.headers.get("x-upload-id")
+    chunk_index = request.headers.get("x-chunk-index")
+    total_chunks = request.headers.get("x-total-chunks")
+    if not filename or not upload_id or chunk_index is None or total_chunks is None:
+        raise HTTPException(
+            400, "X-Filename/X-Upload-Id/X-Chunk-Index/X-Total-Chunks 헤더가 필요합니다",
+        )
+    data = await request.body()
     try:
-        path = await save_video_upload_streamed(unquote(filename), request.stream())
+        path = await save_video_chunk(
+            upload_id, int(chunk_index), int(total_chunks), unquote(filename), data,
+        )
     except UnsupportedFileType as exc:
         raise HTTPException(400, str(exc))
     except RuntimeError as exc:
         raise HTTPException(400, str(exc))
+    if path is None:
+        return {"status": "chunk-received"}
     return {"path": path}
 
 

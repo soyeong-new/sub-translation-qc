@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Awaitable, AsyncIterator, Callable, Set
+from typing import Awaitable, Callable, Optional, Set
 
 MEDIA_ROOT = Path(__file__).resolve().parents[2] / "media"
 
@@ -71,35 +71,71 @@ async def _run_ffmpeg(args: list) -> None:
         raise RuntimeError(f"영상 변환 실패: {stderr.decode(errors='replace')[-500:]}")
 
 
-async def save_video_upload_streamed(filename: str, body_stream: AsyncIterator[bytes]) -> str:
-    """받은 영상을 먼저 그대로 디스크에 스트리밍 저장한 뒤(원본 저장이
-    다 끝나야만), 그 파일을 입력으로 ffmpeg 압축을 돌린다(design
-    2026-09-01, 이전의 "받으면서 바로 파이프로 압축" 방식에서 되돌림).
+_UPLOAD_SESSIONS: dict[str, dict] = {}
 
-    되돌린 이유: 업로드 도중 네트워크 연결이 끊기면(ClientDisconnect)
-    파이프로 물려있던 ffmpeg 프로세스도 함께 죽어 처음부터 다시
-    받아야 했다. 원본을 먼저 온전히 디스크에 받아두면, 압축은 더 이상
-    살아있는 네트워크 연결에 얽매이지 않는 별도 단계가 되고, 업로드
-    구간 자체도 ffmpeg과 CPU를 다투지 않아 더 가벼워진다. 대신 이제
-    원본 크기만큼의 임시 공간이 필요하다 — 호출자(미들웨어)가 여유
-    공간을 Content-Length 기준으로 미리 확인해야 한다.
 
-    ffmpeg 출력은 항상 임시 이름으로 먼저 쓰고 성공했을 때만 최종
-    경로로 원자적으로 교체한다(os.replace) — 프로세스가 예외 없이
-    강제 종료되면(서버 재시작 등) except 블록이 못 도는데, 최종
-    경로에 바로 썼다면 깨진 파일이 그대로 남는다."""
-    dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
-    in_tmp = dest.with_name(f".in_{dest.name}")
+async def save_video_chunk(
+    upload_id: str, chunk_index: int, total_chunks: int, filename: str, data: bytes,
+) -> Optional[str]:
+    """청크 하나를 원본 임시 파일에 이어 쓴다. 마지막 청크(total_chunks - 1)
+    까지 다 받으면 ffmpeg으로 압축해 최종 경로를 반환하고, 아니면 None을
+    반환한다(호출자가 "다음 청크 보내라"고 응답).
+
+    design 2026-09-02: 업로드 하나를 통짜 HTTP 요청 하나로 보내면, 연결이
+    한 번만 끊겨도(브라우저 탭이 백그라운드로 밀리는 것만으로도 발생)
+    수백MB~수GB를 처음부터 다시 보내야 했다. 파일을 작은 청크로 나눠
+    순서대로 보내면, 청크 하나가 실패해도 그 청크만 재전송하면 된다.
+    이미 받은 청크 번호가 다시 오면(응답을 못 받은 클라이언트의 재시도)
+    조용히 무시해 중복으로 이어 쓰지 않는다.
+
+    ponytail: 세션 상태는 프로세스 메모리 dict — 단일 uvicorn 워커라
+    충돌 없다. 서버가 재시작되면 진행 중이던 세션은 유실된다(그 경우
+    클라이언트가 새 upload_id로 처음부터 다시 시작해야 한다) — 순간적인
+    네트워크 끊김을 감당하려는 목적이라 이 정도 한계는 감수할 만하다."""
+    session = _UPLOAD_SESSIONS.get(upload_id)
+    if session is None:
+        if chunk_index != 0:
+            raise RuntimeError("업로드 세션을 찾을 수 없습니다 — 처음부터 다시 시도해주세요.")
+        dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
+        session = {"dest": dest, "in_tmp": dest.with_name(f".in_{dest.name}"), "next_index": 0}
+        _UPLOAD_SESSIONS[upload_id] = session
+
+    if chunk_index < session["next_index"]:
+        # 이미 받은 청크의 재전송 — 무시하되, 그게 마지막 청크였다면(이미
+        # 압축까지 끝났다면) 그때 응답을 못 받은 클라이언트를 위해 최종
+        # 경로를 다시 돌려준다(그래야 클라이언트가 끝난 걸 알 수 있다).
+        return session.get("done_path")
+    if chunk_index != session["next_index"]:
+        _UPLOAD_SESSIONS.pop(upload_id, None)
+        Path(session["in_tmp"]).unlink(missing_ok=True)
+        raise RuntimeError(f"청크 순서가 어긋났습니다(기대 {session['next_index']}, 받음 {chunk_index})")
+
+    try:
+        with open(session["in_tmp"], "ab") as out:
+            out.write(data)
+    except Exception:
+        _UPLOAD_SESSIONS.pop(upload_id, None)
+        Path(session["in_tmp"]).unlink(missing_ok=True)
+        raise
+    session["next_index"] += 1
+
+    if chunk_index != total_chunks - 1:
+        return None
+
+    dest = session["dest"]
     out_tmp = dest.with_name(f".out_{dest.name}")
     try:
-        with open(in_tmp, "wb") as out:
-            async for chunk in body_stream:
-                out.write(chunk)
-        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(in_tmp), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
+        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(session["in_tmp"]), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
         Path(out_tmp).replace(dest)
     except Exception:
+        _UPLOAD_SESSIONS.pop(upload_id, None)
         Path(out_tmp).unlink(missing_ok=True)
         raise
     finally:
-        Path(in_tmp).unlink(missing_ok=True)
+        Path(session["in_tmp"]).unlink(missing_ok=True)
+    # ponytail: 성공한 세션은 done_path만 남기고 dict에 그대로 둔다(늦게
+    # 오는 마지막 청크 재시도에 응답하기 위해) — 프로세스 수명 내내 조금씩
+    # 쌓이지만 항목이 가벼워(Path 두어 개) 이 앱 사용량에선 무해하다.
+    # 문제가 되면 그때 TTL 청소를 추가한다.
+    session["done_path"] = str(dest)
     return str(dest)

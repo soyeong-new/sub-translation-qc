@@ -207,21 +207,43 @@ function uploadWithProgress(path, file, onProgress) {
   return sendWithProgress(path, formData, onProgress);
 }
 
-// 영상은 multipart가 아니라 파일 그대로(raw body)로 보낸다 — FastAPI의
-// 자동 multipart 파싱은 원본 전체를 먼저 통째로 임시 저장해버려서, 그
-// 위에 서버가 또 복사본을 만들면 순간 필요 용량이 원본의 2배가 된다.
-// 파일명은 본문이 아니라 헤더로 보낸다(한글 등 비ASCII 파일명 대응을
-// 위해 encodeURIComponent). 서버는 원본을 먼저 디스크에 그대로 받아
-// 적은 뒤(design 2026-09-01) ffmpeg으로 압축한다 — 그래서 원본 크기만큼의
-// 여유 공간은 필요하다(2배는 아님).
-function uploadRawWithProgress(path, file, onProgress) {
-  return sendWithProgress(path, file, onProgress, {
-    "X-Filename": encodeURIComponent(file.name),
-  });
+// 영상은 청크(조각) 단위로 순서대로 올린다(design 2026-09-02) — 통짜 요청
+// 하나로 보내면 연결이 한 번만 끊겨도(브라우저 탭이 백그라운드로 밀리는
+// 것만으로도 실측 발생) 수백MB~수GB를 처음부터 다시 보내야 했다. 청크
+// 하나가 실패하면 그 청크만 몇 번 재시도하고, 그래도 안 되면 그때 실패
+// 처리한다. File.slice()는 브라우저 기본 기능이라 추가 라이브러리 없이도
+// 나눌 수 있다.
+const VIDEO_CHUNK_SIZE = 20 * 1024 * 1024; // 20MB
+const VIDEO_CHUNK_RETRIES = 3;
+
+async function sendChunkWithRetry(chunk, headers) {
+  for (let attempt = 1; attempt <= VIDEO_CHUNK_RETRIES; attempt++) {
+    try {
+      return await sendWithProgress("/uploads/video/chunk", chunk, null, headers);
+    } catch (err) {
+      if (attempt === VIDEO_CHUNK_RETRIES) throw err;
+    }
+  }
 }
 
-export const uploadVideo = (file, onProgress) =>
-  uploadRawWithProgress("/uploads/video", file, onProgress);
+export async function uploadVideo(file, onProgress) {
+  const totalChunks = Math.max(1, Math.ceil(file.size / VIDEO_CHUNK_SIZE));
+  const uploadId = crypto.randomUUID();
+  const filename = encodeURIComponent(file.name);
+  let result;
+  for (let i = 0; i < totalChunks; i++) {
+    const chunk = file.slice(i * VIDEO_CHUNK_SIZE, (i + 1) * VIDEO_CHUNK_SIZE);
+    result = await sendChunkWithRetry(chunk, {
+      "X-Filename": filename,
+      "X-Upload-Id": uploadId,
+      "X-Chunk-Index": String(i),
+      "X-Total-Chunks": String(totalChunks),
+      "X-Total-Size": String(file.size),
+    });
+    if (onProgress) onProgress(Math.round(((i + 1) / totalChunks) * 100));
+  }
+  return result;
+}
 
 export const uploadSrt = (file, onProgress) =>
   uploadWithProgress("/uploads/srt", file, onProgress);

@@ -1,8 +1,9 @@
 import subprocess
+import uuid
 import pytest
 from pathlib import Path
 from app.core.uploads import (
-    build_upload_destination, save_upload, save_video_upload_streamed,
+    build_upload_destination, save_upload, save_video_chunk,
     UnsupportedFileType, VIDEO_EXTENSIONS,
 )
 
@@ -19,9 +20,8 @@ def _make_test_video(path: Path, duration: int, size: str) -> None:
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-async def _bytes_stream(data: bytes, chunk_size: int = 65536):
-    for i in range(0, len(data), chunk_size):
-        yield data[i:i + chunk_size]
+def _chunks(data: bytes, chunk_size: int) -> list:
+    return [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)] or [b""]
 
 
 def test_build_upload_destination_strips_directory_components(tmp_path, monkeypatch):
@@ -80,35 +80,76 @@ async def test_save_upload_deletes_partial_file_when_write_fails(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_save_video_upload_streamed_saves_then_compresses(tmp_path, monkeypatch):
-    """design 2026-09-01: 원본을 먼저 디스크에 그대로 받아 적은 뒤, 그
-    파일을 입력으로 ffmpeg 압축을 돌린다(파이프 스트리밍에서 되돌림 —
-    네트워크 연결이 끊기면 파이프에 물린 ffmpeg까지 함께 죽는 문제)."""
+async def test_save_video_chunk_assembles_then_compresses(tmp_path, monkeypatch):
+    """design 2026-09-02: 청크를 순서대로 이어 받다가, 마지막 청크에서
+    합쳐진 원본을 ffmpeg으로 압축한다. 중간 청크들은 아직 안 끝났다는
+    뜻으로 None을 반환하고, 마지막 청크에서만 최종 경로를 반환한다."""
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
     src = tmp_path / "src.mp4"
     _make_test_video(src, duration=20, size="640x480")
+    chunks = _chunks(src.read_bytes(), chunk_size=200_000)
+    upload_id = str(uuid.uuid4())
 
-    path = await save_video_upload_streamed("clip.mp4", _bytes_stream(src.read_bytes()))
+    path = None
+    for i, chunk in enumerate(chunks):
+        path = await save_video_chunk(upload_id, i, len(chunks), "clip.mp4", chunk)
+        if i < len(chunks) - 1:
+            assert path is None
 
     out = Path(path)
     assert out.exists()
     assert out.stat().st_size > 0
     assert out.parent == tmp_path / "video"
-    # 원본보다 압축 결과물이 작아야 한다.
     assert out.stat().st_size < src.stat().st_size
-    # 임시 파일(원본 받는 용/ffmpeg 출력용)이 하나도 안 남아야 한다.
     assert list(tmp_path.glob("video/.in_*")) == []
     assert list(tmp_path.glob("video/.out_*")) == []
 
 
 @pytest.mark.asyncio
-async def test_save_video_upload_streamed_cleans_up_for_corrupt_input(tmp_path, monkeypatch):
-    """진짜 깨진(영상이 아닌) 입력은 어느 경로를 타든 결국 실패해야 하고,
-    이때 최종 경로에도 임시 파일에도 아무것도 안 남아야 한다."""
+async def test_save_video_chunk_ignores_retried_chunk(tmp_path, monkeypatch):
+    """실측 시나리오: 청크를 보내고 서버는 저장했는데 응답이 클라이언트에
+    안 닿으면(네트워크 순간 끊김), 클라이언트는 같은 청크 번호를 다시
+    보낸다 — 이걸 그대로 이어 쓰면 파일이 중복 데이터로 깨지므로 무시해야
+    한다. 재전송된 게 마지막 청크라면(이미 압축까지 끝났다면), 다시
+    이어 쓰지는 않되 응답을 못 받은 클라이언트를 위해 같은 최종 경로를
+    돌려줘야 한다 — 새 파일을 또 만들거나 재압축하면 안 된다."""
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
+    src = tmp_path / "src.mp4"
+    _make_test_video(src, duration=1, size="320x240")
+    data = src.read_bytes()
+    chunks = _chunks(data, chunk_size=len(data))  # 한 청크
+    upload_id = str(uuid.uuid4())
+
+    result1 = await save_video_chunk(upload_id, 0, 1, "clip.mp4", chunks[0])
+    result2 = await save_video_chunk(upload_id, 0, 1, "clip.mp4", chunks[0])  # 재시도
+
+    assert result1 is not None  # 마지막(유일한) 청크라 바로 압축까지 끝남
+    assert result2 == result1  # 같은 최종 경로를 다시 돌려줘야 한다(재압축 X)
+    assert len(list((tmp_path / "video").glob("*.mp4"))) == 1  # 중복 파일 없음
+
+
+@pytest.mark.asyncio
+async def test_save_video_chunk_rejects_out_of_order_chunk(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
+    upload_id = str(uuid.uuid4())
+    await save_video_chunk(upload_id, 0, 3, "clip.mp4", b"first")
 
     with pytest.raises(RuntimeError):
-        await save_video_upload_streamed("clip.mp4", _bytes_stream(b"not a real video" * 1000))
+        await save_video_chunk(upload_id, 2, 3, "clip.mp4", b"third")  # 1번을 건너뜀
+
+    leftover = list((tmp_path / "video").glob("*")) if (tmp_path / "video").exists() else []
+    assert leftover == []
+
+
+@pytest.mark.asyncio
+async def test_save_video_chunk_cleans_up_for_corrupt_input(tmp_path, monkeypatch):
+    """진짜 깨진(영상이 아닌) 입력은 마지막 청크에서 압축이 실패해야 하고,
+    이때 최종 경로에도 임시 파일에도 아무것도 안 남아야 한다."""
+    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
+    upload_id = str(uuid.uuid4())
+
+    with pytest.raises(RuntimeError):
+        await save_video_chunk(upload_id, 0, 1, "clip.mp4", b"not a real video" * 1000)
 
     leftover = list((tmp_path / "video").glob("*")) if (tmp_path / "video").exists() else []
     assert leftover == []
