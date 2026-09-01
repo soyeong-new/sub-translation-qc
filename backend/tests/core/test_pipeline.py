@@ -755,28 +755,32 @@ async def test_pipeline_auto_corrects_constant_offset_with_korean_srt_path(tmp_p
     assert matched["Linea 3"] == "대사 3"
 
 
-def test_median_offset_from_stt_matches_ignores_cues_beyond_limit_and_outliers():
+def test_median_offset_from_stt_matches_ignores_cues_beyond_clip_and_outliers():
     raw_cues = [
         SegmentText(start=0.0, end=1.0, text="a"),
         SegmentText(start=10.0, end=11.0, text="b"),
         SegmentText(start=20.0, end=21.0, text="c"),
-        SegmentText(start=999.0, end=1000.0, text="far away, outside anchor window"),
+        SegmentText(start=999.0, end=1000.0, text="far away, outside transcribed clip"),
     ]
     matched_words = [
         {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "a", "confirmed": True},   # +20
         {"cue_index": 1, "start": 30.5, "end": 31.0, "text": "b", "confirmed": True},   # +20.5
         {"cue_index": 2, "start": 61.0, "end": 61.5, "text": "c", "confirmed": True},   # +41 (outlier)
-        # cue_index 3은 num_cues(=3) 범위 밖이라 무시돼야 한다.
+        # cue_index 3은 clip_duration(=30.0) 밖(시작 시각 999.0)이라 무시돼야 한다.
         {"cue_index": 3, "start": 5000.0, "end": 5000.5, "text": "z", "confirmed": True},
     ]
-    offset = _median_offset_from_stt_matches(matched_words, raw_cues, num_cues=3)
+    offset = _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=30.0)
     assert offset == pytest.approx(20.5)
 
 
-def test_median_offset_from_stt_matches_returns_none_when_no_matches_within_limit():
-    raw_cues = [SegmentText(start=0.0, end=1.0, text="a")]
-    matched_words = [{"cue_index": 5, "start": 100.0, "end": 100.5, "text": "far", "confirmed": True}]
-    assert _median_offset_from_stt_matches(matched_words, raw_cues, num_cues=3) is None
+def test_median_offset_from_stt_matches_returns_none_when_no_matches_within_clip():
+    raw_cues = [
+        SegmentText(start=0.0, end=1.0, text="a"),
+        SegmentText(start=5.0, end=6.0, text="b"),
+        SegmentText(start=100.0, end=101.0, text="far"),
+    ]
+    matched_words = [{"cue_index": 2, "start": 100.0, "end": 100.5, "text": "far", "confirmed": True}]
+    assert _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=30.0) is None
 
 
 def test_median_offset_from_stt_matches_ignores_unconfirmed_interpolated_words():
@@ -793,8 +797,17 @@ def test_median_offset_from_stt_matches_ignores_unconfirmed_interpolated_words()
         # 아래 기대값(20.0)이 아니라 둘의 중앙값이 나온다.
         {"cue_index": 1, "start": 999.0, "end": 999.5, "text": "b", "confirmed": False},
     ]
-    offset = _median_offset_from_stt_matches(matched_words, raw_cues, num_cues=2)
+    offset = _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=30.0)
     assert offset == pytest.approx(20.0)
+
+
+def test_median_offset_from_stt_matches_ignores_cue_index_out_of_range():
+    """matched_words의 cue_index가 raw_cues 길이를 벗어나면(정상 경로에서는
+    두 값이 같은 파일에서 나와 항상 맞아야 하지만) IndexError로 죽는 대신
+    조용히 무시한다."""
+    raw_cues = [SegmentText(start=0.0, end=1.0, text="a")]
+    matched_words = [{"cue_index": 5, "start": 100.0, "end": 100.5, "text": "far", "confirmed": True}]
+    assert _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=1000.0) is None
 
 
 @pytest.mark.asyncio

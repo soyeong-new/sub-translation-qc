@@ -132,10 +132,15 @@ _VIDEO_SYNC_CLIP_MARGIN_SECONDS = 90.0
 
 
 def _median_offset_from_stt_matches(matched_words: list, raw_cues: list,
-                                     num_cues: int = _VIDEO_SYNC_ANCHOR_CUES) -> Optional[float]:
-    """match_stt_words_to_korean_srt가 돌려준 단어별 실측 타이밍을 앞쪽
-    num_cues개 큐로만 제한해서, 큐별 "실측 시작 시각 - SRT 표기 시작 시각"
-    차이의 중앙값을 구한다. confirmed=False(양옆 확정 지점 사이에서 글자수
+                                     clip_duration: float) -> Optional[float]:
+    """match_stt_words_to_korean_srt가 돌려준 단어별 실측 타이밍 중, 실제로
+    STT가 커버한 구간(clip_duration) 안의 큐만 후보로 큐별 "실측 시작 시각 -
+    SRT 표기 시작 시각" 차이의 중앙값을 구한다. 개수(앞쪽 몇 개)가 아니라
+    시간으로 자르는 이유: 실측으로 확인된 오탐 — 앞쪽 몇 줄이 이름·감탄사처럼
+    STT가 놓치기 쉬운 대사에 몰려 있으면, 이미 같은 클립 안에 있는(=추가
+    STT 비용 없이 쓸 수 있는) 그 다음 줄들의 멀쩡한 확정 매칭까지 개수
+    제한 때문에 버려져 "동기화 지점을 못 찾음"으로 잘못 실패했다(영상
+    자체는 실제로 맞는데도). confirmed=False(양옆 확정 지점 사이에서 글자수
     비례로 추정한 값, 실측 아님)인 단어는 아예 근거에서 뺀다 — 고유명사
     (인명·마스코트 이름 등)를 STT가 잘못 들어 확정을 못 한 큐를 실측인
     것처럼 오프셋 계산에 넣었다가 실제로 안 맞는 사례가 확인됐다(design
@@ -146,7 +151,9 @@ def _median_offset_from_stt_matches(matched_words: list, raw_cues: list,
     offset_by_cue_index: dict = {}
     for w in matched_words:
         idx = w["cue_index"]
-        if idx >= num_cues or idx in offset_by_cue_index or not w.get("confirmed"):
+        if idx >= len(raw_cues) or idx in offset_by_cue_index or not w.get("confirmed"):
+            continue
+        if raw_cues[idx].start >= clip_duration:
             continue
         offset_by_cue_index[idx] = w["start"] - raw_cues[idx].start
     if not offset_by_cue_index:
@@ -199,12 +206,16 @@ async def _detect_raw_video_sync_offset(
         return None
 
     matched_words = match_stt_words_to_korean_srt(stt_words, korean_srt_path)
-    offset = _median_offset_from_stt_matches(matched_words, raw_cues)
+    offset = _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration)
     if offset is None:
-        warnings.append({
-            "stage": "영상 동기화",
-            "message": "한국어 SRT 앞부분과 실제 영상 음성이 일치하는 지점을 찾지 못해 영상 재생 동기화를 확인하지 못했습니다.",
-        })
+        # 검수 화면에는 경고를 안 띄운다 — 이 탐지가 실패해도 폴백은
+        # "영상 고유 오프셋 없음"으로 안전하고(§_run_pipeline_phase1의
+        # video_offset_seconds 계산 참고), 이 좁은 보조 확인 하나가 실패한
+        # 것만으로 검수자에게 "동기화가 의심된다"고 매번 경고하면 실제로는
+        # 멀쩡한 영상에도 반복적으로 뜨는 오탐 노이즈가 된다. 로그에는 남긴다.
+        logger.info(
+            "영상 동기화 탐지: 확정 매칭 없음, 오프셋 보정 없이 진행 "
+            "(target_version_id=%s)", target_version_id)
         return None
     return offset
 
