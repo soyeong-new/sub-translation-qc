@@ -10,6 +10,7 @@ STT 없이 [한국어 SRT 큐]와 [스페인어 SRT 세그먼트]의 타임코�
 import math
 import re
 from typing import List, Tuple, Optional
+import numpy as np
 from app.schemas import SegmentText, AlignedPair
 from app.providers.base import ModelProvider
 
@@ -75,12 +76,13 @@ def _leading_speaker_tag(raw_text: str) -> Optional[str]:
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    dot = sum(a * b for a, b in zip(v1, v2))
-    norm1 = math.sqrt(sum(a * a for a in v1))
-    norm2 = math.sqrt(sum(b * b for b in v2))
+    # ponytail: numpy로 벡터화 — N*M*10콤보만큼 불리는 순수 파이썬 루프가
+    # 회차 하나 정렬에서 실측으로 시간당 여러 시간까지 걸리게 만든 원인이었다.
+    a1, a2 = np.asarray(v1, dtype=np.float64), np.asarray(v2, dtype=np.float64)
+    norm1, norm2 = np.linalg.norm(a1), np.linalg.norm(a2)
     if norm1 == 0 or norm2 == 0:
         return 0.0
-    return dot / (norm1 * norm2)
+    return float(np.dot(a1, a2) / (norm1 * norm2))
 
 
 def _compute_overlap_ratio(start1: float, end1: float, start2: float, end2: float) -> float:
@@ -148,8 +150,8 @@ async def align_by_embedding_dp(
     all_texts = korean_texts_cleaned + target_texts_cleaned
     embeddings = await provider.get_embeddings(all_texts)
 
-    korean_embs = embeddings[:N]
-    target_embs = embeddings[N:]
+    korean_embs = np.asarray(embeddings[:N], dtype=np.float64)
+    target_embs = np.asarray(embeddings[N:], dtype=np.float64)
 
     # Helper function for matching score between a group of Korean cues and a group of Target segments
     def match_score(k_list: List[SegmentText], k_indices: List[int],
@@ -192,10 +194,9 @@ async def align_by_embedding_dp(
                     return -float('inf')
 
 
-        # Calculate mean embedding for merged groups
-        dim_size = len(korean_embs[0])
-        k_emb = [sum(korean_embs[idx][dim] for idx in k_indices) / len(k_indices) for dim in range(dim_size)]
-        t_emb = [sum(target_embs[idx][dim] for idx in t_indices) / len(t_indices) for dim in range(dim_size)]
+        # Calculate mean embedding for merged groups (numpy — see cosine_similarity)
+        k_emb = korean_embs[k_indices].mean(axis=0)
+        t_emb = target_embs[t_indices].mean(axis=0)
 
         sim = cosine_similarity(k_emb, t_emb)
         overlap = _compute_overlap_ratio(k_list[0].start, k_list[-1].end, t_list[0].start, t_list[-1].end)
