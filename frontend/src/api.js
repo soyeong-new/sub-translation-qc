@@ -170,10 +170,11 @@ export function pollTargetVersionStatus(targetVersionId, { isMounted = () => tru
   });
 }
 
-function sendWithProgress(path, body, onProgress, extraHeaders = {}) {
+function sendWithProgress(path, body, onProgress, extraHeaders = {}, timeoutMs = 0) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${BASE}${path}`);
+    xhr.timeout = timeoutMs;
     for (const [key, value] of Object.entries(extraHeaders)) {
       xhr.setRequestHeader(key, value);
     }
@@ -197,6 +198,11 @@ function sendWithProgress(path, body, onProgress, extraHeaders = {}) {
       }
     };
     xhr.onerror = () => reject(new Error("업로드 중 네트워크 오류가 발생했습니다."));
+    // 브라우저 탭이 백그라운드로 밀려 요청이 응답도 에러도 없이 그냥
+    // 멈춰버리는 경우(실측) onload/onerror가 영영 안 불려 재시도 로직이
+    // 발동할 기회조차 없다 — 타임아웃을 걸어야 그 순간 실패로 확정되고
+    // 재시도가 실제로 실행된다.
+    xhr.ontimeout = () => reject(new Error("업로드 요청이 시간 초과됐습니다."));
     xhr.send(body);
   });
 }
@@ -215,11 +221,12 @@ function uploadWithProgress(path, file, onProgress) {
 // 나눌 수 있다.
 const VIDEO_CHUNK_SIZE = 20 * 1024 * 1024; // 20MB
 const VIDEO_CHUNK_RETRIES = 3;
+const VIDEO_CHUNK_TIMEOUT_MS = 90 * 1000; // 20MB면 넉넉한 여유(느린 회선 포함)
 
 async function sendChunkWithRetry(chunk, headers) {
   for (let attempt = 1; attempt <= VIDEO_CHUNK_RETRIES; attempt++) {
     try {
-      return await sendWithProgress("/uploads/video/chunk", chunk, null, headers);
+      return await sendWithProgress("/uploads/video/chunk", chunk, null, headers, VIDEO_CHUNK_TIMEOUT_MS);
     } catch (err) {
       if (attempt === VIDEO_CHUNK_RETRIES) throw err;
     }
