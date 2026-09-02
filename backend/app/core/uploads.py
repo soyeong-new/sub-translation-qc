@@ -71,24 +71,16 @@ async def _run_ffmpeg(args: list) -> None:
         raise RuntimeError(f"영상 변환 실패: {stderr.decode(errors='replace')[-500:]}")
 
 
-async def save_video_upload_streamed(filename: str, body_stream: AsyncIterator[bytes]) -> str:
-    """받은 영상을 먼저 그대로 디스크에 스트리밍 저장한 뒤(원본 저장이
-    다 끝나야만), 그 파일을 입력으로 ffmpeg 압축을 돌린다(design
-    2026-09-01, 청크+폴링 방식으로 갔다가 원인 불명 실패가 계속 늘어
-    다시 되돌림 — 2026-09-02).
+# upload_id -> 압축 백그라운드 태스크. 프로세스 메모리에만 있어 서버가
+# 재시작되면 사라진다 — 그 경우 폴링은 404를 받고 사용자에게 재업로드를
+# 안내하면 되고, 남은 임시 파일은 cleanup_orphaned_upload_temp_files()가
+# 다음 시작 시 정리한다.
+_COMPRESS_TASKS: dict[str, asyncio.Task] = {}
 
-    ffmpeg 출력은 항상 임시 이름으로 먼저 쓰고 성공했을 때만 최종
-    경로로 원자적으로 교체한다(Path.replace) — 프로세스가 예외 없이
-    강제 종료되면(서버 재시작 등) except 블록이 못 도는데, 최종
-    경로에 바로 썼다면 깨진 파일이 그대로 남는다. 그 경우를 대비한
-    정리는 cleanup_orphaned_upload_temp_files()가 서버 시작 시 담당한다."""
-    dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
-    in_tmp = dest.with_name(f".in_{dest.name}")
+
+async def _compress_video(in_tmp: Path, dest: Path) -> str:
     out_tmp = dest.with_name(f".out_{dest.name}")
     try:
-        with open(in_tmp, "wb") as out:
-            async for chunk in body_stream:
-                out.write(chunk)
         await _run_ffmpeg(["ffmpeg", "-y", "-i", str(in_tmp), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
         Path(out_tmp).replace(dest)
     except Exception:
@@ -97,6 +89,45 @@ async def save_video_upload_streamed(filename: str, body_stream: AsyncIterator[b
     finally:
         Path(in_tmp).unlink(missing_ok=True)
     return str(dest)
+
+
+async def start_video_upload(filename: str, body_stream: AsyncIterator[bytes]) -> str:
+    """원본을 디스크에 다 받아 적으면 곧장 upload_id를 돌려주고, ffmpeg
+    압축은 백그라운드 태스크로 넘긴다(design 2026-09-02, 실측: 압축이 끝날
+    때까지 응답을 물고 있으면 t3.micro에서 수분~수십분씩 걸리는 그 무응답
+    구간 동안 중간 네트워크 장비가 연결을 죽은 것으로 보고 끊어버렸다 —
+    ERR_NETWORK_CHANGED). 압축 완료 여부는 get_video_upload_status()를
+    짧은 주기로 폴링해서 확인한다 — 이 요청들은 매번 금방 끝나 같은
+    문제가 없다."""
+    dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
+    in_tmp = dest.with_name(f".in_{dest.name}")
+    try:
+        with open(in_tmp, "wb") as out:
+            async for chunk in body_stream:
+                out.write(chunk)
+    except Exception:
+        Path(in_tmp).unlink(missing_ok=True)
+        raise
+    upload_id = uuid.uuid4().hex
+    _COMPRESS_TASKS[upload_id] = asyncio.ensure_future(_compress_video(in_tmp, dest))
+    return upload_id
+
+
+def get_video_upload_status(upload_id: str) -> dict:
+    """status는 "compressing"/"done"(path 포함)/"failed"(error 포함) 중
+    하나. done/failed로 한 번 읽히면 더 폴링할 필요가 없으니 그 즉시
+    레지스트리에서 지운다 — 안 지우면 재업로드를 계속하는 동안 사전에
+    끝난 태스크들이 메모리에 무한정 쌓인다."""
+    task = _COMPRESS_TASKS.get(upload_id)
+    if task is None:
+        raise KeyError(upload_id)
+    if not task.done():
+        return {"status": "compressing"}
+    _COMPRESS_TASKS.pop(upload_id, None)
+    exc = task.exception()
+    if exc is not None:
+        return {"status": "failed", "error": str(exc)}
+    return {"status": "done", "path": task.result()}
 
 
 def cleanup_orphaned_upload_temp_files() -> None:

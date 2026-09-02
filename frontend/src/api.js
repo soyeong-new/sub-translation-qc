@@ -222,15 +222,42 @@ function uploadWithProgress(path, file, onProgress) {
 // 자동 multipart 파싱은 원본 전체를 먼저 통째로 임시 저장해버려서, 그
 // 위에 서버가 또 복사본을 만들면 순간 필요 용량이 원본의 2배가 된다.
 // 파일명은 본문이 아니라 헤더로 보낸다(한글 등 비ASCII 파일명 대응을
-// 위해 encodeURIComponent). 서버는 원본을 먼저 디스크에 그대로 받아
-// 적은 뒤 ffmpeg으로 압축한다. 타임아웃을 안 거는 이유: 압축이 몇 분씩
-// 걸릴 수 있는데(t3.micro, GPU 없음) 어떤 값을 넣어도 더 큰 영상엔 또
-// 부족해진다 — 그럴 바에야 끝날 때까지 기다리는 게 낫다(design 2026-09-02,
-// 청크+폴링으로 갔다가 오히려 실패가 늘어 되돌림).
-export function uploadVideo(file, onProgress) {
-  return sendWithProgress("/uploads/video", file, onProgress, {
+// 위해 encodeURIComponent).
+//
+// 원본 저장이 끝나면 서버는 압축을 기다리지 않고 곧장 upload_id를
+// 돌려준다(design 2026-09-02) — 응답을 압축 완료까지 물고 있으면
+// t3.micro에서 압축에 수분~수십분 걸리는 동안 요청이 데이터 없이 계속
+// 열려만 있게 되고, 실측상 그 무응답 구간에서 중간 네트워크 장비가
+// 연결을 죽은 것으로 보고 끊어버렸다(ERR_NETWORK_CHANGED). 압축 완료는
+// 짧은 간격으로 폴링해서 확인한다 — 각 폴링 요청은 매번 빠르게 끝나
+// 같은 문제가 없다.
+function pollVideoCompression(uploadId, { isMounted = () => true, intervalMs = 3000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const poll = async () => {
+      if (!isMounted()) return;
+      try {
+        const res = await request(`/uploads/video/${uploadId}/status`);
+        if (!isMounted()) return;
+        if (res.status === "done") {
+          resolve({ path: res.path });
+        } else if (res.status === "failed") {
+          reject(new Error(res.error || "영상 압축 중 오류가 발생했습니다."));
+        } else {
+          setTimeout(poll, intervalMs);
+        }
+      } catch (err) {
+        if (isMounted()) reject(err);
+      }
+    };
+    poll();
+  });
+}
+
+export async function uploadVideo(file, onProgress) {
+  const { upload_id } = await sendWithProgress("/uploads/video", file, onProgress, {
     "X-Filename": encodeURIComponent(file.name),
   });
+  return pollVideoCompression(upload_id);
 }
 
 export const uploadSrt = (file, onProgress) =>

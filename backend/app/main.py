@@ -21,7 +21,7 @@ app = FastAPI(title="Sub Translation QC ES")
 UPLOAD_SAFETY_MARGIN_BYTES = 1024 ** 3
 
 # /uploads/video는 원본을 먼저 디스크에 그대로 받아 적은 뒤 압축한다
-# (save_video_upload_streamed 참고). 그래서 필요 용량이 원본 크기
+# (start_video_upload 참고). 그래서 필요 용량이 원본 크기
 # (Content-Length)에 비례한다. 압축 결과물 + 480p 프록시/오디오 추출까지
 # 겹치는 여유분으로 srt류보다 넉넉히 잡는다.
 VIDEO_UPLOAD_SAFETY_MARGIN_BYTES = 2 * 1024 ** 3

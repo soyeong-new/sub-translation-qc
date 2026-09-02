@@ -1,10 +1,22 @@
+import asyncio
 import subprocess
 import pytest
 from pathlib import Path
 from app.core.uploads import (
-    build_upload_destination, save_upload, save_video_upload_streamed,
+    build_upload_destination, save_upload, start_video_upload, get_video_upload_status,
     cleanup_orphaned_upload_temp_files, UnsupportedFileType, VIDEO_EXTENSIONS,
 )
+
+
+async def _wait_for_compression(upload_id: str, timeout: float = 30.0) -> dict:
+    elapsed = 0.0
+    while elapsed < timeout:
+        status = get_video_upload_status(upload_id)
+        if status["status"] != "compressing":
+            return status
+        await asyncio.sleep(0.1)
+        elapsed += 0.1
+    raise TimeoutError(f"압축이 {timeout}초 안에 안 끝남")
 
 
 def _make_test_video(path: Path, duration: int, size: str) -> None:
@@ -80,37 +92,53 @@ async def test_save_upload_deletes_partial_file_when_write_fails(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_save_video_upload_streamed_saves_then_compresses(tmp_path, monkeypatch):
-    """원본을 먼저 디스크에 그대로 받아 적은 뒤, 그 파일을 입력으로 ffmpeg
-    압축을 돌린다. 청크+폴링 방식으로 갔다가 원인 불명 실패가 계속 늘어
-    다시 되돌렸다(2026-09-02) — 압축이 끝날 때까지 이 함수 하나가
-    기다리는 게 이 앱 사용량에선 오히려 더 안정적이었다."""
+async def test_start_video_upload_saves_then_compresses_in_background(tmp_path, monkeypatch):
+    """원본을 먼저 디스크에 그대로 받아 적으면 압축을 기다리지 않고 곧장
+    upload_id를 돌려준다. 압축이 끝날 때까지 응답을 물고 있으면, 압축이
+    오래 걸리는 동안(t3.micro) 요청이 데이터 없이 계속 열려있게 되고, 그
+    무응답 구간에서 중간 네트워크 장비가 연결을 끊어버렸다(실측,
+    ERR_NETWORK_CHANGED, 2026-09-02) — 그래서 압축은 백그라운드로 넘기고
+    완료 여부는 폴링으로 따로 확인한다."""
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
     src = tmp_path / "src.mp4"
     _make_test_video(src, duration=20, size="640x480")
 
-    path = await save_video_upload_streamed("clip.mp4", _bytes_stream(src.read_bytes()))
+    upload_id = await start_video_upload("clip.mp4", _bytes_stream(src.read_bytes()))
+    assert get_video_upload_status(upload_id)["status"] == "compressing"
 
-    out = Path(path)
+    status = await _wait_for_compression(upload_id)
+
+    assert status["status"] == "done"
+    out = Path(status["path"])
     assert out.exists()
     assert out.stat().st_size > 0
     assert out.parent == tmp_path / "video"
     assert out.stat().st_size < src.stat().st_size
     assert list(tmp_path.glob("video/.in_*")) == []
     assert list(tmp_path.glob("video/.out_*")) == []
+    # done으로 한 번 읽었으니 레지스트리에서 지워져야 한다
+    with pytest.raises(KeyError):
+        get_video_upload_status(upload_id)
 
 
 @pytest.mark.asyncio
-async def test_save_video_upload_streamed_cleans_up_for_corrupt_input(tmp_path, monkeypatch):
-    """진짜 깨진(영상이 아닌) 입력은 결국 실패해야 하고, 이때 최종 경로에도
-    임시 파일에도 아무것도 안 남아야 한다."""
+async def test_start_video_upload_reports_failure_for_corrupt_input(tmp_path, monkeypatch):
+    """진짜 깨진(영상이 아닌) 입력은 압축 단계에서 실패해야 하고, 이때
+    status가 "failed"로 보고되며 최종 경로에도 임시 파일에도 아무것도
+    안 남아야 한다."""
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
 
-    with pytest.raises(RuntimeError):
-        await save_video_upload_streamed("clip.mp4", _bytes_stream(b"not a real video" * 1000))
+    upload_id = await start_video_upload("clip.mp4", _bytes_stream(b"not a real video" * 1000))
+    status = await _wait_for_compression(upload_id)
 
+    assert status["status"] == "failed"
     leftover = list((tmp_path / "video").glob("*")) if (tmp_path / "video").exists() else []
     assert leftover == []
+
+
+def test_get_video_upload_status_raises_for_unknown_id():
+    with pytest.raises(KeyError):
+        get_video_upload_status("no-such-upload")
 
 
 def test_cleanup_orphaned_upload_temp_files_deletes_in_and_out_files(tmp_path, monkeypatch):

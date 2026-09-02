@@ -1,9 +1,22 @@
+import asyncio
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+
+
+async def _await_compression(client: AsyncClient, upload_id: str, timeout: float = 30.0) -> dict:
+    elapsed = 0.0
+    while elapsed < timeout:
+        r = await client.get(f"/uploads/video/{upload_id}/status")
+        body = r.json()
+        if body["status"] != "compressing":
+            return body
+        await asyncio.sleep(0.1)
+        elapsed += 0.1
+    raise TimeoutError(f"압축이 {timeout}초 안에 안 끝남")
 
 
 def _make_test_video(path: Path) -> None:
@@ -33,8 +46,12 @@ async def test_upload_video_saves_file_and_returns_path(tmp_path, monkeypatch):
             "/uploads/video", content=src.read_bytes(), headers={"X-Filename": "clip.mp4"},
         )
         assert r.status_code == 200
-        path = r.json()["path"]
-        assert path.endswith("_clip.mp4")
+        upload_id = r.json()["upload_id"]
+
+        status = await _await_compression(client, upload_id)
+
+        assert status["status"] == "done"
+        assert status["path"].endswith("_clip.mp4")
         assert (tmp_path / "video").exists()
 
 
