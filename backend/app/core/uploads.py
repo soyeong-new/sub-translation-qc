@@ -74,6 +74,30 @@ async def _run_ffmpeg(args: list) -> None:
 _UPLOAD_SESSIONS: dict[str, dict] = {}
 
 
+async def _compress_and_finalize(upload_id: str, session: dict) -> str:
+    """마지막 청크를 받은 뒤 원본을 압축해 최종 경로로 옮긴다. 이 작업은
+    session["compress_task"]에 담겨 공유되므로(save_video_chunk 참고),
+    같은 마지막 청크가 재전송돼도 이 함수가 두 번 실행되지 않고 같은
+    결과를 함께 기다린다."""
+    dest = session["dest"]
+    out_tmp = dest.with_name(f".out_{dest.name}")
+    try:
+        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(session["in_tmp"]), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
+        Path(out_tmp).replace(dest)
+    except Exception:
+        _UPLOAD_SESSIONS.pop(upload_id, None)
+        Path(out_tmp).unlink(missing_ok=True)
+        raise
+    finally:
+        Path(session["in_tmp"]).unlink(missing_ok=True)
+    # ponytail: 성공한 세션은 done_path만 남기고 dict에 그대로 둔다(늦게
+    # 오는 마지막 청크 재시도에 응답하기 위해) — 프로세스 수명 내내 조금씩
+    # 쌓이지만 항목이 가벼워(Path 두어 개) 이 앱 사용량에선 무해하다.
+    # 문제가 되면 그때 TTL 청소를 추가한다.
+    session["done_path"] = str(dest)
+    return str(dest)
+
+
 async def save_video_chunk(
     upload_id: str, chunk_index: int, total_chunks: int, filename: str, data: bytes,
 ) -> Optional[str]:
@@ -101,9 +125,15 @@ async def save_video_chunk(
         _UPLOAD_SESSIONS[upload_id] = session
 
     if chunk_index < session["next_index"]:
-        # 이미 받은 청크의 재전송 — 무시하되, 그게 마지막 청크였다면(이미
-        # 압축까지 끝났다면) 그때 응답을 못 받은 클라이언트를 위해 최종
-        # 경로를 다시 돌려준다(그래야 클라이언트가 끝난 걸 알 수 있다).
+        # 이미 받은 청크의 재전송 — 무시하되, 그게 마지막 청크였다면 압축
+        # 작업을 같이 기다렸다가(실측: 큰 영상은 압축이 타임아웃보다
+        # 오래 걸려 재전송이 압축 도중에 도착할 수 있다 — 이때 압축이
+        # 끝나길 안 기다리고 바로 None을 돌려주면, 클라이언트가 그걸
+        # "다음 청크 보내라"는 정상 응답으로 착각해 video_path 없이
+        # 다음 단계로 넘어가 버렸다) 같은 최종 경로를 돌려준다.
+        task = session.get("compress_task")
+        if task is not None:
+            return await task
         return session.get("done_path")
     if chunk_index != session["next_index"]:
         _UPLOAD_SESSIONS.pop(upload_id, None)
@@ -122,23 +152,8 @@ async def save_video_chunk(
     if chunk_index != total_chunks - 1:
         return None
 
-    dest = session["dest"]
-    out_tmp = dest.with_name(f".out_{dest.name}")
-    try:
-        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(session["in_tmp"]), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
-        Path(out_tmp).replace(dest)
-    except Exception:
-        _UPLOAD_SESSIONS.pop(upload_id, None)
-        Path(out_tmp).unlink(missing_ok=True)
-        raise
-    finally:
-        Path(session["in_tmp"]).unlink(missing_ok=True)
-    # ponytail: 성공한 세션은 done_path만 남기고 dict에 그대로 둔다(늦게
-    # 오는 마지막 청크 재시도에 응답하기 위해) — 프로세스 수명 내내 조금씩
-    # 쌓이지만 항목이 가벼워(Path 두어 개) 이 앱 사용량에선 무해하다.
-    # 문제가 되면 그때 TTL 청소를 추가한다.
-    session["done_path"] = str(dest)
-    return str(dest)
+    session["compress_task"] = asyncio.ensure_future(_compress_and_finalize(upload_id, session))
+    return await session["compress_task"]
 
 
 def cleanup_orphaned_upload_temp_files() -> None:

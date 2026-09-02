@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 import uuid
 import pytest
@@ -126,6 +127,30 @@ async def test_save_video_chunk_ignores_retried_chunk(tmp_path, monkeypatch):
     assert result1 is not None  # 마지막(유일한) 청크라 바로 압축까지 끝남
     assert result2 == result1  # 같은 최종 경로를 다시 돌려줘야 한다(재압축 X)
     assert len(list((tmp_path / "video").glob("*.mp4"))) == 1  # 중복 파일 없음
+
+
+@pytest.mark.asyncio
+async def test_save_video_chunk_concurrent_retry_of_last_chunk_waits_for_compression(tmp_path, monkeypatch):
+    """실측(프로덕션): 큰 영상은 압축이 클라이언트 타임아웃보다 오래 걸려,
+    마지막 청크의 재전송이 압축이 끝나기 전에 도착할 수 있다. 이때 압축을
+    기다리지 않고 바로 반환해버리면, 재전송 쪽 호출자는 빈 응답을 받아
+    업로드가 끝난 줄 착각한다(실측: video_path 없이 다음 단계로 진행돼
+    422 에러). 두 요청 모두 같은 압축 결과를 기다려야 한다."""
+    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
+    src = tmp_path / "src.mp4"
+    _make_test_video(src, duration=1, size="320x240")
+    data = src.read_bytes()
+    mid = len(data) // 2
+    upload_id = str(uuid.uuid4())
+
+    await save_video_chunk(upload_id, 0, 2, "clip.mp4", data[:mid])
+    result1, result2 = await asyncio.gather(
+        save_video_chunk(upload_id, 1, 2, "clip.mp4", data[mid:]),
+        save_video_chunk(upload_id, 1, 2, "clip.mp4", data[mid:]),  # 압축 도중 도착한 재전송
+    )
+
+    assert result1 is not None
+    assert result2 == result1
 
 
 @pytest.mark.asyncio
