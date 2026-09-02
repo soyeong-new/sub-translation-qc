@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
-from app.core.uploads import MEDIA_ROOT, cleanup_orphaned_upload_temp_files
+from app.core.uploads import MEDIA_ROOT
 from app.db import async_session
 from app.models import TargetVersion
 from app.routers import titles, analysis, findings, export, uploads
@@ -20,10 +20,10 @@ app = FastAPI(title="Sub Translation QC ES")
 # 업로드는 원본 크기만큼 그대로 저장하므로 이 값을 계속 쓴다.
 UPLOAD_SAFETY_MARGIN_BYTES = 1024 ** 3
 
-# /uploads/video는 원본을 먼저 디스크에 그대로 받아 적은 뒤 압축한다
-# (start_video_upload 참고). 그래서 필요 용량이 원본 크기
-# (Content-Length)에 비례한다. 압축 결과물 + 480p 프록시/오디오 추출까지
-# 겹치는 여유분으로 srt류보다 넉넉히 잡는다.
+# /uploads/video는 원본을 압축 없이 그대로 저장한다(save_video_upload
+# 참고). 원본은 분석 파이프라인이 끝날 때까지(오디오 추출 + 480p 프록시
+# 생성) 디스크에 남아있으므로, 그 두 산출물과 겹치는 여유분으로 srt류보다
+# 넉넉히 잡는다.
 VIDEO_UPLOAD_SAFETY_MARGIN_BYTES = 2 * 1024 ** 3
 
 
@@ -93,7 +93,6 @@ async def _init_background_task_registry():
     # 권고사항) — run-analysis가 만든 태스크를 여기 보관해 완료 전에 사라지지
     # 않게 한다.
     app.state.background_tasks = set()
-    cleanup_orphaned_upload_temp_files()
     await _fail_stuck_in_progress_target_versions()
 
 

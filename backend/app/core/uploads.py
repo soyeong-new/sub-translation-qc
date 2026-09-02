@@ -1,6 +1,5 @@
 """업로드된 파일을 경로 조작 없이 로컬 디스크에 스트리밍 저장하는 모듈."""
 
-import asyncio
 import uuid
 from pathlib import Path
 from typing import Awaitable, AsyncIterator, Callable, Set
@@ -57,87 +56,26 @@ async def save_upload(
     return str(dest)
 
 
-_FFMPEG_VIDEO_ARGS = [
-    "-vf", "scale=-2:720", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy",
-]
+async def save_video_upload(filename: str, body_stream: AsyncIterator[bytes]) -> str:
+    """원본을 압축하지 않고 그대로 저장한다(design 2026-09-02, 실측: 업로드
+    시점 720p 압축은 검수용 480p 프록시 생성(generate_video_proxy) 때 어차피
+    다시 인코딩되는 이중 작업이었다 — 60분 영상 기준 압축에만 30분 넘게
+    걸렸는데, 그 720p 결과물은 프록시 생성 직후 버려져 최종적으로 아무도
+    쓰지 않았다. STT 오디오 추출/프록시 생성은 원본에서 바로 해도 무방하다
+    (원본은 S1 종료 시 어차피 삭제됨, delete_original_video 참고) — 압축을
+    없애면 이 대기 시간이 통째로 사라진다.
 
-
-async def _run_ffmpeg(args: list) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"영상 변환 실패: {stderr.decode(errors='replace')[-500:]}")
-
-
-# upload_id -> 압축 백그라운드 태스크. 프로세스 메모리에만 있어 서버가
-# 재시작되면 사라진다 — 그 경우 폴링은 404를 받고 사용자에게 재업로드를
-# 안내하면 되고, 남은 임시 파일은 cleanup_orphaned_upload_temp_files()가
-# 다음 시작 시 정리한다.
-_COMPRESS_TASKS: dict[str, asyncio.Task] = {}
-
-
-async def _compress_video(in_tmp: Path, dest: Path) -> str:
-    out_tmp = dest.with_name(f".out_{dest.name}")
-    try:
-        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(in_tmp), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
-        Path(out_tmp).replace(dest)
-    except Exception:
-        Path(out_tmp).unlink(missing_ok=True)
-        raise
-    finally:
-        Path(in_tmp).unlink(missing_ok=True)
-    return str(dest)
-
-
-async def start_video_upload(filename: str, body_stream: AsyncIterator[bytes]) -> str:
-    """원본을 디스크에 다 받아 적으면 곧장 upload_id를 돌려주고, ffmpeg
-    압축은 백그라운드 태스크로 넘긴다(design 2026-09-02, 실측: 압축이 끝날
-    때까지 응답을 물고 있으면 t3.micro에서 수분~수십분씩 걸리는 그 무응답
-    구간 동안 중간 네트워크 장비가 연결을 죽은 것으로 보고 끊어버렸다 —
-    ERR_NETWORK_CHANGED). 압축 완료 여부는 get_video_upload_status()를
-    짧은 주기로 폴링해서 확인한다 — 이 요청들은 매번 금방 끝나 같은
-    문제가 없다."""
+    body_stream은 request.stream() 같은 AsyncIterator[bytes]다(save_upload의
+    read_chunk와 달리 크기 지정 read가 아니라 그냥 순회). multipart가 아니라
+    요청 본문 그대로 받는 이유는 라우터 쪽 설명 참고 — FastAPI의 UploadFile은
+    원본 전체를 먼저 통째로 임시 저장해버려서, 그 위에 우리가 또 복사본을
+    만들면 순간적으로 원본의 2배 용량이 필요하다."""
     dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
-    in_tmp = dest.with_name(f".in_{dest.name}")
     try:
-        with open(in_tmp, "wb") as out:
+        with open(dest, "wb") as out:
             async for chunk in body_stream:
                 out.write(chunk)
     except Exception:
-        Path(in_tmp).unlink(missing_ok=True)
+        Path(dest).unlink(missing_ok=True)
         raise
-    upload_id = uuid.uuid4().hex
-    _COMPRESS_TASKS[upload_id] = asyncio.ensure_future(_compress_video(in_tmp, dest))
-    return upload_id
-
-
-def get_video_upload_status(upload_id: str) -> dict:
-    """status는 "compressing"/"done"(path 포함)/"failed"(error 포함) 중
-    하나. done/failed로 한 번 읽히면 더 폴링할 필요가 없으니 그 즉시
-    레지스트리에서 지운다 — 안 지우면 재업로드를 계속하는 동안 사전에
-    끝난 태스크들이 메모리에 무한정 쌓인다."""
-    task = _COMPRESS_TASKS.get(upload_id)
-    if task is None:
-        raise KeyError(upload_id)
-    if not task.done():
-        return {"status": "compressing"}
-    _COMPRESS_TASKS.pop(upload_id, None)
-    exc = task.exception()
-    if exc is not None:
-        return {"status": "failed", "error": str(exc)}
-    return {"status": "done", "path": task.result()}
-
-
-def cleanup_orphaned_upload_temp_files() -> None:
-    """서버 시작 시점에 media/video에 남아있는 .in_*/.out_* 파일은 전부
-    주인 없는 임시 파일이다(그 시점엔 진행 중인 업로드가 있을 수 없다).
-    실측: ffmpeg 압축 도중 서버 프로세스가 죽으면(재시작, OOM 등)
-    try/except/finally가 아예 실행될 기회가 없어 정리가 안 된 채로 남는다."""
-    video_dir = MEDIA_ROOT / "video"
-    if not video_dir.exists():
-        return
-    for pattern in (".in_*", ".out_*"):
-        for path in video_dir.glob(pattern):
-            path.unlink(missing_ok=True)
+    return str(dest)

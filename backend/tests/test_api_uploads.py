@@ -1,5 +1,3 @@
-import asyncio
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -7,52 +5,19 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 
 
-async def _await_compression(client: AsyncClient, upload_id: str, timeout: float = 30.0) -> dict:
-    elapsed = 0.0
-    while elapsed < timeout:
-        r = await client.get(f"/uploads/video/{upload_id}/status")
-        body = r.json()
-        if body["status"] != "compressing":
-            return body
-        await asyncio.sleep(0.1)
-        elapsed += 0.1
-    raise TimeoutError(f"압축이 {timeout}초 안에 안 끝남")
-
-
-def _make_test_video(path: Path) -> None:
-    """실제 ffmpeg으로 테스트용 mp4를 생성한다. /uploads/video는 받으면서
-    바로 ffmpeg으로 압축하므로, API 레벨 테스트도 진짜 영상 바이트가
-    있어야 성공 경로를 검증할 수 있다."""
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=30",
-            "-f", "lavfi", "-i", "sine=frequency=1000:duration=1",
-            "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", str(path),
-        ],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-
 @pytest.mark.asyncio
 async def test_upload_video_saves_file_and_returns_path(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    src = tmp_path / "src.mp4"
-    _make_test_video(src)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.post(
-            "/uploads/video", content=src.read_bytes(), headers={"X-Filename": "clip.mp4"},
+            "/uploads/video", content=b"fake video bytes", headers={"X-Filename": "clip.mp4"},
         )
         assert r.status_code == 200
-        upload_id = r.json()["upload_id"]
-
-        status = await _await_compression(client, upload_id)
-
-        assert status["status"] == "done"
-        assert status["path"].endswith("_clip.mp4")
-        assert (tmp_path / "video").exists()
+        body = r.json()
+        assert body["path"].endswith("_clip.mp4")
+        assert Path(body["path"]).read_bytes() == b"fake video bytes"
 
 
 @pytest.mark.asyncio
@@ -110,12 +75,10 @@ async def test_upload_allowed_when_disk_space_sufficient(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
     fake_usage = SimpleNamespace(total=10 * 1024**3, used=1 * 1024**3, free=9 * 1024**3)
     monkeypatch.setattr("app.main.shutil.disk_usage", lambda path: fake_usage)
-    src = tmp_path / "src.mp4"
-    _make_test_video(src)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.post(
-            "/uploads/video", content=src.read_bytes(), headers={"X-Filename": "clip.mp4"},
+            "/uploads/video", content=b"fake video bytes", headers={"X-Filename": "clip.mp4"},
         )
     assert r.status_code == 200

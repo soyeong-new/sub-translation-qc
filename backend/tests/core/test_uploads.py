@@ -1,34 +1,8 @@
-import asyncio
-import subprocess
 import pytest
 from pathlib import Path
 from app.core.uploads import (
-    build_upload_destination, save_upload, start_video_upload, get_video_upload_status,
-    cleanup_orphaned_upload_temp_files, UnsupportedFileType, VIDEO_EXTENSIONS,
+    build_upload_destination, save_upload, save_video_upload, UnsupportedFileType, VIDEO_EXTENSIONS,
 )
-
-
-async def _wait_for_compression(upload_id: str, timeout: float = 30.0) -> dict:
-    elapsed = 0.0
-    while elapsed < timeout:
-        status = get_video_upload_status(upload_id)
-        if status["status"] != "compressing":
-            return status
-        await asyncio.sleep(0.1)
-        elapsed += 0.1
-    raise TimeoutError(f"압축이 {timeout}초 안에 안 끝남")
-
-
-def _make_test_video(path: Path, duration: int, size: str) -> None:
-    """실제 ffmpeg으로 테스트용 mp4를 생성한다."""
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"testsrc=duration={duration}:size={size}:rate=30",
-        "-f", "lavfi", "-i", f"sine=frequency=1000:duration={duration}",
-        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
-        str(path),
-    ]
-    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 async def _bytes_stream(data: bytes, chunk_size: int = 65536):
@@ -92,68 +66,31 @@ async def test_save_upload_deletes_partial_file_when_write_fails(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_start_video_upload_saves_then_compresses_in_background(tmp_path, monkeypatch):
-    """원본을 먼저 디스크에 그대로 받아 적으면 압축을 기다리지 않고 곧장
-    upload_id를 돌려준다. 압축이 끝날 때까지 응답을 물고 있으면, 압축이
-    오래 걸리는 동안(t3.micro) 요청이 데이터 없이 계속 열려있게 되고, 그
-    무응답 구간에서 중간 네트워크 장비가 연결을 끊어버렸다(실측,
-    ERR_NETWORK_CHANGED, 2026-09-02) — 그래서 압축은 백그라운드로 넘기고
-    완료 여부는 폴링으로 따로 확인한다."""
+async def test_save_video_upload_saves_file_without_compressing(tmp_path, monkeypatch):
+    """업로드 시점 압축을 없앴다(design 2026-09-02) — 원본 바이트가 그대로
+    저장돼야 하고, 압축이 없으니 결과 파일 크기가 입력과 정확히 같아야
+    한다."""
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    src = tmp_path / "src.mp4"
-    _make_test_video(src, duration=20, size="640x480")
+    data = b"fake video bytes" * 1000
 
-    upload_id = await start_video_upload("clip.mp4", _bytes_stream(src.read_bytes()))
-    assert get_video_upload_status(upload_id)["status"] == "compressing"
+    path = await save_video_upload("clip.mp4", _bytes_stream(data))
 
-    status = await _wait_for_compression(upload_id)
-
-    assert status["status"] == "done"
-    out = Path(status["path"])
+    out = Path(path)
     assert out.exists()
-    assert out.stat().st_size > 0
+    assert out.read_bytes() == data
     assert out.parent == tmp_path / "video"
-    assert out.stat().st_size < src.stat().st_size
-    assert list(tmp_path.glob("video/.in_*")) == []
-    assert list(tmp_path.glob("video/.out_*")) == []
-    # done으로 한 번 읽었으니 레지스트리에서 지워져야 한다
-    with pytest.raises(KeyError):
-        get_video_upload_status(upload_id)
 
 
 @pytest.mark.asyncio
-async def test_start_video_upload_reports_failure_for_corrupt_input(tmp_path, monkeypatch):
-    """진짜 깨진(영상이 아닌) 입력은 압축 단계에서 실패해야 하고, 이때
-    status가 "failed"로 보고되며 최종 경로에도 임시 파일에도 아무것도
-    안 남아야 한다."""
+async def test_save_video_upload_deletes_partial_file_when_write_fails(tmp_path, monkeypatch):
     monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
 
-    upload_id = await start_video_upload("clip.mp4", _bytes_stream(b"not a real video" * 1000))
-    status = await _wait_for_compression(upload_id)
+    async def failing_stream():
+        yield b"first chunk"
+        raise RuntimeError("네트워크 끊김(가상)")
 
-    assert status["status"] == "failed"
+    with pytest.raises(RuntimeError):
+        await save_video_upload("clip.mp4", failing_stream())
+
     leftover = list((tmp_path / "video").glob("*")) if (tmp_path / "video").exists() else []
     assert leftover == []
-
-
-def test_get_video_upload_status_raises_for_unknown_id():
-    with pytest.raises(KeyError):
-        get_video_upload_status("no-such-upload")
-
-
-def test_cleanup_orphaned_upload_temp_files_deletes_in_and_out_files(tmp_path, monkeypatch):
-    """실측: ffmpeg 압축 도중 서버 프로세스가 죽으면(재시작, OOM 등) .in_과
-    .out_ 임시 파일이 둘 다 정리되지 못한 채 남았다. 서버 시작 시점엔
-    진행 중인 업로드가 있을 수 없으므로 이 시점에 남은 임시 파일은 전부
-    주인이 없다 — 재시작할 때마다 쓸어야 한다."""
-    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
-    video_dir = tmp_path / "video"
-    video_dir.mkdir()
-    (video_dir / ".in_abc_clip.mp4").write_bytes(b"partial")
-    (video_dir / ".out_abc_clip.mp4").write_bytes(b"partial")
-    (video_dir / "done_clip.mp4").write_bytes(b"real file")  # 정상 파일은 건드리면 안 됨
-
-    cleanup_orphaned_upload_temp_files()
-
-    remaining = {p.name for p in video_dir.glob("*")}
-    assert remaining == {"done_clip.mp4"}

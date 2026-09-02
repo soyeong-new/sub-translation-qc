@@ -224,40 +224,14 @@ function uploadWithProgress(path, file, onProgress) {
 // 파일명은 본문이 아니라 헤더로 보낸다(한글 등 비ASCII 파일명 대응을
 // 위해 encodeURIComponent).
 //
-// 원본 저장이 끝나면 서버는 압축을 기다리지 않고 곧장 upload_id를
-// 돌려준다(design 2026-09-02) — 응답을 압축 완료까지 물고 있으면
-// t3.micro에서 압축에 수분~수십분 걸리는 동안 요청이 데이터 없이 계속
-// 열려만 있게 되고, 실측상 그 무응답 구간에서 중간 네트워크 장비가
-// 연결을 죽은 것으로 보고 끊어버렸다(ERR_NETWORK_CHANGED). 압축 완료는
-// 짧은 간격으로 폴링해서 확인한다 — 각 폴링 요청은 매번 빠르게 끝나
-// 같은 문제가 없다.
-function pollVideoCompression(uploadId, { isMounted = () => true, intervalMs = 3000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const poll = async () => {
-      if (!isMounted()) return;
-      try {
-        const res = await request(`/uploads/video/${uploadId}/status`);
-        if (!isMounted()) return;
-        if (res.status === "done") {
-          resolve({ path: res.path });
-        } else if (res.status === "failed") {
-          reject(new Error(res.error || "영상 압축 중 오류가 발생했습니다."));
-        } else {
-          setTimeout(poll, intervalMs);
-        }
-      } catch (err) {
-        if (isMounted()) reject(err);
-      }
-    };
-    poll();
-  });
-}
-
+// 서버는 압축 없이 그대로 저장하고 곧장 경로를 반환한다(design
+// 2026-09-02, 실측: 업로드 시점 720p 압축은 검수용 480p 프록시 생성 때
+// 어차피 다시 인코딩되는 이중 작업이라 제거 — 60분 영상 기준 압축에만
+// 30분 넘게 걸렸다). 그래서 폴링 없이 업로드 응답 하나로 끝난다.
 export async function uploadVideo(file, onProgress) {
-  const { upload_id } = await sendWithProgress("/uploads/video", file, onProgress, {
+  return sendWithProgress("/uploads/video", file, onProgress, {
     "X-Filename": encodeURIComponent(file.name),
   });
-  return pollVideoCompression(upload_id);
 }
 
 export const uploadSrt = (file, onProgress) =>
