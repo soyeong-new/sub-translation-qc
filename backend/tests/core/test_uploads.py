@@ -3,7 +3,7 @@ import uuid
 import pytest
 from pathlib import Path
 from app.core.uploads import (
-    build_upload_destination, save_upload, save_video_chunk,
+    build_upload_destination, save_upload, save_video_chunk, abandon_video_chunk_upload,
     UnsupportedFileType, VIDEO_EXTENSIONS,
 )
 
@@ -126,6 +126,21 @@ async def test_save_video_chunk_ignores_retried_chunk(tmp_path, monkeypatch):
     assert result1 is not None  # 마지막(유일한) 청크라 바로 압축까지 끝남
     assert result2 == result1  # 같은 최종 경로를 다시 돌려줘야 한다(재압축 X)
     assert len(list((tmp_path / "video").glob("*.mp4"))) == 1  # 중복 파일 없음
+
+
+@pytest.mark.asyncio
+async def test_abandon_video_chunk_upload_deletes_partial_file(tmp_path, monkeypatch):
+    """실측: 청크 재전송까지 다 실패해 프론트가 업로드를 포기해도, 서버는
+    그 사실을 알 방법이 없어 이어붙이던 임시 원본 파일이 디스크에 그대로
+    남았다. 프론트가 포기를 알리면 세션과 임시 파일을 지워야 한다."""
+    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
+    upload_id = str(uuid.uuid4())
+    await save_video_chunk(upload_id, 0, 3, "clip.mp4", b"first")  # 마지막 청크 전 — 임시 파일만 있음
+
+    abandon_video_chunk_upload(upload_id)
+
+    leftover = list((tmp_path / "video").glob("*")) if (tmp_path / "video").exists() else []
+    assert leftover == []
 
 
 @pytest.mark.asyncio

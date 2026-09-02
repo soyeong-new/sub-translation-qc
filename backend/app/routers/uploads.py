@@ -3,7 +3,7 @@
 from urllib.parse import unquote
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from app.core.uploads import (
-    save_upload, save_video_chunk, UnsupportedFileType, SRT_EXTENSIONS,
+    save_upload, save_video_chunk, abandon_video_chunk_upload, UnsupportedFileType, SRT_EXTENSIONS,
 )
 
 router = APIRouter()
@@ -37,6 +37,14 @@ async def upload_video_chunk(request: Request):
     if path is None:
         return {"status": "chunk-received"}
     return {"path": path}
+
+
+@router.delete("/uploads/video/chunk/{upload_id}")
+async def cancel_video_chunk_upload(upload_id: str):
+    """재시도까지 다 실패해 프론트가 업로드를 포기했을 때 부르는
+    정리용 엔드포인트 — 세션과 이어붙이던 임시 원본 파일을 지운다."""
+    abandon_video_chunk_upload(upload_id)
+    return {"status": "ok"}
 
 
 @router.post("/uploads/srt")

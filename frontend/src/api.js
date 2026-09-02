@@ -243,16 +243,24 @@ export async function uploadVideo(file, onProgress) {
   const uploadId = crypto.randomUUID();
   const filename = encodeURIComponent(file.name);
   let result;
-  for (let i = 0; i < totalChunks; i++) {
-    const chunk = file.slice(i * VIDEO_CHUNK_SIZE, (i + 1) * VIDEO_CHUNK_SIZE);
-    result = await sendChunkWithRetry(chunk, {
-      "X-Filename": filename,
-      "X-Upload-Id": uploadId,
-      "X-Chunk-Index": String(i),
-      "X-Total-Chunks": String(totalChunks),
-      "X-Total-Size": String(file.size),
-    });
-    if (onProgress) onProgress(Math.round(((i + 1) / totalChunks) * 100));
+  try {
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = file.slice(i * VIDEO_CHUNK_SIZE, (i + 1) * VIDEO_CHUNK_SIZE);
+      result = await sendChunkWithRetry(chunk, {
+        "X-Filename": filename,
+        "X-Upload-Id": uploadId,
+        "X-Chunk-Index": String(i),
+        "X-Total-Chunks": String(totalChunks),
+        "X-Total-Size": String(file.size),
+      });
+      if (onProgress) onProgress(Math.round(((i + 1) / totalChunks) * 100));
+    }
+  } catch (err) {
+    // 재시도까지 다 실패 — 서버는 이 실패를 알 방법이 없어 세션과 이어
+    // 붙이던 임시 원본 파일이 디스크에 그대로 남는다(실측). 정리를
+    // 요청하되, 실패해도 업로드 실패 자체를 가리면 안 되니 조용히 무시한다.
+    fetch(`${BASE}/uploads/video/chunk/${uploadId}`, { method: "DELETE" }).catch(() => {});
+    throw err;
   }
   return result;
 }

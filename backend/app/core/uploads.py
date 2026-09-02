@@ -139,3 +139,12 @@ async def save_video_chunk(
     # 문제가 되면 그때 TTL 청소를 추가한다.
     session["done_path"] = str(dest)
     return str(dest)
+
+
+def abandon_video_chunk_upload(upload_id: str) -> None:
+    """청크 재전송까지 다 실패해 프론트가 업로드를 포기했을 때 호출한다.
+    이 신호가 없으면 서버는 업로드가 실패했다는 걸 알 방법이 없어, 이어
+    붙이던 임시 원본 파일(.in_...)이 디스크에 영영 남는다(실측)."""
+    session = _UPLOAD_SESSIONS.pop(upload_id, None)
+    if session is not None:
+        Path(session["in_tmp"]).unlink(missing_ok=True)
