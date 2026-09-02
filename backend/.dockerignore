@@ -1,0 +1,12 @@
+.env
+.env.example
+venv/
+media/
+tests/
+conftest.py
+pytest.ini
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
