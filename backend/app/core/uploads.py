@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Set
+from typing import Awaitable, AsyncIterator, Callable, Set
 
 MEDIA_ROOT = Path(__file__).resolve().parents[2] / "media"
 
@@ -71,109 +71,42 @@ async def _run_ffmpeg(args: list) -> None:
         raise RuntimeError(f"영상 변환 실패: {stderr.decode(errors='replace')[-500:]}")
 
 
-_UPLOAD_SESSIONS: dict[str, dict] = {}
+async def save_video_upload_streamed(filename: str, body_stream: AsyncIterator[bytes]) -> str:
+    """받은 영상을 먼저 그대로 디스크에 스트리밍 저장한 뒤(원본 저장이
+    다 끝나야만), 그 파일을 입력으로 ffmpeg 압축을 돌린다(design
+    2026-09-01, 청크+폴링 방식으로 갔다가 원인 불명 실패가 계속 늘어
+    다시 되돌림 — 2026-09-02).
 
-
-async def _compress_and_finalize(upload_id: str, session: dict) -> str:
-    """마지막 청크를 받은 뒤 원본을 압축해 최종 경로로 옮긴다. 이 작업은
-    session["compress_task"]에 담겨 공유되므로(save_video_chunk 참고),
-    같은 마지막 청크가 재전송돼도 이 함수가 두 번 실행되지 않고 같은
-    결과를 함께 기다린다."""
-    dest = session["dest"]
+    ffmpeg 출력은 항상 임시 이름으로 먼저 쓰고 성공했을 때만 최종
+    경로로 원자적으로 교체한다(Path.replace) — 프로세스가 예외 없이
+    강제 종료되면(서버 재시작 등) except 블록이 못 도는데, 최종
+    경로에 바로 썼다면 깨진 파일이 그대로 남는다. 그 경우를 대비한
+    정리는 cleanup_orphaned_upload_temp_files()가 서버 시작 시 담당한다."""
+    dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
+    in_tmp = dest.with_name(f".in_{dest.name}")
     out_tmp = dest.with_name(f".out_{dest.name}")
     try:
-        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(session["in_tmp"]), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
+        with open(in_tmp, "wb") as out:
+            async for chunk in body_stream:
+                out.write(chunk)
+        await _run_ffmpeg(["ffmpeg", "-y", "-i", str(in_tmp), *_FFMPEG_VIDEO_ARGS, str(out_tmp)])
         Path(out_tmp).replace(dest)
     except Exception:
-        _UPLOAD_SESSIONS.pop(upload_id, None)
         Path(out_tmp).unlink(missing_ok=True)
         raise
     finally:
-        Path(session["in_tmp"]).unlink(missing_ok=True)
-    # ponytail: 성공한 세션은 done_path만 남기고 dict에 그대로 둔다(늦게
-    # 오는 마지막 청크 재시도에 응답하기 위해) — 프로세스 수명 내내 조금씩
-    # 쌓이지만 항목이 가벼워(Path 두어 개) 이 앱 사용량에선 무해하다.
-    # 문제가 되면 그때 TTL 청소를 추가한다.
-    session["done_path"] = str(dest)
+        Path(in_tmp).unlink(missing_ok=True)
     return str(dest)
 
 
-async def save_video_chunk(
-    upload_id: str, chunk_index: int, total_chunks: int, filename: str, data: bytes,
-) -> Optional[str]:
-    """청크 하나를 원본 임시 파일에 이어 쓴다. 마지막 청크(total_chunks - 1)
-    까지 다 받으면 ffmpeg으로 압축해 최종 경로를 반환하고, 아니면 None을
-    반환한다(호출자가 "다음 청크 보내라"고 응답).
-
-    design 2026-09-02: 업로드 하나를 통짜 HTTP 요청 하나로 보내면, 연결이
-    한 번만 끊겨도(브라우저 탭이 백그라운드로 밀리는 것만으로도 발생)
-    수백MB~수GB를 처음부터 다시 보내야 했다. 파일을 작은 청크로 나눠
-    순서대로 보내면, 청크 하나가 실패해도 그 청크만 재전송하면 된다.
-    이미 받은 청크 번호가 다시 오면(응답을 못 받은 클라이언트의 재시도)
-    조용히 무시해 중복으로 이어 쓰지 않는다.
-
-    ponytail: 세션 상태는 프로세스 메모리 dict — 단일 uvicorn 워커라
-    충돌 없다. 서버가 재시작되면 진행 중이던 세션은 유실된다(그 경우
-    클라이언트가 새 upload_id로 처음부터 다시 시작해야 한다) — 순간적인
-    네트워크 끊김을 감당하려는 목적이라 이 정도 한계는 감수할 만하다."""
-    session = _UPLOAD_SESSIONS.get(upload_id)
-    if session is None:
-        if chunk_index != 0:
-            raise RuntimeError("업로드 세션을 찾을 수 없습니다 — 처음부터 다시 시도해주세요.")
-        dest = build_upload_destination("video", filename, VIDEO_EXTENSIONS)
-        session = {"dest": dest, "in_tmp": dest.with_name(f".in_{dest.name}"), "next_index": 0}
-        _UPLOAD_SESSIONS[upload_id] = session
-
-    if chunk_index < session["next_index"]:
-        # 이미 받은 청크의 재전송 — 무시하되, 그게 마지막 청크였다면 압축
-        # 작업을 같이 기다렸다가(실측: 큰 영상은 압축이 타임아웃보다
-        # 오래 걸려 재전송이 압축 도중에 도착할 수 있다 — 이때 압축이
-        # 끝나길 안 기다리고 바로 None을 돌려주면, 클라이언트가 그걸
-        # "다음 청크 보내라"는 정상 응답으로 착각해 video_path 없이
-        # 다음 단계로 넘어가 버렸다) 같은 최종 경로를 돌려준다.
-        task = session.get("compress_task")
-        if task is not None:
-            return await task
-        return session.get("done_path")
-    if chunk_index != session["next_index"]:
-        _UPLOAD_SESSIONS.pop(upload_id, None)
-        Path(session["in_tmp"]).unlink(missing_ok=True)
-        raise RuntimeError(f"청크 순서가 어긋났습니다(기대 {session['next_index']}, 받음 {chunk_index})")
-
-    try:
-        with open(session["in_tmp"], "ab") as out:
-            out.write(data)
-    except Exception:
-        _UPLOAD_SESSIONS.pop(upload_id, None)
-        Path(session["in_tmp"]).unlink(missing_ok=True)
-        raise
-    session["next_index"] += 1
-
-    if chunk_index != total_chunks - 1:
-        return None
-
-    session["compress_task"] = asyncio.ensure_future(_compress_and_finalize(upload_id, session))
-    return await session["compress_task"]
-
-
 def cleanup_orphaned_upload_temp_files() -> None:
-    """서버 시작 시점에는 _UPLOAD_SESSIONS가 항상 비어 있다(메모리 상태라
-    재시작하면 유실된다) — 그러니 이 시점에 media/video에 남아있는
-    .in_*/.out_* 파일은 전부 주인 없는 임시 파일이다. 실측: ffmpeg 압축
-    도중 서버 프로세스가 죽으면(재시작, OOM 등) try/except/finally가 아예
-    실행될 기회가 없어 정리가 안 된 채로 남는다."""
+    """서버 시작 시점에 media/video에 남아있는 .in_*/.out_* 파일은 전부
+    주인 없는 임시 파일이다(그 시점엔 진행 중인 업로드가 있을 수 없다).
+    실측: ffmpeg 압축 도중 서버 프로세스가 죽으면(재시작, OOM 등)
+    try/except/finally가 아예 실행될 기회가 없어 정리가 안 된 채로 남는다."""
     video_dir = MEDIA_ROOT / "video"
     if not video_dir.exists():
         return
     for pattern in (".in_*", ".out_*"):
         for path in video_dir.glob(pattern):
             path.unlink(missing_ok=True)
-
-
-def abandon_video_chunk_upload(upload_id: str) -> None:
-    """청크 재전송까지 다 실패해 프론트가 업로드를 포기했을 때 호출한다.
-    이 신호가 없으면 서버는 업로드가 실패했다는 걸 알 방법이 없어, 이어
-    붙이던 임시 원본 파일(.in_...)이 디스크에 영영 남는다(실측)."""
-    session = _UPLOAD_SESSIONS.pop(upload_id, None)
-    if session is not None:
-        Path(session["in_tmp"]).unlink(missing_ok=True)

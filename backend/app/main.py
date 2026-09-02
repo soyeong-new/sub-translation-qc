@@ -20,10 +20,9 @@ app = FastAPI(title="Sub Translation QC ES")
 # 업로드는 원본 크기만큼 그대로 저장하므로 이 값을 계속 쓴다.
 UPLOAD_SAFETY_MARGIN_BYTES = 1024 ** 3
 
-# /uploads/video/chunk는 영상을 청크로 나눠 받아 원본을 디스크에 이어
-# 적은 뒤 압축한다(design 2026-09-02, save_video_chunk 참고). 청크 하나의
-# Content-Length는 작으니, 필요 용량은 그 대신 프론트가 보내는 전체 파일
-# 크기(X-Total-Size)로 계산한다. 압축 결과물 + 480p 프록시/오디오 추출까지
+# /uploads/video는 원본을 먼저 디스크에 그대로 받아 적은 뒤 압축한다
+# (save_video_upload_streamed 참고). 그래서 필요 용량이 원본 크기
+# (Content-Length)에 비례한다. 압축 결과물 + 480p 프록시/오디오 추출까지
 # 겹치는 여유분으로 srt류보다 넉넉히 잡는다.
 VIDEO_UPLOAD_SAFETY_MARGIN_BYTES = 2 * 1024 ** 3
 
@@ -46,18 +45,15 @@ async def _reject_uploads_when_disk_low(request: Request, call_next):
     본문을 읽기 시작하기도 전에 명확한 에러로 막는다."""
     if request.method == "POST" and request.url.path.startswith("/uploads/"):
         free = shutil.disk_usage(MEDIA_ROOT).free
-        if request.url.path == "/uploads/video/chunk":
-            total_size = request.headers.get("x-total-size")
-            if total_size is not None:
-                needed = int(total_size) + VIDEO_UPLOAD_SAFETY_MARGIN_BYTES
-                if needed > free:
-                    return _insufficient_storage_response(needed, free)
-        else:
-            content_length = request.headers.get("content-length")
-            if content_length is not None:
-                needed = int(content_length) + UPLOAD_SAFETY_MARGIN_BYTES
-                if needed > free:
-                    return _insufficient_storage_response(needed, free)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            margin = (
+                VIDEO_UPLOAD_SAFETY_MARGIN_BYTES if request.url.path == "/uploads/video"
+                else UPLOAD_SAFETY_MARGIN_BYTES
+            )
+            needed = int(content_length) + margin
+            if needed > free:
+                return _insufficient_storage_response(needed, free)
     return await call_next(request)
 
 (MEDIA_ROOT / "video_proxy").mkdir(parents=True, exist_ok=True)

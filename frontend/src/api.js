@@ -218,51 +218,19 @@ function uploadWithProgress(path, file, onProgress) {
   return sendWithProgress(path, formData, onProgress);
 }
 
-// 영상은 청크(조각) 단위로 순서대로 올린다(design 2026-09-02) — 통짜 요청
-// 하나로 보내면 연결이 한 번만 끊겨도(브라우저 탭이 백그라운드로 밀리는
-// 것만으로도 실측 발생) 수백MB~수GB를 처음부터 다시 보내야 했다. 청크
-// 하나가 실패하면 그 청크만 몇 번 재시도하고, 그래도 안 되면 그때 실패
-// 처리한다. File.slice()는 브라우저 기본 기능이라 추가 라이브러리 없이도
-// 나눌 수 있다.
-const VIDEO_CHUNK_SIZE = 20 * 1024 * 1024; // 20MB
-const VIDEO_CHUNK_RETRIES = 3;
-const VIDEO_CHUNK_TIMEOUT_MS = 90 * 1000; // 20MB면 넉넉한 여유(느린 회선 포함)
-
-async function sendChunkWithRetry(chunk, headers) {
-  for (let attempt = 1; attempt <= VIDEO_CHUNK_RETRIES; attempt++) {
-    try {
-      return await sendWithProgress("/uploads/video/chunk", chunk, null, headers, VIDEO_CHUNK_TIMEOUT_MS);
-    } catch (err) {
-      if (attempt === VIDEO_CHUNK_RETRIES) throw err;
-    }
-  }
-}
-
-export async function uploadVideo(file, onProgress) {
-  const totalChunks = Math.max(1, Math.ceil(file.size / VIDEO_CHUNK_SIZE));
-  const uploadId = crypto.randomUUID();
-  const filename = encodeURIComponent(file.name);
-  let result;
-  try {
-    for (let i = 0; i < totalChunks; i++) {
-      const chunk = file.slice(i * VIDEO_CHUNK_SIZE, (i + 1) * VIDEO_CHUNK_SIZE);
-      result = await sendChunkWithRetry(chunk, {
-        "X-Filename": filename,
-        "X-Upload-Id": uploadId,
-        "X-Chunk-Index": String(i),
-        "X-Total-Chunks": String(totalChunks),
-        "X-Total-Size": String(file.size),
-      });
-      if (onProgress) onProgress(Math.round(((i + 1) / totalChunks) * 100));
-    }
-  } catch (err) {
-    // 재시도까지 다 실패 — 서버는 이 실패를 알 방법이 없어 세션과 이어
-    // 붙이던 임시 원본 파일이 디스크에 그대로 남는다(실측). 정리를
-    // 요청하되, 실패해도 업로드 실패 자체를 가리면 안 되니 조용히 무시한다.
-    fetch(`${BASE}/uploads/video/chunk/${uploadId}`, { method: "DELETE" }).catch(() => {});
-    throw err;
-  }
-  return result;
+// 영상은 multipart가 아니라 파일 그대로(raw body)로 보낸다 — FastAPI의
+// 자동 multipart 파싱은 원본 전체를 먼저 통째로 임시 저장해버려서, 그
+// 위에 서버가 또 복사본을 만들면 순간 필요 용량이 원본의 2배가 된다.
+// 파일명은 본문이 아니라 헤더로 보낸다(한글 등 비ASCII 파일명 대응을
+// 위해 encodeURIComponent). 서버는 원본을 먼저 디스크에 그대로 받아
+// 적은 뒤 ffmpeg으로 압축한다. 타임아웃을 안 거는 이유: 압축이 몇 분씩
+// 걸릴 수 있는데(t3.micro, GPU 없음) 어떤 값을 넣어도 더 큰 영상엔 또
+// 부족해진다 — 그럴 바에야 끝날 때까지 기다리는 게 낫다(design 2026-09-02,
+// 청크+폴링으로 갔다가 오히려 실패가 늘어 되돌림).
+export function uploadVideo(file, onProgress) {
+  return sendWithProgress("/uploads/video", file, onProgress, {
+    "X-Filename": encodeURIComponent(file.name),
+  });
 }
 
 export const uploadSrt = (file, onProgress) =>
