@@ -2,7 +2,7 @@
 
 import unicodedata
 from typing import List
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion
 from app.schemas import Finding
@@ -270,18 +270,34 @@ async def get_episode_gender_facts(session: AsyncSession, episode_id: str,
     수 있다). 순번+한국어 원문이 둘 다 같아야 매칭한다 — 흔한 문장이 같은
     회차 안에서 다른 사람에게 두 번 쓰이는 경우, 순번까지 다르면 매칭
     안 되게 하기 위해서다. 인물이 2명 이상인 줄은 언어마다 그룹 순서/개수가
-    달라질 수 있어 대응이 안전하지 않으므로 제외한다."""
+    달라질 수 있어 대응이 안전하지 않으므로 제외한다.
+
+    resolved_gender_groups_raw(LLM+사람 확인 경로)뿐 아니라 resolved_gender_raw
+    (한국어 형태소 규칙 경로)도 같이 본다 — 같은 한국어 원문이라도 언어마다
+    번역문의 성별 표시 후보 단어 개수가 달라, 어떤 언어는 규칙으로 바로
+    풀리고 다른 언어는 후보가 여럿이라 규칙이 포기하고 LLM으로 넘어가는
+    경우가 있다(design §grammar_necessity 형태소 규칙은 후보 정확히 1개일
+    때만 시도). 이미 다른 언어에서 규칙으로 확정된 값이 있으면 그걸 재사용해
+    불필요한 LLM 재검증을 줄인다. "not_applicable"(사람 얘기 아님)은 진짜
+    성별이 아니므로 제외한다(_normalize_gender_for_ai와 동일한 기준)."""
     rows = (await session.execute(
-        select(Segment.index, Segment.korean_text, Segment.resolved_gender_groups_raw)
+        select(Segment.index, Segment.korean_text, Segment.resolved_gender_groups_raw,
+               Segment.resolved_gender_raw)
         .join(TargetVersion, Segment.target_version_id == TargetVersion.id)
         .where(
             TargetVersion.episode_id == episode_id,
             TargetVersion.id != exclude_target_version_id,
-            Segment.resolved_gender_groups_raw.isnot(None),
+            or_(
+                Segment.resolved_gender_groups_raw.isnot(None),
+                Segment.resolved_gender_raw.isnot(None),
+            ),
         )
     )).all()
     facts: dict = {}
-    for index, korean_text, groups in rows:
+    for index, korean_text, groups, gender_raw in rows:
+        key = (index, korean_text)
         if groups and len(groups) == 1 and groups[0].get("gender"):
-            facts[(index, korean_text)] = groups[0]["gender"]
+            facts[key] = groups[0]["gender"]
+        elif key not in facts and gender_raw in ("male", "female"):
+            facts[key] = gender_raw
     return facts

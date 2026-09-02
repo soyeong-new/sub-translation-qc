@@ -1067,6 +1067,43 @@ def test_resolved_registers_treat_not_applicable_gender_as_no_gender_info():
     assert registers2["pair_2"] == {"gender": "male", "formality": None}
 
 
+def test_build_gender_groups_from_llm_fills_blanks_but_keeps_real_conflicts():
+    """회귀: 같은 group_id 안에서 한쪽 후보가 gender/character_name을
+    null로 남긴 건(그 단어 자체엔 단서가 없었을 뿐) 충돌이 아니다 — 다른
+    후보가 이미 확정한 값을 그대로 채워써야 한다. 반대로 두 후보가 서로
+    다른 실제 값을 내놓으면(예: 다른 인물이 같은 group_id로 잘못 합쳐짐)
+    진짜 충돌이니 gender/character_name 둘 다 null로 남겨야 한다."""
+    from app.core.pipeline import _build_gender_groups_from_llm
+
+    llm_items = [
+        {"id": "pair_1", "candidate_words": ["guapo", "él"], "candidate_word_lemmas": ["guapo", "él"]},
+        {"id": "pair_2", "candidate_words": ["bonita", "ella"], "candidate_word_lemmas": ["bonita", "ella"]},
+    ]
+    llm_results = [
+        {"id": "pair_1", "words": [
+            {"index": 0, "is_person": True, "group_id": 1, "gender": None, "referent": "화자",
+             "character_name": "철수"},
+            {"index": 1, "is_person": True, "group_id": 1, "gender": "male", "referent": "화자",
+             "character_name": None},
+        ]},
+        {"id": "pair_2", "words": [
+            {"index": 0, "is_person": True, "group_id": 1, "gender": "female", "referent": "제3자",
+             "character_name": "보나"},
+            {"index": 1, "is_person": True, "group_id": 1, "gender": "male", "referent": "제3자",
+             "character_name": "차은상"},
+        ]},
+    ]
+    groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results)
+
+    group1 = groups_by_id["pair_1"][0]
+    assert group1["gender"] == "male"
+    assert group1["character_name"] == "철수"
+
+    group2 = groups_by_id["pair_2"][0]
+    assert group2["gender"] is None
+    assert group2["character_name"] is None
+
+
 def test_gender_groups_for_ai_handles_legacy_rows_without_candidate_indices():
     """회귀: 이 브랜치 이전에 저장된 resolved_gender_groups_raw 행은
     candidate_indices 키가 없다(words/target_word_lemmas/gender만 있음).

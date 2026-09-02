@@ -496,9 +496,35 @@ def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
             entry["candidate_indices"].append(idx)
             # 같은 그룹 안의 후보끼리 성별 판단이 갈리면(정상적인 LLM 출력
             # 이라면 안 생겨야 하지만, 방어적으로) 그룹 전체를 미확정으로
-            # 남긴다 — 절반만 적용하면 더 위험하다.
-            if w.get("gender") != entry["gender"]:
-                entry["gender"] = None
+            # 남긴다 — 절반만 적용하면 더 위험하다. 단, 한쪽이 null(그
+            # 후보 단어 자체는 성별 단서가 없어 확정 못한 것뿐)인 건
+            # 충돌이 아니다 — 그룹 안 다른 후보가 이미 확정한 성별을
+            # 그대로 채워 쓴다. 예전엔 이 구분이 없어서, 한 그룹 안에
+            # 성별이 확실한 후보와 애매한 후보가 섞이면(흔한 정상 케이스,
+            # 예: 형용사 하나는 명확히 성별 표시, 다른 하나는 무관한 어미)
+            # 이미 확정된 성별까지 매번 null로 지워졌다 — 인물이 한 명뿐인
+            # 줄에서도 성별이 어이없이 사라지던 원인 중 하나로 보인다.
+            new_gender = w.get("gender")
+            if new_gender is not None:
+                if entry["gender"] is None:
+                    entry["gender"] = new_gender
+                elif new_gender != entry["gender"]:
+                    entry["gender"] = None
+            # character_name도 마찬가지로 그룹 안에서 갈리면(예: 서로 다른
+            # 인물이 같은 group_id로 잘못 합쳐진 경우, 실측: 보나+찬영이
+            # "차은상"으로 뭉쳐짐) 그룹 전체를 미확정으로 남긴다 — 틀린
+            # 이름표를 달고 사람에게 확인받으면 그 오답이 character_gender_facts에
+            # title 전체로 영구 저장돼 계속 퍼진다(design §그룹 내 인물
+            # 일관성 검증). 단, 어느 한쪽이 null(그 후보에서는 이름 단서가
+            # 없었을 뿐)인 건 충돌이 아니다 — 둘 다 값이 있는데 서로 다를
+            # 때만 진짜 충돌이다. null이던 쪽은 값이 있는 쪽으로 채운다.
+            new_name = w.get("character_name")
+            if new_name is not None:
+                if entry["character_name"] is None:
+                    entry["character_name"] = new_name
+                elif new_name != entry["character_name"]:
+                    entry["character_name"] = None
+                    entry["gender"] = None
         groups_by_id[item_id] = [
             {"group_index": i, **by_group[gid]} for i, gid in enumerate(order)
         ]

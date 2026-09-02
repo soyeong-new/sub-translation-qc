@@ -7,6 +7,7 @@ from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow,
 from app.repositories import (
     save_pipeline_result, get_findings, delete_target_version_results,
     get_character_gender_facts, upsert_character_gender_facts,
+    get_episode_gender_facts,
 )
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
 
@@ -630,3 +631,90 @@ async def test_get_character_gender_facts_scoped_to_title():
         # 핵심 안전장치다(design §과거 GenderWordResolution 제거 사유와의 차이).
         facts_b = await get_character_gender_facts(session, title_b.id)
         assert facts_b == {}
+
+
+async def _make_episode_with_target_version(session, korean_text, index=0, **segment_kwargs):
+    title = Title(name="Test Drama", type="series", created_at=datetime.now())
+    session.add(title)
+    await session.flush()
+    episode = Episode(title_id=title.id, video_path="/tmp/x.mp4")
+    session.add(episode)
+    await session.flush()
+    tv = TargetVersion(episode_id=episode.id, target_language="es", variant="A")
+    session.add(tv)
+    await session.flush()
+    session.add(Segment(
+        target_version_id=tv.id, index=index, start=0, end=1,
+        korean_text=korean_text, target_text="x", **segment_kwargs,
+    ))
+    await session.flush()
+    return episode, tv
+
+
+@pytest.mark.asyncio
+async def test_get_episode_gender_facts_reuses_korean_morphology_resolved_value():
+    """회귀: 같은 회차의 다른 언어 버전에서 한국어 형태소 규칙(LLM 없이)으로
+    이미 확정된 resolved_gender_raw도 재사용해야 한다 — 같은 한국어 원문이라도
+    번역문마다 성별 표시 후보 단어 개수가 달라, 어떤 언어는 규칙으로 바로
+    풀리고 다른 언어는 후보가 여럿이라 규칙이 포기하고 LLM으로 넘어가는
+    경우가 있다."""
+    async with async_session() as session:
+        episode, tv_es = await _make_episode_with_target_version(
+            session, "오빠 어디 가?", resolved_gender_raw="male")
+        await session.commit()
+
+    async with async_session() as session:
+        tv_pt = TargetVersion(episode_id=episode.id, target_language="pt", variant="A")
+        session.add(tv_pt)
+        await session.flush()
+        facts = await get_episode_gender_facts(session, episode.id, tv_pt.id)
+        assert facts == {(0, "오빠 어디 가?"): "male"}
+
+
+@pytest.mark.asyncio
+async def test_get_episode_gender_facts_ignores_not_applicable_raw_value():
+    """resolved_gender_raw가 "not_applicable"(사람 얘기 아님)이면 진짜
+    성별이 아니므로 재사용 대상에서 빠져야 한다."""
+    async with async_session() as session:
+        episode, tv_es = await _make_episode_with_target_version(
+            session, "비싸다", resolved_gender_raw="not_applicable")
+        await session.commit()
+
+    async with async_session() as session:
+        tv_pt = TargetVersion(episode_id=episode.id, target_language="pt", variant="A")
+        session.add(tv_pt)
+        await session.flush()
+        facts = await get_episode_gender_facts(session, episode.id, tv_pt.id)
+        assert facts == {}
+
+
+@pytest.mark.asyncio
+async def test_get_episode_gender_facts_prefers_group_based_over_raw_for_same_key():
+    """한 언어는 그룹 경로(사람 확인)로, 다른 언어는 형태소 규칙 경로로
+    같은 (순번, 한국어 원문)이 확정된 경우 — 사람이 직접 확인한 그룹
+    경로 값을 우선한다."""
+    async with async_session() as session:
+        episode, tv_es = await _make_episode_with_target_version(
+            session, "오빠 어디 가?", resolved_gender_raw="male")
+        await session.commit()
+
+    async with async_session() as session:
+        tv_pt = TargetVersion(episode_id=episode.id, target_language="pt", variant="A")
+        session.add(tv_pt)
+        await session.flush()
+        session.add(Segment(
+            target_version_id=tv_pt.id, index=0, start=0, end=1,
+            korean_text="오빠 어디 가?", target_text="y",
+            resolved_gender_groups_raw=[{
+                "group_index": 0, "referent": "화자", "words": ["guapo"],
+                "target_word_lemmas": ["guapo"], "candidate_indices": [0], "gender": "female",
+            }],
+        ))
+        await session.commit()
+
+    async with async_session() as session:
+        tv_fr = TargetVersion(episode_id=episode.id, target_language="fr", variant="A")
+        session.add(tv_fr)
+        await session.flush()
+        facts = await get_episode_gender_facts(session, episode.id, tv_fr.id)
+        assert facts == {(0, "오빠 어디 가?"): "female"}
