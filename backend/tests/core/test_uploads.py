@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from app.core.uploads import (
     build_upload_destination, save_upload, save_video_chunk, abandon_video_chunk_upload,
-    UnsupportedFileType, VIDEO_EXTENSIONS,
+    cleanup_orphaned_upload_temp_files, UnsupportedFileType, VIDEO_EXTENSIONS,
 )
 
 
@@ -141,6 +141,24 @@ async def test_abandon_video_chunk_upload_deletes_partial_file(tmp_path, monkeyp
 
     leftover = list((tmp_path / "video").glob("*")) if (tmp_path / "video").exists() else []
     assert leftover == []
+
+
+def test_cleanup_orphaned_upload_temp_files_deletes_in_and_out_files(tmp_path, monkeypatch):
+    """실측: ffmpeg 압축 도중 서버 프로세스가 죽으면(재시작, OOM 등) .in_과
+    .out_ 임시 파일이 둘 다 정리되지 못한 채 남았다. 서버 시작 시점엔
+    _UPLOAD_SESSIONS가 항상 비어있으므로 이 시점에 남은 임시 파일은 전부
+    주인이 없다 — 재시작할 때마다 쓸어야 한다."""
+    monkeypatch.setattr("app.core.uploads.MEDIA_ROOT", tmp_path)
+    video_dir = tmp_path / "video"
+    video_dir.mkdir()
+    (video_dir / ".in_abc_clip.mp4").write_bytes(b"partial")
+    (video_dir / ".out_abc_clip.mp4").write_bytes(b"partial")
+    (video_dir / "done_clip.mp4").write_bytes(b"real file")  # 정상 파일은 건드리면 안 됨
+
+    cleanup_orphaned_upload_temp_files()
+
+    remaining = {p.name for p in video_dir.glob("*")}
+    assert remaining == {"done_clip.mp4"}
 
 
 @pytest.mark.asyncio

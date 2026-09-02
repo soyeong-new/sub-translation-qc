@@ -141,6 +141,20 @@ async def save_video_chunk(
     return str(dest)
 
 
+def cleanup_orphaned_upload_temp_files() -> None:
+    """서버 시작 시점에는 _UPLOAD_SESSIONS가 항상 비어 있다(메모리 상태라
+    재시작하면 유실된다) — 그러니 이 시점에 media/video에 남아있는
+    .in_*/.out_* 파일은 전부 주인 없는 임시 파일이다. 실측: ffmpeg 압축
+    도중 서버 프로세스가 죽으면(재시작, OOM 등) try/except/finally가 아예
+    실행될 기회가 없어 정리가 안 된 채로 남는다."""
+    video_dir = MEDIA_ROOT / "video"
+    if not video_dir.exists():
+        return
+    for pattern in (".in_*", ".out_*"):
+        for path in video_dir.glob(pattern):
+            path.unlink(missing_ok=True)
+
+
 def abandon_video_chunk_upload(upload_id: str) -> None:
     """청크 재전송까지 다 실패해 프론트가 업로드를 포기했을 때 호출한다.
     이 신호가 없으면 서버는 업로드가 실패했다는 걸 알 방법이 없어, 이어

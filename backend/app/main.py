@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
-from app.core.uploads import MEDIA_ROOT
+from app.core.uploads import MEDIA_ROOT, cleanup_orphaned_upload_temp_files
 from app.db import async_session
 from app.models import TargetVersion
 from app.routers import titles, analysis, findings, export, uploads
@@ -97,6 +97,7 @@ async def _init_background_task_registry():
     # 권고사항) — run-analysis가 만든 태스크를 여기 보관해 완료 전에 사라지지
     # 않게 한다.
     app.state.background_tasks = set()
+    cleanup_orphaned_upload_temp_files()
     await _fail_stuck_in_progress_target_versions()
 
 
