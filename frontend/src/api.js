@@ -2,6 +2,25 @@
 
 const BASE = "/api";
 
+// FastAPI 에러 응답의 detail은 보통 문자열이지만, 요청 검증 실패(422)일 때는
+// [{loc, msg, type}, ...] 배열이다 — 문자열이라고 가정하고 그대로 Error
+// 메시지에 넣으면 배열이 String()으로 강제변환되며 "[object Object]"로
+// 깨진다(실측).
+function errorMessageFrom(rawText, prefix) {
+  let message = `${prefix}: ${rawText}`;
+  try {
+    const parsed = JSON.parse(rawText);
+    if (typeof parsed?.detail === "string") {
+      message = parsed.detail;
+    } else if (Array.isArray(parsed?.detail)) {
+      message = parsed.detail.map((d) => d.msg).join(", ");
+    }
+  } catch {
+    // response body wasn't JSON; keep the raw-text fallback above
+  }
+  return message;
+}
+
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -9,14 +28,7 @@ async function request(path, options = {}) {
   });
   if (!res.ok) {
     const raw = await res.text();
-    let message = `API 오류 ${res.status}: ${raw}`;
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed?.detail) message = parsed.detail;
-    } catch {
-      // response body wasn't JSON; keep the raw-text fallback above
-    }
-    throw new Error(message);
+    throw new Error(errorMessageFrom(raw, `API 오류 ${res.status}`));
   }
   return res.json();
 }
@@ -187,14 +199,7 @@ function sendWithProgress(path, body, onProgress, extraHeaders = {}, timeoutMs =
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText));
       } else {
-        let message = `업로드 오류 ${xhr.status}: ${xhr.responseText}`;
-        try {
-          const parsed = JSON.parse(xhr.responseText);
-          if (parsed?.detail) message = parsed.detail;
-        } catch {
-          // response body wasn't JSON; keep the raw-text fallback above
-        }
-        reject(new Error(message));
+        reject(new Error(errorMessageFrom(xhr.responseText, `업로드 오류 ${xhr.status}`)));
       }
     };
     xhr.onerror = () => reject(new Error("업로드 중 네트워크 오류가 발생했습니다."));
