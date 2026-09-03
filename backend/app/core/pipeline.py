@@ -694,10 +694,13 @@ def _chunk_list(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
+BACK_TRANSLATE_CHUNK_SIZE = 20
+
+
 async def _back_translate_all(
     texts: list, profile: dict, call_fn, label: str, target_version_id: str, warnings: list,
 ) -> list:
-    """texts를 CHUNK_MAX_SIZE 단위로 쪼개 병렬로 역번역한다. 영화 전체를
+    """texts를 BACK_TRANSLATE_CHUNK_SIZE 단위로 쪼개 병렬로 역번역한다. 영화 전체를
     한 콜에 몰아넣으면 응답이 토큰 한도에서 잘려 JSON 파싱이 통째로
     실패하거나(그 콜 전체의 역번역이 사라짐), 항목이 많을수록 모델이
     id를 엉뚱한 항목에 붙이는 오귀속도 늘어난다 — _verify_chunk가 이미
@@ -720,7 +723,7 @@ async def _back_translate_all(
     chunk_results = await asyncio.gather(*[
         _safe_call(_call_with_one_retry(chunk), label,
                    "해당 구간은 역번역 없이 계속 진행", target_version_id, warnings)
-        for chunk in _chunk_list(texts, CHUNK_MAX_SIZE)
+        for chunk in _chunk_list(texts, BACK_TRANSLATE_CHUNK_SIZE)
     ])
     return [r for chunk in chunk_results for r in chunk]
 

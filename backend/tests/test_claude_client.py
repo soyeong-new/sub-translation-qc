@@ -245,6 +245,21 @@ async def test_back_translate_raises_on_malformed_json():
 
 
 @pytest.mark.asyncio
+async def test_back_translate_uses_output_schema_with_required_fields():
+    """original_korean_text 등 필드가 프롬프트 지시만으로는 가끔 누락돼 검수
+    화면에서 원문 역번역이 통째로 안 뜨는 사례가 있었다 — output_config.format
+    으로 API가 필드 존재를 강제해야 한다(correct_primary와 동일한 이유,
+    같은 방식)."""
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.back_translate(texts=[], profile={})
+    call_kwargs = client._sdk_client.messages.create.call_args.kwargs
+    schema = call_kwargs["output_config"]["format"]["schema"]
+    assert schema["type"] == "array"
+    assert set(schema["items"]["required"]) == {
+        "id", "korean_text", "original_korean_text", "is_improvement"}
+
+
+@pytest.mark.asyncio
 async def test_correct_primary_uses_target_language_from_profile_not_spanish():
     """스페인어가 프롬프트에 하드코딩돼 있으면 다른 언어 프로파일로 호출해도
     Claude에게 "스페인어로서 자연스러운가"를 검증하라고 지시하게 된다 —

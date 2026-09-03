@@ -253,6 +253,22 @@ async def test_back_translate_raises_on_malformed_json():
 
 
 @pytest.mark.asyncio
+async def test_back_translate_uses_json_schema_response_format_with_required_fields():
+    """original_korean_text 등 필드가 프롬프트 지시만으로는 가끔 누락돼 검수
+    화면에서 원문 역번역이 통째로 안 뜨는 사례가 있었다 — API가 스키마로
+    필드 존재를 강제해야 한다(correct_primary/verify_and_refine과 동일한
+    이유, 같은 방식)."""
+    client = _make_client_with_fake_sdk(json.dumps({"results": []}))
+    await client.back_translate(texts=[], profile={})
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["response_format"]["type"] == "json_schema"
+    item_schema = call_kwargs["response_format"]["json_schema"]["schema"][
+        "properties"]["results"]["items"]
+    assert set(item_schema["required"]) == {
+        "id", "korean_text", "original_korean_text", "is_improvement"}
+
+
+@pytest.mark.asyncio
 async def test_resolve_gender_from_context_sends_candidate_words_and_returns_results():
     payload = {"results": [{"id": "p1", "words": [
         {"index": 0, "is_person": True, "group_id": 0, "gender": "male", "referent": "Juan"},

@@ -152,6 +152,35 @@ _FINDINGS_SCHEMA = {
     },
 }
 
+_BACK_TRANSLATE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "back_translate",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "korean_text": {"type": "string"},
+                            "original_korean_text": {"type": "string"},
+                            "is_improvement": {"type": "boolean"},
+                        },
+                        "required": ["id", "korean_text", "original_korean_text", "is_improvement"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["results"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 _GENDER_RESOLUTION_SCHEMA = {
     "type": "json_schema",
     "json_schema": {
@@ -424,7 +453,8 @@ class GptClient:
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="역번역", model_override=self._light_model)
+        return await self._call(system, user, key="results", label="역번역",
+                                 model_override=self._light_model, response_format=_BACK_TRANSLATE_SCHEMA)
 
     async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)

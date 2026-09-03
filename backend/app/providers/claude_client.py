@@ -72,6 +72,21 @@ _PRIMARY_OUTPUT_SCHEMA = {
     },
 }
 
+_BACK_TRANSLATE_OUTPUT_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "korean_text": {"type": "string"},
+            "original_korean_text": {"type": "string"},
+            "is_improvement": {"type": "boolean"},
+        },
+        "required": ["id", "korean_text", "original_korean_text", "is_improvement"],
+        "additionalProperties": False,
+    },
+}
+
 _SHRINK_SCHEMA_INSTRUCTION = (
     "정확히 다음 키를 가진 JSON 객체 하나만 출력하라: "
     "shrunk_text (문자열, 의미를 보존하며 글자수 제약 안으로 줄인 텍스트). "
@@ -298,7 +313,8 @@ class ClaudeClient:
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        return await self._call_array(system, user, model=self._light_model)
+        return await self._call_array(system, user, model=self._light_model,
+                                       output_schema=_BACK_TRANSLATE_OUTPUT_SCHEMA)
 
     async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
