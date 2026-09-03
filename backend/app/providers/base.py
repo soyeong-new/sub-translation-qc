@@ -1,8 +1,19 @@
 """STT/번역/민감어 판단을 수행하는 ModelProvider 추상 인터페이스와 프로바이더 선택 로직."""
 
 import os
+import re
 from abc import ABC, abstractmethod
 from typing import List, Optional
+
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def contains_hangul(text: str) -> bool:
+    """corrected_text가 대상언어가 아니라 한국어로 새어나온 경우를 감지한다
+    (design 논의: 프롬프트에 '한국어를 절대 섞지 마라'는 지시가 이미 있어도
+    모델이 배치 처리 중 다른 항목의 korean_text를 착각해 그대로 옮기는
+    사례가 실측 확인됨 — 지시만으로는 못 막아 응답 내용 자체를 검증해야 함)."""
+    return bool(_HANGUL_RE.search(text or ""))
 
 
 class ProviderNotConfiguredError(RuntimeError):

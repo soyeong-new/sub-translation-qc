@@ -4,6 +4,7 @@ import json
 import re
 from typing import List
 from anthropic import AsyncAnthropic
+from app.providers.base import contains_hangul
 
 _CODE_FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
 
@@ -212,8 +213,46 @@ class ClaudeClient:
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
-        return await self._call_array(system, user, model=self._model, temperature=0,
-                                       output_schema=_PRIMARY_OUTPUT_SCHEMA)
+        results = await self._call_array(system, user, model=self._model, temperature=0,
+                                          output_schema=_PRIMARY_OUTPUT_SCHEMA)
+        return await self._retry_hangul_leaks(
+            results, pairs, system, language_label, model=self._model, output_schema=_PRIMARY_OUTPUT_SCHEMA)
+
+    async def _retry_hangul_leaks(self, results: List[dict], pairs: List[dict], system: str,
+                                   language_label: str, model: str, output_schema: dict) -> List[dict]:
+        """지시(prompt)만으로는 못 막는 사례(design 논의: 배치 처리 중 모델이
+        다른 항목의 korean_text를 착각해 corrected_text에 그대로 옮긴 실측
+        사례)를 막는 마지막 방어선 — 한국어가 새어나온 항목만 원본 pair를
+        다시 보내 한 번 더 묻고, 그래도 안 고쳐지면 검수자가 알아보게
+        description에 경고를 남긴다(조용히 버리지 않는다 — 이 프로젝트는
+        누락보다 과탐지를 선호한다)."""
+        leaked_ids = {r["segment_id"] for r in results if contains_hangul(r.get("corrected_text"))}
+        if not leaked_ids:
+            return results
+        retry_pairs = [p for p in pairs if p["id"] in leaked_ids]
+        retry_system = system + (
+            f"\n⚠️ 방금 응답에서 다음 segment_id의 corrected_text에 한국어가 섞여 있었다 — "
+            f"금지 사항이다. 아래 항목만 다시 교정하되 corrected_text는 반드시 {language_label}"
+            f"로만 작성하라 (한국어 단어를 절대 포함하지 마라): {sorted(leaked_ids)}"
+        )
+        retry_user = json.dumps(retry_pairs, ensure_ascii=False)
+        retried = await self._call_array(retry_system, retry_user, model=model,
+                                          temperature=0, output_schema=output_schema)
+        retried_by_id = {r["segment_id"]: r for r in retried}
+        fixed = []
+        for r in results:
+            if r["segment_id"] not in leaked_ids:
+                fixed.append(r)
+                continue
+            replacement = retried_by_id.get(r["segment_id"], r)
+            if contains_hangul(replacement.get("corrected_text")):
+                replacement = dict(replacement)
+                replacement["description"] = (
+                    f"[⚠️ AI가 {language_label} 대신 한국어로 응답함 — 직접 재확인 필요] "
+                    f"{replacement['description']}"
+                )
+            fixed.append(replacement)
+        return fixed
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
                            extra_instruction: str = "") -> str:

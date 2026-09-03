@@ -59,6 +59,54 @@ async def test_correct_primary_uses_output_schema_with_required_fields():
         "segment_id", "category", "corrected_text", "description"}
 
 
+def _fake_text_response(payload):
+    fake_block = MagicMock(spec=["type", "text"])
+    fake_block.type = "text"
+    fake_block.text = json.dumps(payload)
+    fake_response = MagicMock()
+    fake_response.content = [fake_block]
+    return fake_response
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_retries_when_corrected_text_leaks_korean():
+    """회귀(실측 버그): 배치 처리 중 모델이 다른 항목의 korean_text를 착각해
+    corrected_text에 그대로 옮기는 사례가 있었다 — 프롬프트 지시만으로는
+    못 막으니 응답 내용 자체를 검증해 한국어가 새면 그 항목만 재요청해야
+    한다. "다시 질문"도 이 함수를 그대로 재사용하므로 이 방어선 하나로
+    양쪽 다 보호된다."""
+    leaked = [{"segment_id": "p1", "category": "mistranslation",
+               "corrected_text": "기사가 있는 리무진을 가졌어", "description": "정확성 보완"}]
+    fixed = [{"segment_id": "p1", "category": "mistranslation",
+              "corrected_text": "Tenho uma limusine com motorista", "description": "정확성 보완"}]
+    client = ClaudeClient(api_key="fake", model="claude-test")
+    client._sdk_client.messages.create = AsyncMock(
+        side_effect=[_fake_text_response(leaked), _fake_text_response(fixed)])
+    result = await client.correct_primary(
+        pairs=[{"id": "p1", "korean_text": "기사가 있는 리무진을 가졌어", "target_text": "esta feliz"}],
+        profile={}, pending_sensitive_hits=[], knowledge="", format_constraint="",
+    )
+    assert result == fixed
+    assert client._sdk_client.messages.create.call_count == 2
+    retry_user = client._sdk_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert json.loads(retry_user) == [{"id": "p1", "korean_text": "기사가 있는 리무진을 가졌어",
+                                        "target_text": "esta feliz"}]
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_flags_description_when_retry_still_leaks_korean():
+    leaked = [{"segment_id": "p1", "category": "mistranslation",
+               "corrected_text": "기사가 있는 리무진을 가졌어", "description": "정확성 보완"}]
+    client = ClaudeClient(api_key="fake", model="claude-test")
+    client._sdk_client.messages.create = AsyncMock(
+        side_effect=[_fake_text_response(leaked), _fake_text_response(leaked)])
+    result = await client.correct_primary(
+        pairs=[{"id": "p1", "korean_text": "기사가 있는 리무진을 가졌어", "target_text": "esta feliz"}],
+        profile={}, pending_sensitive_hits=[], knowledge="", format_constraint="",
+    )
+    assert "직접 재확인 필요" in result[0]["description"]
+
+
 @pytest.mark.asyncio
 async def test_correct_primary_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
