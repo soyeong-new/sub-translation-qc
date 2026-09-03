@@ -939,8 +939,32 @@ async def _split_into_scenes(
     return _chunk_pairs_by_gap(filtered_pairs)
 
 
+async def _verify_gender_swap_and_rollback(
+    changes: dict, provider: ModelProvider, profile: dict,
+) -> dict:
+    """성별 치환(_apply_resolved_gender/_reapply_resolved_gender_to_corrections)
+    직후 안전망 — 구조 규칙(spaCy)과 LLM is_person 판단을 다 거쳐도 남는
+    미지의 오탐(예: spaCy가 애초에 잘못 태깅한 단어를 성별 어미로 착각해
+    엉뚱하게 치환)을 잡는다. 실제로 텍스트가 바뀐 항목만 좁게 검증하고,
+    문법이 깨졌다고 판정되면 치환 전 텍스트로 되돌린다. 반드시 S2(이중검증)
+    호출 전에 끝나야 한다 — S2 프롬프트는 "이미 반영된 성별 형태는
+    되돌리지 마라"고 지시받으므로, 이 검증이 그보다 늦으면 걸러지지 않는다.
+    changes는 {id: (치환 전 텍스트, 치환 후 텍스트)}. 반환값은
+    {id: 최종 텍스트}(반영 또는 롤백)."""
+    result = {key: after for key, (_before, after) in changes.items()}
+    changed = {key: (before, after) for key, (before, after) in changes.items() if before != after}
+    if not changed:
+        return result
+    items = [{"id": key, "text": after} for key, (_before, after) in changed.items()]
+    verify_results = await provider.verify_gender_swap(items, profile)
+    for r in verify_results:
+        if r.get("has_error") and r["id"] in changed:
+            result[r["id"]] = changed[r["id"]][0]
+    return result
+
+
 async def _reapply_resolved_gender_to_corrections(
-    entries: list, profile: dict, resolved_registers: dict,
+    entries: list, provider: ModelProvider, profile: dict, resolved_registers: dict,
 ) -> None:
     """S2가 오역 등 다른 문제를 고치며 문장을 통째로 다시 쓰면, 이미 확정된
     성별이 결과물에도 그대로 남아있다는 보장이 없다 — 프롬프트로 "건드리지
@@ -951,7 +975,9 @@ async def _reapply_resolved_gender_to_corrections(
     새어나간다. entries는 (correction, ...) 튜플 리스트 — 같은 segment_id가
     의견 갈림(disputed)으로 두 번(Claude 문구/GPT 문구) 등장할 수 있어
     segment_id 대신 리스트 인덱스를 리졸버 배치 콜의 키로 써서 서로
-    덮어쓰지 않게 한다."""
+    덮어쓰지 않게 한다. 치환 직후 _verify_gender_swap_and_rollback으로
+    한 번 더 검증한다 — S2가 다시 쓴 문장에 이 재반영이 얹히는 지점이라,
+    여기서도 문법이 깨질 여지가 그대로 있다."""
     single_items = []
     group_items = []
     for idx, entry in enumerate(entries):
@@ -967,6 +993,7 @@ async def _reapply_resolved_gender_to_corrections(
                 {"id": idx, "text": correction["corrected_text"], "gender": register["gender"]})
     if not single_items and not group_items:
         return
+    original_by_idx = {i["id"]: i["text"] for i in single_items + group_items}
     fixed_by_idx: dict = {}
     if single_items:
         fixed_by_idx.update(await asyncio.to_thread(
@@ -974,6 +1001,9 @@ async def _reapply_resolved_gender_to_corrections(
     if group_items:
         fixed_by_idx.update(await asyncio.to_thread(
             resolve_gender_groups_in_texts, group_items, profile.get("language")))
+    if fixed_by_idx:
+        changes = {idx: (original_by_idx[idx], fixed) for idx, fixed in fixed_by_idx.items()}
+        fixed_by_idx = await _verify_gender_swap_and_rollback(changes, provider, profile)
     for idx, entry in enumerate(entries):
         if idx in fixed_by_idx:
             entry[0]["corrected_text"] = fixed_by_idx[idx]
@@ -1101,7 +1131,7 @@ async def _run_dual_verification_pass(
         *((c, "pending", "gpt", False, "gpt_authored") for c in filtered_gpt_only),
     ]
 
-    await _reapply_resolved_gender_to_corrections(entries, profile, resolved_registers)
+    await _reapply_resolved_gender_to_corrections(entries, provider, profile, resolved_registers)
 
     pair_by_id = {p.id: p for p in pairs}
     findings: list = []
@@ -1458,7 +1488,9 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
     }
 
 
-async def _apply_resolved_gender(pairs: list, profile: dict, resolved_registers: dict) -> None:
+async def _apply_resolved_gender(
+    pairs: list, provider: ModelProvider, profile: dict, resolved_registers: dict,
+) -> None:
     """확정된 성별을 파이썬이 직접 문장에 반영한다(제자리 수정) — AI에게
     "반영해달라"고 부탁하지 않는다. 문법 규칙(형용사 성별 어미)은 결정론적
     으로 처리 가능하니, 그래야 AI가 이 지시를 놓치는 문제가 원천적으로
@@ -1467,7 +1499,10 @@ async def _apply_resolved_gender(pairs: list, profile: dict, resolved_registers:
     다른 함수(resolve_gender_in_texts/resolve_gender_groups_in_texts)로
     처리하지만 결과는 같은 딕셔너리에 합쳐 pair.target.text에 반영한다.
     spaCy 분석은 CPU 바운드 동기 작업이라 asyncio.to_thread로 감싼다
-    (check_grammar_necessity 호출부와 동일한 이유)."""
+    (check_grammar_necessity 호출부와 동일한 이유). 이 함수는 S2(이중검증)
+    호출 "이전"에 실행돼야 한다 — _verify_gender_swap_and_rollback으로
+    치환 직후 검증하는데, S2 프롬프트는 이미 반영된 성별 형태를 되돌리지
+    말라고 지시받으므로 그 이후엔 이 검증이 걸러지지 않는다."""
     single_items = [
         {"id": p.id, "text": p.target.text, "gender": resolved_registers[p.id]["gender"]}
         for p in pairs
@@ -1480,6 +1515,7 @@ async def _apply_resolved_gender(pairs: list, profile: dict, resolved_registers:
     ]
     if not single_items and not group_items:
         return
+    original_by_id = {i["id"]: i["text"] for i in single_items + group_items}
     fixed_by_id: dict = {}
     if single_items:
         fixed_by_id.update(await asyncio.to_thread(
@@ -1487,6 +1523,9 @@ async def _apply_resolved_gender(pairs: list, profile: dict, resolved_registers:
     if group_items:
         fixed_by_id.update(await asyncio.to_thread(
             resolve_gender_groups_in_texts, group_items, profile.get("language")))
+    if fixed_by_id:
+        changes = {pid: (original_by_id[pid], fixed) for pid, fixed in fixed_by_id.items()}
+        fixed_by_id = await _verify_gender_swap_and_rollback(changes, provider, profile)
     for pair in pairs:
         if pair.id in fixed_by_id:
             pair.target.text = fixed_by_id[pair.id]
@@ -1525,7 +1564,7 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
     전담하는 별도 LLM 호출로) — 그래야 이중검증이 "이미 맞는 문장"을 기준
     으로 다른 문제만 찾으면 된다(design §AI에게 반영해달라 부탁하지 말고
     파이썬/전담 호출이 먼저 확정)."""
-    await _apply_resolved_gender(pairs, profile, resolved_registers)
+    await _apply_resolved_gender(pairs, provider, profile, resolved_registers)
     await _apply_resolved_formality(pairs, provider, profile, resolved_registers)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."

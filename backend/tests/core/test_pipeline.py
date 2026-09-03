@@ -1071,6 +1071,31 @@ async def test_pipeline_applies_resolved_gender_and_formality_before_dual_verifi
     assert captured["pairs"][0]["target_text"] == "[informal] Está cansado."
 
 
+@pytest.mark.asyncio
+async def test_apply_resolved_gender_rolls_back_swap_flagged_as_grammatically_broken(monkeypatch):
+    """치환 직후 안전망(design §치환 직후 검증+롤백): 구조 규칙(spaCy)과 LLM
+    is_person 판단을 다 거쳐도 남는 미지의 오탐에 대한 마지막 방어선 —
+    verify_gender_swap이 문법 오류가 있다고 판정하면 치환 전 텍스트로
+    되돌려야 한다."""
+    from app.core.pipeline import _apply_resolved_gender
+
+    pair = AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="k"),
+        target=SegmentText(start=0.0, end=1.0, text="Está cansada."),
+    )
+    provider = MockProvider()
+
+    async def _flag_error(items, profile):
+        return [{"id": i["id"], "has_error": True} for i in items]
+
+    monkeypatch.setattr(provider, "verify_gender_swap", _flag_error)
+
+    await _apply_resolved_gender(
+        [pair], provider, {"language": "es"}, {"p1": {"gender": "male"}})
+
+    assert pair.target.text == "Está cansada."
+
+
 def test_resolved_registers_treat_not_applicable_gender_as_no_gender_info():
     """회귀: 검수자가 "해당 없음(사람 아님)"을 고르면(예: caro=비싸다,
     사람 성별과 무관) resolved_gender_raw에 "not_applicable"이 저장되는데,

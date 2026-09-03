@@ -96,6 +96,11 @@ class MockProvider(ModelProvider):
             for item in items
         ]
 
+    async def verify_gender_swap(self, items: List[dict], profile: dict) -> List[dict]:
+        """결정론적 테스트 더블: 항상 오류 없음(has_error=False)으로 돌려준다
+        — 롤백 자체를 테스트하려는 개별 테스트는 이 메서드를 monkeypatch한다."""
+        return [{"id": i["id"], "has_error": False} for i in items]
+
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         # 테스트용 결정론적 16차원 가짜 임베딩 벡터 생성
         res = []

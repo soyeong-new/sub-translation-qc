@@ -31,8 +31,7 @@ _VERIFY_SCHEMA_INSTRUCTION = (
     "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라. "
     "description의 설명 문장 자체는 예외 없이 한국어로 써라 — 다른 언어로 "
     "설명하지 마라. corrected_text는 정반대로 한국어를 절대 섞지 말고 대상언어로만 "
-    "써라. 단, 대상언어 원문 표현을 예시로 인용하는 것은 괜찮다(예: \"'경비아저씨' "
-    "표현이 어색해 'el guardia'로 수정\")."
+    "써라. 단, 대상언어 원문 표현을 예시로 인용하는 것은 괜찮다."
 )
 
 _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
@@ -70,6 +69,13 @@ _FORMALITY_SCHEMA_INSTRUCTION = (
     'id (문자열, 입력의 "id"와 반드시 일치), '
     "corrected_text (문자열, 격식만 반영한 전체 문장 — 이미 일치하면 "
     "원문 그대로)."
+)
+
+_GENDER_SWAP_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "has_error (불리언, 문법 오류가 있으면 true)."
 )
 
 _DEFAULT_FORMALITY_INSTRUCTION = (
@@ -236,10 +242,16 @@ _GENDER_RESOLUTION_SYSTEM_PREFIX = (
     "각 후보 단어마다 아래 5개 필드를 판단하라. words 배열은 candidate_words와 "
     "정확히 같은 개수·순서여야 하고, 각 원소의 index는 candidate_words에서의 "
     "위치(0부터)와 일치해야 한다.\n\n"
-    "(1) is_person: 이 단어가 실제로 특정 인물을 묘사하는가. 사물/추상 개념/"
-    "상황을 수식하는 성별 어미(관용구·복합명사 속 형용사 등)면 false. "
-    "애매하면(사람 얘기일 가능성이 있으면) true로 두고 gender는 null로 남겨 "
-    "사람에게 확인받게 하라 — 확실히 사물/추상 개념일 때만 false.\n\n"
+    "(1) is_person: 이 단어 자체가 그 사람의 성별에 따라 철자가 바뀌는 "
+    "단어인가(예: profesor/profesora, amigo/amiga처럼 남성형·여성형이 "
+    "따로 있는 직업/역할/관계 명사, 성별 일치 형용사·분사). 사람을 "
+    "묘사/지칭하는 문장이어도 그 단어 자체는 성별과 무관하게 형태가 "
+    "고정된 명사(예: pessoa, persona, víctima, individuo)면 false — "
+    "\"사람 얘기인가\"가 아니라 \"이 단어가 성별에 따라 형태가 바뀌는가\"를 "
+    "물어라. 사물/추상 개념/상황을 수식하는 성별 어미(관용구·복합명사 속 "
+    "형용사 등)도 false. 애매하면(성별에 따라 형태가 바뀌는 단어일 "
+    "가능성이 있으면) true로 두고 gender는 null로 남겨 사람에게 확인받게 "
+    "하라 — 확실히 형태 고정 명사/사물/추상 개념일 때만 false.\n\n"
     "(2) group_id: 같은 인물을 가리키는 후보끼리만 같은 정수를 써라(문장 "
     "안에서만 의미 있는 임의값). 서로 다른 인물을 같은 group_id로 묶지 마라 "
     "— 복수 지칭(여러 명을 동시에 가리킴) 처리는 (5)를 따르라.\n\n"
@@ -339,7 +351,7 @@ class GptClient:
             "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
             "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
             "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
-            "정보 보존(고유명사·숫자·장소·행동 등 구체적 사실) > 오역/심의 정확성 > 씬 내 반복 표현 일관성 > 자연스러움. "
+            "오역/심의 정확성 > 정보 보존(고유명사·숫자·장소·행동 등 구체적 사실) > 씬 내 반복 표현 일관성 > 자연스러움. "
             "특히 자연스럽게 다듬는 과정에서 원문에 있는 구체적 사실을 생략·변경·추가하면 안 된다 — 단, 이런 사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
             "⚠️ [검수 범위 및 교정 원칙]\n"
             "1. 반드시 교정해야 하는 대상:\n"
@@ -493,6 +505,20 @@ class GptClient:
         )
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="격식 반영", model_override=self._light_model)
+
+    async def verify_gender_swap(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 {language_label} 문장(text) 목록이다. 이 문장들은 확정된 "
+            "성별에 맞춰 형용사/분사/명사 어미를 문법 규칙으로 기계적으로 "
+            "치환한 직후의 결과다. 각 문장에 그 치환 때문에 생긴 문법 오류"
+            "(존재하지 않는 단어, 성별/수 불일치, 어간이 깨진 어형 등)가 "
+            "있는지만 판단하라(has_error). 의미가 어색하거나 다른 어휘를 "
+            "썼으면 더 나았겠다는 취향 판단은 하지 마라 — 오직 문법적으로 "
+            "깨졌는지만 본다.\n" + _GENDER_SWAP_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="성별 치환 검증", model_override=self._light_model)
 
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
         """씬 분할 전용 콜."""

@@ -170,9 +170,15 @@ def _is_gendered_token(tok) -> bool:
     결과와 무관하게 항상 그대로 붙어 있다 — 이걸 두 번째 통과 조건으로
     쓴다. pos_=DET을 반드시 같이 요구한다 — 안 그러면 "¿Lo sabías?"의
     활용된 동사 "sabías"가 NOUN으로 오태깅되고 목적격 대명사 "Lo"가
-    dep_=det로 잘못 붙는 사례(실측 회귀)까지 걸려버린다. "seu carro"처럼
-    진짜 소유 표현도 같이 걸리지만(과탐지), 사람 얘기가 아니란 판단은
-    여기 책임이 아니라 LLM 몫이라 안전하다."""
+    dep_=det로 잘못 붙는 사례(실측 회귀)까지 걸려버린다. 여기에 더해
+    tok.dep_이 동사의 목적어 관계(obj/iobj/obl)가 아닐 것도 요구한다 —
+    "Sua irmã faz muito meu tipo."의 "tipo"(faz의 obj, "누군가의 취향"
+    이라는 관용구)처럼 동사의 목적어 자리에 오는 소유격 명사구는 사람이
+    아닌 대상을 가리키는 경우가 실측에서 다수 나왔다. 반면 호격 욕설은
+    문장 위치에 따라 ROOT/conj/appos 등으로 태깅이 갈려도 동사의 목적어
+    관계로는 안 걸린다(실측: "Você devia ter encontrado um homem bom,
+    sua maluco!"의 "maluco"는 conj, head=homem) — obj류만 제외해도
+    호격 패턴은 그대로 다 잡히면서 "meu tipo"류 과탐지만 줄어든다."""
     if tok.text.startswith("-"):
         return False
     if not tok.morph.get("Gender"):
@@ -183,9 +189,10 @@ def _is_gendered_token(tok) -> bool:
         return True
     if tok.pos_ != "NOUN":
         return False
-    return any(
-        child.dep_ == "cop"
-        or (child.pos_ == "DET" and child.dep_ == "det" and child.morph.get("PronType") == ["Prs"])
+    if any(child.dep_ == "cop" for child in tok.children):
+        return True
+    return tok.dep_ not in ("obj", "iobj", "obl") and any(
+        child.pos_ == "DET" and child.dep_ == "det" and child.morph.get("PronType") == ["Prs"]
         for child in tok.children
     )
 

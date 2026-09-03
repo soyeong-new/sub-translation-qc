@@ -181,6 +181,22 @@ class ModelProvider(ABC):
         (예: "화자 자신", "Juan", "제3자")이다."""
         ...
 
+    @abstractmethod
+    async def verify_gender_swap(self, items: List[dict], profile: dict) -> List[dict]:
+        """확정된 성별을 파이썬이 문법 규칙으로 기계적으로 치환한 직후, 실제로
+        바뀐 문장만 좁게 검증한다(design §치환 직후 검증+롤백 안전망). spaCy
+        구조 규칙과 LLM is_person 판단을 다 거쳐도 못 거르는 미지의 오탐
+        (예: spaCy가 애초에 잘못 태깅한 단어를 성별 어미로 착각해 엉뚱하게
+        치환)이 남을 수 있다 — 이 콜은 그 마지막 방어선이다. S2(이중검증)
+        프롬프트는 "이미 반영된 성별 형태는 되돌리지 마라"고 명시적으로
+        지시받으므로, 이 검증은 반드시 S2 호출 전에 끝나야 한다. 의미·
+        자연스러움·어휘 선택은 판단 대상이 아니다 — 오직 "이 치환으로 문장이
+        문법적으로 깨졌는가(존재하지 않는 단어, 성별/수 불일치 등)"만 본다.
+
+        입력은 [{"id": str, "text": str(치환 후 문장)}, ...], 반환값은
+        [{"id": str, "has_error": bool}, ...]."""
+        ...
+
 
 def get_provider() -> ModelProvider:
     name = os.getenv("QC_PROVIDER", "live")
