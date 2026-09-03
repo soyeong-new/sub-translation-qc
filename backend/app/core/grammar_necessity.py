@@ -160,7 +160,19 @@ def _is_gendered_token(tok) -> bool:
     그중 사람 얘기인지는 형용사 때와 마찬가지로 여기서 안 가리고 LLM에게
     넘긴다. 목적어로 쓰인 명사("책을 읽는다"의 "책")는 cop 자식이 없어
     자동으로 제외된다. 영어는 명사에 Gender 형태소가 없고 계사 구조도
-    cop이 아니라 attr 라벨이라 이 조건에 안 걸린다(design 논의)."""
+    cop이 아니라 attr 라벨이라 이 조건에 안 걸린다(design 논의).
+
+    동사 없는 호격 욕설("Sua maluco!", "Seu idiota!")도 cop 자식이 없어
+    위 규칙만으론 놓친다 — 실측 결과 pt_core_news_sm이 이 구조를 문장
+    속 위치에 따라 ADJ ROOT/NOUN conj/NOUN appos 등으로 들쭉날쭉
+    오태깅해서 품사·의존관계만으론 못 잡는다. 대신 "seu/sua/teu/tua"류
+    소유격 한정사(pos_=DET, PronType=Prs인 자식)는 이 구조에서 파싱
+    결과와 무관하게 항상 그대로 붙어 있다 — 이걸 두 번째 통과 조건으로
+    쓴다. pos_=DET을 반드시 같이 요구한다 — 안 그러면 "¿Lo sabías?"의
+    활용된 동사 "sabías"가 NOUN으로 오태깅되고 목적격 대명사 "Lo"가
+    dep_=det로 잘못 붙는 사례(실측 회귀)까지 걸려버린다. "seu carro"처럼
+    진짜 소유 표현도 같이 걸리지만(과탐지), 사람 얘기가 아니란 판단은
+    여기 책임이 아니라 LLM 몫이라 안전하다."""
     if tok.text.startswith("-"):
         return False
     if not tok.morph.get("Gender"):
@@ -169,7 +181,13 @@ def _is_gendered_token(tok) -> bool:
         return True
     if tok.pos_ == "VERB" and tok.morph.get("VerbForm") == ["Part"]:
         return True
-    return tok.pos_ == "NOUN" and any(child.dep_ == "cop" for child in tok.children)
+    if tok.pos_ != "NOUN":
+        return False
+    return any(
+        child.dep_ == "cop"
+        or (child.pos_ == "DET" and child.dep_ == "det" and child.morph.get("PronType") == ["Prs"])
+        for child in tok.children
+    )
 
 
 def _candidate_tokens(doc) -> list:

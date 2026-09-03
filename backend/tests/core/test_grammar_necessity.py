@@ -483,3 +483,24 @@ def test_does_not_flag_gender_for_english_predicate_noun():
         [{"id": "p1", "target_text": "She is an actress."}],
         {"language": "en", "variant": "US", "formality_applicable": False})
     assert result[0]["gender_check_needed"] is False
+
+
+def test_flags_verbless_vocative_insult_noun_in_portuguese():
+    """회귀(실제 QC 오류): "Você devia ter encontrado um homem bom, sua
+    maluco!"처럼 동사 없는 호격 욕설("sua/seu + 명사")은 cop 자식이 없어
+    술어 명사 규칙을 못 탄다. pt_core_news_sm이 이 구조를 문장 위치에
+    따라 NOUN conj/appos 등으로 들쭉날쭉 오태깅해서, 앞 절 명사("homem")
+    때문에 이 인물의 성별 후보가 통째로 누락되고 "maluco"가 교정 없이
+    그대로 남았다 — "seu/sua" 소유격 한정사 자식을 두 번째 통과 조건으로
+    추가해 잡는다."""
+    result = check_grammar_necessity(
+        [{
+            "id": "p1",
+            "target_text": (
+                "Você devia ter encontrado um homem realmente bom, "
+                "sua maluco!"
+            ),
+        }],
+        {"language": "pt", "variant": "BR"})
+    assert result[0]["gender_check_needed"] is True
+    assert "maluco" in result[0]["candidate_words"]
