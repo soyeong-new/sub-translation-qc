@@ -46,7 +46,7 @@ def test_load_profile_rejects_numeric_and_special_chars():
 
 def test_list_profiles_includes_es_latam():
     profiles = list_profiles()
-    assert {"language": "es", "variant": "LATAM"} in profiles
+    assert any(p["language"] == "es" and p["variant"] == "LATAM" for p in profiles)
 
 
 def test_load_pt_br_profile_has_expected_shape():
@@ -94,4 +94,4 @@ def test_list_profiles_ignores_non_yaml_files(tmp_path, monkeypatch):
     (tmp_path / "es_LATAM.yaml").write_text("language: es\nvariant: LATAM\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("not a profile", encoding="utf-8")
     profiles = loader_module.list_profiles()
-    assert profiles == [{"language": "es", "variant": "LATAM"}]
+    assert profiles == [{"language": "es", "variant": "LATAM", "display_name": "es (LATAM)"}]

@@ -9,4 +9,4 @@ async def test_list_language_profiles_returns_es_latam():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.get("/language-profiles")
     assert r.status_code == 200
-    assert {"language": "es", "variant": "LATAM"} in r.json()
+    assert any(p["language"] == "es" and p["variant"] == "LATAM" for p in r.json())

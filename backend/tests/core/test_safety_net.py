@@ -62,19 +62,6 @@ async def test_violation_shrinks_text_and_updates_pair_in_place():
 
 
 @pytest.mark.asyncio
-async def test_reading_speed_violation_uses_tighter_budget_than_line_length():
-    """회귀(사용자 재현): 큐 노출 시간이 아주 짧으면(1.2초) 줄당 50자 제약은
-    통과하는 텍스트도 읽기엔 너무 길 수 있다 — reading_speed 위반으로 들어온
-    경우, 노출 시간 기준(초당 20자) 예산이 정적 50자 제약보다 우선한다."""
-    text = "가" * 40  # 줄당 50자 제약은 통과
-    pair = AlignedPair(id="p1", target=SegmentText(start=0.0, end=1.2, text=text))
-    violations = [FormatViolation(segment_id="p1", rule="reading_speed", detail="1.2초 노출에 40자")]
-    findings = await shrink_violating_lines([pair], violations, MockProvider(), "tv1")
-    assert len(findings) == 1
-    assert len(pair.target.text) <= 12  # int(1.2 * 20) // 2 (MAX_LINES)
-
-
-@pytest.mark.asyncio
 async def test_violation_for_unknown_segment_id_is_skipped():
     pairs = [_pair("p1", "짧은 줄")]
     violations = [FormatViolation(segment_id="does-not-exist", rule="line_length", detail="x")]

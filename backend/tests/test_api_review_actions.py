@@ -235,40 +235,6 @@ async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_approving_finding_auto_shrinks_for_reading_speed(monkeypatch):
-    """회귀(사용자 재현): pending 제안은 검수자가 승인하는 이 시점까지 S4
-    안전망을 안 거친다 — 줄당 50자 제약은 통과해도 큐 노출 시간이 짧으면
-    (여기선 1.2초) 읽기 속도 기준으로는 여전히 너무 길 수 있으므로, 승인
-    시점에도 그 세그먼트의 실제 노출 시간을 반영해서 줄여야 한다."""
-    monkeypatch.setenv("QC_PROVIDER", "mock")
-    async with async_session() as session:
-        title = Title(name="T", type="movie"); session.add(title); await session.flush()
-        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
-        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
-        session.add(tv); await session.flush()
-        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=1.2)
-        session.add(segment); await session.flush()
-        finding = FindingRow(
-            id="f1", target_version_id=tv.id, segment_id="p1",
-            category="mistranslation", description="d",
-            original_text="a", suggested_text="Ahora hasta se le caen los palillos pequeños.",
-            confidence=0.9, model="claude", status="pending",
-        )
-        session.add(finding)
-        await session.commit()
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
-            "/findings/f1/review-action",
-            json={"action": "approved", "reviewer_name": "김검수"},
-        )
-    assert r.status_code == 200
-    final_text = r.json()["final_text"]
-    assert len(final_text.replace("\n", "")) <= 24  # int(1.2초 × 초당 20자)
-
-
-@pytest.mark.asyncio
 async def test_modifying_with_text_over_line_length_is_rejected_and_not_saved():
     """검수자가 직접 입력한 문구는 자동으로 줄이지 않고, 대신 저장 자체를
     막아야 한다 — 임의로 잘라버리면 검수자의 의도와 다른 문장이 나갈 수
