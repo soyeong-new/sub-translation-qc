@@ -95,6 +95,33 @@ async def test_requery_reapplies_already_confirmed_gender_to_new_suggestion(monk
 
 
 @pytest.mark.asyncio
+async def test_requery_shrinks_suggestion_that_exceeds_line_length(monkeypatch):
+    """회귀(사용자 재현): 프롬프트에 "줄당 50자 이내" 지시가 있어도 LLM이
+    다시 질문 응답에서 이를 안 지킬 수 있다 — 다시 질문 결과는 곧바로
+    pending으로 저장되고 검수자가 승인하기 전까지 다른 안전망을 안 거치므로,
+    여기서 미리 강제해야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    finding_id = await _make_finding(model="claude")
+    long_text = ("Esta es una oracion muy larga que definitivamente supera "
+                 "los cincuenta caracteres permitidos")
+
+    with patch("app.providers.mock.MockProvider.correct_primary",
+               new=AsyncMock(return_value=[{"segment_id": "seg1", "category": "mistranslation",
+                                             "corrected_text": long_text,
+                                             "description": "재질문 반영"}])):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(f"/findings/{finding_id}/requery",
+                                   json={"instruction": "더 격식있게", "reviewer_name": "김검수"})
+
+    assert r.status_code == 200
+    suggested_text = r.json()["suggested_text"]
+    assert suggested_text != long_text
+    assert all(len(ln) <= 50 for ln in suggested_text.split("\n"))
+
+
+@pytest.mark.asyncio
 async def test_requery_rejects_rule_based_finding(monkeypatch):
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")

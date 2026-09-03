@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import FindingRow, Segment
 from app.providers.base import ModelProvider
 from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES
+from app.core.safety_net import enforce_line_length
 from app.core.grammar_necessity import (
     check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
 )
@@ -43,15 +44,22 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
             item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
         )
     elif finding.model == "안전망":
-        return await provider.shrink_line(
+        shrunk = await provider.shrink_line(
             current_text, MAX_LINE_CHARS, MAX_LINES, extra_instruction=extra_instruction)
+        text, _ = await enforce_line_length(shrunk, provider)
+        return text
     else:
         raise RequeryNotSupportedError(
             "규칙 기반 finding은 다시 질문하기 대상이 아닙니다. 직접 수정을 이용하세요.")
 
     if not results:
         return current_text
-    return results[0]["corrected_text"]
+    # 프롬프트에 "50자 이내로 제안할 것" 지시가 있어도 LLM이 안 지킬 수
+    # 있다(design §한국어 혼입 방어와 같은 이유) — pending 상태로 저장되는
+    # 다시 질문 결과는 검수자가 승인하기 전까지 다른 안전망을 안 거치므로,
+    # 여기서 바로 강제한다(사용자 재현: 다시 질문 결과가 50자를 넘겨서 그대로 보임).
+    text, _ = await enforce_line_length(results[0]["corrected_text"], provider)
+    return text
 
 
 async def reverify_segment_after_stt_correction(
@@ -76,7 +84,11 @@ async def reverify_segment_after_stt_correction(
         [{"id": segment.id, "korean_text": segment.korean_text, "target_text": text_to_check}],
         profile, [], knowledge, _FORMAT_CONSTRAINT,
     )
-    return results[0] if results else None
+    if not results:
+        return None
+    correction = results[0]
+    correction["corrected_text"], _ = await enforce_line_length(correction["corrected_text"], provider)
+    return correction
 
 
 def apply_resolved_gender_to_text(segment: Segment, text: str, language: str) -> str:

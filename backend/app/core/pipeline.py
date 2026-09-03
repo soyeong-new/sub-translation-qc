@@ -15,7 +15,7 @@ from app.core.embedding_dp_alignment import align_by_embedding_dp, _clean_text_f
 from app.core.format_rules import (
     check_line_length, check_ellipsis, MAX_LINE_CHARS, MAX_LINES,
 )
-from app.core.safety_net import shrink_violating_lines
+from app.core.safety_net import shrink_violating_lines, enforce_line_length
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import (
     load_knowledge, load_sensitive_terms, load_glossary, load_cta_patterns,
@@ -798,13 +798,20 @@ async def _back_translate_proposals(
     return backtranslation_by_id, original_backtranslation_by_id, not_improved, warnings
 
 
-def _make_dual_verification_finding(
+async def _make_dual_verification_finding(
     target_version_id: str, pair, correction: dict,
     status: str, model_label: str, source: str, backtranslation_by_id: dict,
-    original_backtranslation_by_id: dict,
+    original_backtranslation_by_id: dict, provider: ModelProvider,
 ) -> Finding:
     original_text = pair.target.text
-    corrected_text = correction["corrected_text"]
+    # status="pending"(모델 하나만 지적)인 항목은 검수자가 승인하기 전까지
+    # S4 안전망(_run_final_safety_net)을 안 거친다 — 여기서 미리 강제하지
+    # 않으면 검수자가 50자 넘는 제안을 승인 전 화면에서 그대로 보게 된다
+    # (사용자 재현). status="approved"도 여기서 같이 걸러두면 S4가 같은
+    # 세그먼트를 또 검사할 필요가 없다(enforce_line_length는 위반이 없으면
+    # LLM을 안 부르므로 여기서 미리 해도 비용이 늘지 않는다).
+    corrected_text, _ = await enforce_line_length(correction["corrected_text"], provider)
+    correction["corrected_text"] = corrected_text
     description = correction["description"]
     backtranslation = backtranslation_by_id.get((correction["segment_id"], source))
     if backtranslation:
@@ -1101,9 +1108,9 @@ async def _run_dual_verification_pass(
             continue
         if correction["corrected_text"] == pair.target.text:
             continue
-        findings.append(_make_dual_verification_finding(
+        findings.append(await _make_dual_verification_finding(
             target_version_id, pair, correction, status, model_label, source,
-            backtranslation_by_id, original_backtranslation_by_id))
+            backtranslation_by_id, original_backtranslation_by_id, provider))
         if applies:
             pair.target.text = correction["corrected_text"]
     return findings, warnings

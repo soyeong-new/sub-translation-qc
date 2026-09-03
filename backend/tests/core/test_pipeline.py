@@ -205,6 +205,43 @@ async def test_pipeline_does_not_apply_when_only_one_model_flags_a_segment(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_pipeline_shrinks_pending_finding_that_exceeds_line_length(tmp_path, monkeypatch):
+    """회귀(사용자 재현): 프롬프트에 "줄당 50자 이내로 제안할 것" 지시가
+    있어도 LLM이 안 지킬 수 있다 — pending finding(한쪽 모델만 지적,
+    사람 승인 전)은 검수자가 승인하기 전까지 S4 안전망을 안 거치므로,
+    여기서 미리 강제하지 않으면 50자 넘는 제안이 그대로 화면에 보인다."""
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text(TARGET_SRT, encoding="utf-8")
+    provider = MockProvider()
+    long_text = ("Esta es una oracion muy larga que definitivamente supera "
+                 "los cincuenta caracteres permitidos")
+
+    async def _claude_flags(pairs, *args, **kwargs):
+        return [{"segment_id": pairs[0]["id"], "category": "mistranslation",
+                  "corrected_text": long_text, "description": "클로드만 지적"}]
+
+    async def _gpt_no_flags(pairs, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(provider, "correct_primary", _claude_flags)
+    monkeypatch.setattr(provider, "verify_and_refine", _gpt_no_flags)
+
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), \
+         patch("app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4",
+            target_srt_path=str(srt_path),
+            language="es", variant="LATAM",
+            target_version_id="tv1", provider=provider,
+        )
+
+    finding = next(f for f in result["findings"] if f.model == "claude")
+    assert finding.status == "pending"
+    assert finding.suggested_text != long_text
+    assert all(len(ln) <= 50 for ln in finding.suggested_text.split("\n"))
+
+
+@pytest.mark.asyncio
 async def test_pipeline_attaches_cross_model_backtranslation_to_disputed_finding(tmp_path, monkeypatch):
     """의견이 갈린 제안은 반대쪽 모델이 역번역한 한국어를 description에
     참고용으로 붙여야 한다 — 스페인어를 모르는 검수자가 최소한 의미가

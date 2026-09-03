@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy import select
 from app.main import app
@@ -88,6 +89,42 @@ async def test_correct_stt_creates_pending_finding_when_reverify_flags_problem(m
         # 검수자가 스페인어를 몰라도 "원본"이 무슨 뜻인지 알 수 있어야 하니,
         # 원본(BAD_TRANSLATION)의 한국어 역번역이 description에 붙어야 한다.
         assert "원본 한국어 역번역 참고: [역번역:BAD_TRANSLATION]" in findings[0].description
+
+
+@pytest.mark.asyncio
+async def test_correct_stt_shrinks_reverify_suggestion_that_exceeds_line_length(monkeypatch):
+    """회귀(사용자 재현): 프롬프트에 "줄당 50자 이내" 지시가 있어도 LLM이
+    STT 재검증 응답에서 이를 안 지킬 수 있다 — 새로 만들어지는 pending
+    finding은 검수자가 승인하기 전까지 다른 안전망을 안 거치므로, 여기서
+    미리 강제해야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    long_text = ("Esta es una oracion muy larga que definitivamente supera "
+                 "los cincuenta caracteres permitidos")
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=2.0,
+                      korean_text="안뇽하세요", target_text="hola")
+        session.add(seg); await session.commit()
+        seg_id = seg.id
+
+    with patch("app.providers.mock.MockProvider.verify_and_refine",
+               new=AsyncMock(return_value=[{"segment_id": seg_id, "category": "mistranslation",
+                                             "corrected_text": long_text,
+                                             "description": "재검증 반영"}])):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(
+                f"/segments/{seg_id}/correct-stt",
+                json={"corrected_text": "안녕하세요", "reviewer_name": "김검수"},
+            )
+        assert r.status_code == 200
+        suggested_text = r.json()["new_finding"]["suggested_text"]
+        assert suggested_text != long_text
+        assert all(len(ln) <= 50 for ln in suggested_text.split("\n"))
 
 
 @pytest.mark.asyncio
