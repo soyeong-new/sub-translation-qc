@@ -31,7 +31,9 @@ export default function App() {
     return (
       <RegisterConfirmationView
         targetVersionId={screen.targetVersionId}
-        onDone={() => setScreen({ name: "review", targetVersionId: screen.targetVersionId })}
+        onDone={() =>
+          setScreen({ name: "review", targetVersionId: screen.targetVersionId, titleId: screen.titleId })
+        }
         onExit={() => setScreen({ name: "titles" })}
       />
     );
@@ -41,6 +43,7 @@ export default function App() {
     return (
       <ReviewView
         targetVersionId={screen.targetVersionId}
+        titleId={screen.titleId}
         onBack={() => setScreen({ name: "titles" })}
       />
     );
@@ -51,8 +54,12 @@ export default function App() {
   // 화면으로 바로 가지 않고 확인 페이지를 먼저 거친다.
   return (
     <TitleListView
-      onSelect={(targetVersionId, status) =>
-        setScreen({ name: status === "awaiting_confirmation" ? "confirm" : "review", targetVersionId })
+      onSelect={(targetVersionId, status, titleId) =>
+        setScreen({
+          name: status === "awaiting_confirmation" ? "confirm" : "review",
+          targetVersionId,
+          titleId,
+        })
       }
     />
   );

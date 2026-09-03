@@ -836,15 +836,17 @@ function VideoPreviewPanel({ videoProxyUrl, videoRef }) {
   );
 }
 
-export default function ReviewView({ targetVersionId, onBack }) {
+export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [findings, setFindings] = useState(null); // null = 로딩 중
   const [loadError, setLoadError] = useState(null);
+  // 검수자 이름은 타이틀마다 한 번 입력하면 그 타이틀 내에서만 고정된다 (전역 공유 X).
+  const reviewerNameKey = `qc_reviewer_name_${titleId ?? "unknown"}`;
   const [reviewerName, setReviewerName] = useState(
-    () => localStorage.getItem("qc_reviewer_name") || ""
+    () => localStorage.getItem(reviewerNameKey) || ""
   );
   useEffect(() => {
-    localStorage.setItem("qc_reviewer_name", reviewerName);
-  }, [reviewerName]);
+    localStorage.setItem(reviewerNameKey, reviewerName);
+  }, [reviewerNameKey, reviewerName]);
   const [pendingActions, setPendingActions] = useState({}); // findingId -> action in flight
   const [findingErrors, setFindingErrors] = useState({});
   const [editingId, setEditingId] = useState(null);

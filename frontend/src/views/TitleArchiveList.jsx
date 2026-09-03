@@ -369,14 +369,14 @@ export default function TitleArchiveList({ onOpen }) {
       .catch(() => {}); // 실패해도 "언어 추가" 폼만 못 쓰게 될 뿐이라 조용히 무시
   }, []);
 
-  async function waitThenOpen(targetVersionId) {
+  async function waitThenOpen(targetVersionId, titleId) {
     setBusyId(targetVersionId);
     setError(null);
     try {
       const status = await pollTargetVersionStatus(targetVersionId, {
         isMounted: () => isMountedRef.current,
       });
-      onOpen(targetVersionId, status);
+      onOpen(targetVersionId, status, titleId);
     } catch (err) {
       setError(err.message ?? "요청 중 오류가 발생했습니다.");
     } finally {
@@ -384,12 +384,12 @@ export default function TitleArchiveList({ onOpen }) {
     }
   }
 
-  function handleOpen(tv) {
+  function handleOpen(tv, titleId) {
     if (tv.status === "review" || tv.status === "awaiting_confirmation") {
-      onOpen(tv.id, tv.status);
+      onOpen(tv.id, tv.status, titleId);
       return;
     }
-    waitThenOpen(tv.id);
+    waitThenOpen(tv.id, titleId);
   }
 
   async function handleRerun(tv) {
@@ -504,7 +504,7 @@ export default function TitleArchiveList({ onOpen }) {
     setAddLanguageSrtFile(selected);
   }
 
-  async function handleAddLanguageSubmit(episodeId) {
+  async function handleAddLanguageSubmit(episodeId, titleId) {
     if (!addLanguageProfile || !addLanguageSrtFile) return;
     setAddLanguageProgress(0);
     setAddLanguageStatus({ kind: "loading", message: "업로드 중..." });
@@ -517,7 +517,7 @@ export default function TitleArchiveList({ onOpen }) {
       if (!isMountedRef.current) return;
       closeAddLanguage();
       refresh();
-      onOpen(tv.id, doneStatus);
+      onOpen(tv.id, doneStatus, titleId);
     } catch (err) {
       if (isMountedRef.current) {
         setAddLanguageStatus({ kind: "error", message: err.message ?? "언어 추가 중 오류가 발생했습니다." });
@@ -688,7 +688,7 @@ export default function TitleArchiveList({ onOpen }) {
                             {tv.reviewers.join(", ")}
                           </span>
                         )}
-                        <button disabled={busyId === tv.id} onClick={() => handleOpen(tv)} className={openBtnClass}>
+                        <button disabled={busyId === tv.id} onClick={() => handleOpen(tv, title.id)} className={openBtnClass}>
                           열기
                         </button>
                         <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
@@ -714,7 +714,7 @@ export default function TitleArchiveList({ onOpen }) {
                       onSrtSelected={handleAddLanguageSrtSelected}
                       progress={addLanguageProgress}
                       status={addLanguageStatus}
-                      onSubmit={() => handleAddLanguageSubmit(ep.id)}
+                      onSubmit={() => handleAddLanguageSubmit(ep.id, title.id)}
                       onCancel={closeAddLanguage}
                     />
                   ) : (
@@ -735,7 +735,7 @@ export default function TitleArchiveList({ onOpen }) {
                 onDone={(tvId, status) => {
                   setAddEpisodeTitleId(null);
                   refresh();
-                  onOpen(tvId, status);
+                  onOpen(tvId, status, title.id);
                 }}
                 onCancel={() => setAddEpisodeTitleId(null)}
               />

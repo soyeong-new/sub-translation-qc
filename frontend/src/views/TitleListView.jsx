@@ -160,7 +160,7 @@ export default function TitleListView({ onSelect }) {
       await runAnalysis(tv.id, srtUpload.path);
       const doneStatus = await pollUntilDone(tv.id);
       setStatus({ kind: "success", message: "완료" });
-      onSelect(tv.id, doneStatus);
+      onSelect(tv.id, doneStatus, title.id);
     } catch (err) {
       setStatus({ kind: "error", message: err.message ?? "요청 중 오류가 발생했습니다." });
     } finally {
