@@ -538,7 +538,7 @@ export default function TitleArchiveList({ onOpen }) {
               <span>Storage</span>
               <span>
                 고정 {formatGB(storage.used - storage.media_used)}GB + 영상 {formatGB(storage.media_used)}GB
-                {" "}/ {formatGB(storage.total)}GB 사용 중
+                {" "}/ 잔여 {formatGB(storage.total - storage.used)}GB
               </span>
             </div>
             <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
