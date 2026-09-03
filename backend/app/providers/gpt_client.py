@@ -117,6 +117,39 @@ _SCENE_SPLIT_SCHEMA = {
     },
 }
 
+_FINDINGS_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "verify_findings",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "segment_id": {"type": "string"},
+                            "category": {
+                                "type": "string",
+                                "enum": ["sensitivity", "mistranslation", "nuance_tone",
+                                         "unnatural_style", "locale_convention"],
+                            },
+                            "corrected_text": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                        "required": ["segment_id", "category", "corrected_text", "description"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["findings"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 _GENDER_RESOLUTION_SCHEMA = {
     "type": "json_schema",
     "json_schema": {
@@ -232,7 +265,8 @@ class GptClient:
         self._sdk_client = AsyncOpenAI(api_key=api_key)
 
     async def _call(self, system: str, user: str, key: str = "findings", label: str = "",
-                     model_override: str = None, seed: int = None) -> List[dict]:
+                     model_override: str = None, seed: int = None,
+                     response_format: dict = None) -> List[dict]:
         # ponytail: gpt-5.6 계열은 temperature 커스텀 값을 거부한다(400
         # unsupported_value) — 기본값(1)만 허용, Claude와 달리 여기선 조절 불가.
         # 대신 seed로 재실행 시 결과 변동을 줄인다(완벽한 결정성 보장은 아님).
@@ -240,7 +274,7 @@ class GptClient:
         kwargs = {"seed": seed} if seed is not None else {}
         response = await self._sdk_client.chat.completions.create(
             model=target_model,
-            response_format={"type": "json_object"},
+            response_format=response_format or {"type": "json_object"},
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -325,7 +359,7 @@ class GptClient:
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
-        return await self._call(system, user, seed=_SEED)
+        return await self._call(system, user, seed=_SEED, response_format=_FINDINGS_SCHEMA)
 
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:

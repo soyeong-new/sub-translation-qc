@@ -41,6 +41,25 @@ async def test_correct_primary_includes_extra_instruction_in_prompt_when_given()
 
 
 @pytest.mark.asyncio
+async def test_correct_primary_uses_output_schema_with_required_fields():
+    """segment_id 등 필드가 프롬프트 지시만으로는 가끔 누락돼 실제로 검증
+    결과가 통째로 스킵된 사례가 있었다 — output_config.format으로 API가
+    필드 존재를 강제해야 한다. tool_choice 강제 대신 이 방식을 쓰는 이유는
+    thinking 모드와 충돌하지 않고 응답이 여전히 텍스트 블록으로 오기
+    때문이다(기존 파싱 로직을 그대로 쓸 수 있음)."""
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.correct_primary(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    call_kwargs = client._sdk_client.messages.create.call_args.kwargs
+    schema = call_kwargs["output_config"]["format"]["schema"]
+    assert schema["type"] == "array"
+    assert set(schema["items"]["required"]) == {
+        "segment_id", "category", "corrected_text", "description"}
+
+
+@pytest.mark.asyncio
 async def test_correct_primary_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):

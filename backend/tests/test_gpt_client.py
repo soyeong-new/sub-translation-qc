@@ -70,6 +70,24 @@ async def test_verify_and_refine_includes_extra_instruction_in_prompt_when_given
 
 
 @pytest.mark.asyncio
+async def test_verify_and_refine_uses_json_schema_response_format_with_required_fields():
+    """segment_id 등 필드가 프롬프트 지시만으로는 가끔 누락돼 실제로 검증
+    결과가 통째로 스킵된 사례가 있었다 — API가 스키마로 필드 존재를 강제해야
+    한다(프롬프트 지시만으로는 강제가 안 됨)."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["response_format"]["type"] == "json_schema"
+    item_schema = call_kwargs["response_format"]["json_schema"]["schema"][
+        "properties"]["findings"]["items"]
+    assert set(item_schema["required"]) == {
+        "segment_id", "category", "corrected_text", "description"}
+
+
+@pytest.mark.asyncio
 async def test_verify_and_refine_raises_on_malformed_json():
     client = _make_client_with_fake_sdk("JSON 아님")
     with pytest.raises(ValueError):

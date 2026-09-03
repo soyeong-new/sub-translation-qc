@@ -52,6 +52,25 @@ _PRIMARY_SCHEMA_INSTRUCTION = (
     "표현이 어색해 'el guardia'로 수정\")."
 )
 
+_PRIMARY_OUTPUT_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "segment_id": {"type": "string"},
+            "category": {
+                "type": "string",
+                "enum": ["sensitivity", "mistranslation", "nuance_tone",
+                         "unnatural_style", "locale_convention"],
+            },
+            "corrected_text": {"type": "string"},
+            "description": {"type": "string"},
+        },
+        "required": ["segment_id", "category", "corrected_text", "description"],
+        "additionalProperties": False,
+    },
+}
+
 _SHRINK_SCHEMA_INSTRUCTION = (
     "정확히 다음 키를 가진 JSON 객체 하나만 출력하라: "
     "shrunk_text (문자열, 의미를 보존하며 글자수 제약 안으로 줄인 텍스트). "
@@ -100,9 +119,11 @@ class ClaudeClient:
         raise ValueError("Claude 응답에 텍스트 블록이 없음")
 
     async def _call_array(self, system: str, user: str, model: str = None,
-                           temperature: float = None) -> List[dict]:
+                           temperature: float = None, output_schema: dict = None) -> List[dict]:
         target_model = model or self._model
         kwargs = {"temperature": temperature} if temperature is not None else {}
+        if output_schema is not None:
+            kwargs["output_config"] = {"format": {"type": "json_schema", "schema": output_schema}}
         response = await self._sdk_client.messages.create(
             model=target_model, max_tokens=8192, system=system,
             messages=[{"role": "user", "content": user}], **kwargs,
@@ -191,7 +212,8 @@ class ClaudeClient:
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
-        return await self._call_array(system, user, model=self._model, temperature=0)
+        return await self._call_array(system, user, model=self._model, temperature=0,
+                                       output_schema=_PRIMARY_OUTPUT_SCHEMA)
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
                            extra_instruction: str = "") -> str:
