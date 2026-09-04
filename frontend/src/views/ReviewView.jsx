@@ -877,6 +877,14 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [previewSegment, setPreviewSegment] = useState(null);
   const previewVideoRef = useRef(null);
 
+  // 목록이 길어 스크롤이 깊어지면(1500+줄 상당) 맨 위로 버튼을 띄운다.
+  const [showScrollTop, setShowScrollTop] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setShowScrollTop(window.scrollY > 400);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   // finding 카드에 STT 한국어 원문을 참고용으로 보여주고 미리보기 재생
   // 구간(start/end)을 얻기 위한 세그먼트 목록.
   const [segments, setSegments] = useState(null);
@@ -1594,6 +1602,23 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           </div>
         </div>
       </main>
+
+      {showScrollTop && (
+        <button
+          type="button"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          aria-label="맨 위로"
+          className="fixed bottom-6 right-6 flex h-12 w-12 items-center justify-center rounded-full border border-border bg-card text-foreground shadow-lg transition-colors hover:bg-muted"
+        >
+          <svg aria-hidden="true" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+            <path
+              fillRule="evenodd"
+              d="M10 17a.75.75 0 0 1-.75-.75V5.612L5.29 9.573a.75.75 0 1 1-1.08-1.04l5.25-5.5a.75.75 0 0 1 1.08 0l5.25 5.5a.75.75 0 1 1-1.08 1.04l-3.96-4.16V16.25A.75.75 0 0 1 10 17Z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
