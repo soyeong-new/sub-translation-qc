@@ -177,14 +177,19 @@ export default function FlaggedSegmentStepper({
     // 구간만 재생된다"는 기대에 맞게, 구간 끝(또는 그 이후)에서 재생이
     // 시작되면 항상 구간 처음으로 되감아 다시 그 구간만 재생한다 — 구간
     // 도중에 잠깐 멈췄다 이어보는 정상적인 일시정지/재개는 되감지 않는다.
+    // 구간 끝에 도달하면 멈추는 건 그대로 두되, 거기서 검수자가 재생 버튼을
+    // 다시 누르면(구간 뒤쪽도 보고 싶다는 뜻) 이번엔 막지 않고 흘려보낸다.
+    // 한국어 원문 카드를 다시 누르면(replayCurrentSegment) 이 이펙트가 새로
+    // 실행되어 처음(seekStart)부터 다시 멈추는 원래 동작으로 리셋된다.
+    let boundaryCleared = false;
     function handleTimeUpdate() {
-      if (video.currentTime >= seekEnd) {
+      if (!boundaryCleared && video.currentTime >= seekEnd) {
         video.pause();
       }
     }
     function handlePlay() {
       if (video.currentTime >= seekEnd) {
-        video.currentTime = seekStart;
+        boundaryCleared = true;
       }
     }
     video.currentTime = seekStart;
