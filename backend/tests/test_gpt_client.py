@@ -70,6 +70,54 @@ async def test_verify_and_refine_includes_extra_instruction_in_prompt_when_given
 
 
 @pytest.mark.asyncio
+async def test_verify_and_refine_forbids_skipping_when_extra_instruction_given():
+    """재질문(다시 질문하기)은 검수자가 이미 문제로 지적한 단건이라, 배치
+    검증용 "애매하면 findings에서 빼라" 지시가 그대로 남아있으면 검수자
+    지시사항과 충돌해 빈 응답이 나올 수 있다(회귀: 사용자 재현 — 재질문해도
+    제안이 그대로였음) — extra_instruction이 있으면 스킵 지시가 빠지고
+    반드시 포함하라는 지시로 바뀌어야 한다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+        extra_instruction="더 격식있게 다시 써줘",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "절대 응답 배열에 포함하지 마라" not in sent_system
+    assert "findings에 포함하지 마라" not in sent_system
+    assert "findings에서 빼는 것은 금지" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_warns_not_to_trust_own_prior_suggestion_when_extra_instruction_given():
+    """claude_client와 동일한 회귀 방지(사용자 재현) — 재질문 target_text는
+    이전 제안이라는 것과, 그렇다고 이미 맞다고 여기지 말라는 경고가 필요하다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+        extra_instruction="문장의 의미를 제대로 파악할 것",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "이미 한 번 고친 결과물" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_keeps_skip_clean_instruction_without_extra_instruction():
+    """배치 검증(extra_instruction 없음)에서는 기존 "애매하면 빼라" 지시가
+    그대로 유지돼야 한다 — 재질문 전용 문구로 바뀌면 배치 검증 때 대량
+    오탐이 생긴다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert "절대 응답 배열에 포함하지 마라" in sent_system
+    assert "findings에서 빼는 것은 금지" not in sent_system
+
+
+@pytest.mark.asyncio
 async def test_verify_and_refine_uses_json_schema_response_format_with_required_fields():
     """segment_id 등 필드가 프롬프트 지시만으로는 가끔 누락돼 실제로 검증
     결과가 통째로 스킵된 사례가 있었다 — API가 스키마로 필드 존재를 강제해야
@@ -85,6 +133,41 @@ async def test_verify_and_refine_uses_json_schema_response_format_with_required_
         "properties"]["findings"]["items"]
     assert set(item_schema["required"]) == {
         "segment_id", "category", "corrected_text", "description"}
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_requires_back_translation_when_extra_instruction_given():
+    """재질문(다시 질문하기) 후에는 검수자가 보는 역번역도 새 corrected_text에
+    맞춰 갱신돼야 한다 — 별도 교차모델 API 호출 대신, 같은 응답에 back_translation
+    필드를 함께 요청해 한 번의 호출로 끝낸다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+        extra_instruction="더 격식있게 다시 써줘",
+    )
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    item_schema = call_kwargs["response_format"]["json_schema"]["schema"][
+        "properties"]["findings"]["items"]
+    assert "back_translation" in item_schema["required"]
+    sent_system = call_kwargs["messages"][0]["content"]
+    assert "back_translation" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_omits_back_translation_without_extra_instruction():
+    """배치 검증(extra_instruction 없음)에서는 back_translation을 요구하지
+    않는다 — 배치 파이프라인은 이미 교차모델 역번역(pipeline.py)을 별도로
+    쓰고 있어 여기서 추가하면 불필요한 중복이다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={}, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    item_schema = call_kwargs["response_format"]["json_schema"]["schema"][
+        "properties"]["findings"]["items"]
+    assert "back_translation" not in item_schema["required"]
 
 
 def _fake_response(payload: dict):

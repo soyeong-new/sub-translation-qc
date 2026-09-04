@@ -15,6 +15,17 @@ _JSON_INSTRUCTION = (
     "최종 결론만 담아야 한다."
 )
 
+# 재질문(extra_instruction 있음) 전용 — 위 _JSON_INSTRUCTION의 "빼라" 지시가
+# 검수자가 이미 지적한 단건 재검토와 충돌해 빈 응답을 유발하므로, 형식 지시는
+# 유지하되 스킵 지시만 "반드시 포함, 판단이 바뀌어도 배열에 남긴 채 결론만
+# 갱신"으로 바꿔 끼운다.
+_JSON_INSTRUCTION_REQUERY = (
+    '반드시 {"findings": [...]} 형태의 JSON 객체만 출력하라. 이 세그먼트는 검수자가 '
+    "이미 지적한 것이므로 findings에서 빼는 것은 금지된다 — 검토 도중 판단이 "
+    "바뀌더라도 findings에 포함한 채로, description에 '다시 검토하니', '재검토 결과' "
+    "같은 번복 과정 없이 하나의 최종 결론만 담아 작성하라."
+)
+
 _VERIFY_SCHEMA_INSTRUCTION = (
     "findings 배열의 각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'segment_id (문자열), '
@@ -157,6 +168,50 @@ _FINDINGS_SCHEMA = {
         },
     },
 }
+
+# 재질문(extra_instruction 있음) 전용 — 검수자에게 보이는 역번역도 새
+# corrected_text에 맞춰 갱신해야 하므로, 별도 교차모델 API 호출 대신 같은
+# 응답에 back_translation 필드를 함께 요청한다.
+_FINDINGS_SCHEMA_REQUERY = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "verify_findings_requery",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "segment_id": {"type": "string"},
+                            "category": {
+                                "type": "string",
+                                "enum": ["sensitivity", "mistranslation", "nuance_tone",
+                                         "unnatural_style", "locale_convention"],
+                            },
+                            "corrected_text": {"type": "string"},
+                            "description": {"type": "string"},
+                            "back_translation": {"type": "string"},
+                        },
+                        "required": ["segment_id", "category", "corrected_text",
+                                     "description", "back_translation"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["findings"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_BACK_TRANSLATION_FIELD_INSTRUCTION = (
+    "추가로 back_translation (문자열, corrected_text를 자연스러운 한국어로 "
+    "역번역 — 대상언어를 모르는 검수자가 교정 결과를 이해할 수 있게) 키도 "
+    "반드시 포함하라. back_translation의 문장 자체도 예외 없이 한국어로 써라."
+)
 
 _BACK_TRANSLATE_SCHEMA = {
     "type": "json_schema",
@@ -345,11 +400,38 @@ class GptClient:
         language_label = _language_label(profile)
         naturalness_instruction = (profile.get("naturalness_check") or {}).get("llm_instruction", "")
 
+        # extra_instruction은 지금 재질문(다시 질문하기, requery.py) 단건 호출만
+        # 채워 보낸다 — 배치 검증(pipeline.py)은 항상 빈 문자열이다. 배치용
+        # "애매하면 findings에서 빼라" 지시를 재질문에도 그대로 쓰면, 검수자가
+        # 이미 콕 집은 줄인데도 모델이 "명백한 문제 아님"으로 판단해 빈
+        # 응답을 내고, 그 결과 제안문이 그대로 남는 문제가 있었다(회귀: 사용자
+        # 재현 — 재질문해도 반영이 안 됨). 그래서 이 값의 유무로 "애매하면
+        # 스킵" vs "이미 지적됐으니 반드시 포함" 두 지시를 통째로 바꿔 끼운다.
+        if extra_instruction:
+            scope_intro = (
+                "이 세그먼트는 검수자가 이미 문제가 있다고 판단해 재검토를 요청한 것이다 — "
+                "너 스스로 '문제가 명백한지' 다시 판단해 건너뛰지 말고, 아래 [5단계 체크리스트]에서 "
+                "가장 가까운 카테고리를 찾아 검수자 지시사항을 반영한 교정 사항(findings)을 "
+                "반드시 작성하라. 이 세그먼트를 findings에서 빼는 것은 금지된다.\n"
+                "⚠️ 아래 target_text는 이전 검토에서 이미 한 번 고친 결과물이다 — 네가(또는 다른 "
+                "모델이) 만들었다는 이유로 이미 맞다고 안일하게 판단하지 말고, korean_text와 처음부터 "
+                "다시 대조해 검수자 지시사항 관점에서 재검토하라.\n\n"
+            )
+            skip_clean_line = (
+                "   - (재질문 예외) 이 세그먼트는 검수자가 이미 지적했으므로, 위 규칙과 달리 "
+                "반드시 findings에 포함하라.\n"
+            )
+        else:
+            scope_intro = (
+                "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
+                "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
+            )
+            skip_clean_line = "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n"
+
         system = (
             f"너는 한국어-{language_label} 자막의 전문 번역 검수자다. "
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(대상언어 번역문)를 검증하라. "
-            "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
-            "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
+            + scope_intro +
             "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
             "오역/심의 정확성 > 정보 보존(고유명사·숫자·장소·행동 등 구체적 사실) > 씬 내 반복 표현 일관성 > 자연스러움. "
             "특히 자연스럽게 다듬는 과정에서 원문에 있는 구체적 사실을 생략·변경·추가하면 안 된다 — 단, 이런 사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
@@ -362,7 +444,7 @@ class GptClient:
             "   - 지정된 성별(대상언어 문법상 성별 어미) 및 격식(존댓말/반말) 파라미터 위반\n"
             "2. 교정 금지 대상 (취향 차이의 다듬기):\n"
             "   - 의미 왜곡이 없고 현지 구어체로 이미 타당한 번역인데, 단순히 AI 개인 선호 어휘나 동의어로 다듬는 수정은 제안하지 마라.\n"
-            "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n"
+            + skip_clean_line +
             "   - nuance_tone(뉘앙스·어조)은 다음 경우에만 제안하라:\n"
             "     * 직역투로 인해 명백히 어색한 경우 (한국어 구조를 그대로 따라가 대상언어로서 부자연스러운 경우)\n"
             "     * 한국어 원문의 감정·톤(급함, 거침, 간결함, 여유로움 등)이 명확히 다르게 전달된 경우\n"
@@ -398,13 +480,18 @@ class GptClient:
         )
         if naturalness_instruction:
             system += f"자연스러움 지침: {naturalness_instruction}\n"
-        system += _JSON_INSTRUCTION + "\n" + _VERIFY_SCHEMA_INSTRUCTION
+        json_instruction = _JSON_INSTRUCTION_REQUERY if extra_instruction else _JSON_INSTRUCTION
+        schema_instruction = _VERIFY_SCHEMA_INSTRUCTION
+        if extra_instruction:
+            schema_instruction += "\n" + _BACK_TRANSLATION_FIELD_INSTRUCTION
+        system += json_instruction + "\n" + schema_instruction
         if extra_instruction:
             system += f"\n검수자의 추가 지시사항(반드시 반영): {extra_instruction}"
         user = json.dumps(pairs, ensure_ascii=False)
-        results = await self._call(system, user, seed=_SEED, response_format=_FINDINGS_SCHEMA)
+        response_format = _FINDINGS_SCHEMA_REQUERY if extra_instruction else _FINDINGS_SCHEMA
+        results = await self._call(system, user, seed=_SEED, response_format=response_format)
         return await self._retry_hangul_leaks(
-            results, pairs, system, language_label, seed=_SEED, response_format=_FINDINGS_SCHEMA)
+            results, pairs, system, language_label, seed=_SEED, response_format=response_format)
 
     async def _retry_hangul_leaks(self, results: List[dict], pairs: List[dict], system: str,
                                    language_label: str, seed: int, response_format: dict) -> List[dict]:
@@ -518,7 +605,8 @@ class GptClient:
             "깨졌는지만 본다.\n" + _GENDER_SWAP_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="성별 치환 검증", model_override=self._light_model)
+        return await self._call(system, user, key="results", label="성별 치환 검증",
+                                 model_override=self._light_model, seed=_SEED)
 
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:
         """씬 분할 전용 콜."""
