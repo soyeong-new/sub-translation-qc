@@ -1,6 +1,6 @@
 // findings 승인/거부/수정, 인물/관계 확인, STT 수정, export를 담당하는 검수 화면.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getFindings,
   submitReviewAction,
@@ -11,6 +11,7 @@ import {
   listSegments,
   getTargetVersion,
   correctStt,
+  editTargetText,
   resolveGender,
   resolveGenderGroup,
   excludeSegment,
@@ -291,7 +292,7 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
 }
 
 function FindingCard({
-  finding, segment, isPreviewing, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
+  finding, segment, isPreviewing, dimmed, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
   requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
@@ -315,9 +316,9 @@ function FindingCard({
   return (
     <li
       onClick={handleCardClick}
-      className={`rounded-lg border-2 bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
+      className={`rounded-lg border-2 bg-card p-4 shadow-sm transition-opacity ${segment ? "cursor-pointer" : ""} ${
         isPreviewing ? "ring-1 ring-primary" : ""
-      } ${cardBorderClass(finding)}`}
+      } ${dimmed ? "opacity-40" : ""} ${cardBorderClass(finding)}`}
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${categoryClass}`}>
@@ -543,7 +544,7 @@ function FindingCard({
 // 텍스트가 불확실해지는 걸 막는다(export.py는 승인/수정된 finding 중
 // 하나를 골라야 하는데, 승인된 게 둘이면 어느 게 이길지 애매했다).
 function PairedFindingCard({
-  a, b, segment, isPreviewing, onPreview, reviewerName,
+  a, b, segment, isPreviewing, dimmed, onPreview, reviewerName,
   pendingActions, findingErrors, editingId, editText, onEditTextChange,
   onPick, onReject, onRejectBoth, onStartEdit, onCancelEdit,
   requeryingId, requeryText, requeryPendingId, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
@@ -711,9 +712,9 @@ function PairedFindingCard({
   return (
     <li
       onClick={handleCardClick}
-      className={`rounded-lg border bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
+      className={`rounded-lg border bg-card p-4 shadow-sm transition-opacity ${segment ? "cursor-pointer" : ""} ${
         isPreviewing ? "border-primary ring-1 ring-primary" : "border-border"
-      }`}
+      } ${dimmed ? "opacity-40" : ""}`}
     >
       {a.status === "pending" && b.status === "pending" && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -811,10 +812,121 @@ function PairedFindingCard({
 // 좌측 컬럼: finding 카드를 클릭하면 그 구간이 재생되는 영상 미리보기.
 // 예전엔 findings 목록 위에 붙어 있었으나, 화면 좌측 "사실 확인" 자리로
 // 옮겼다(더 눈에 잘 띄고, 스크롤해도 sticky로 계속 보임).
-function VideoPreviewPanel({ videoProxyUrl, videoRef }) {
+
+// 영상 재생 위치에 맞춰 전체 SRT를 스크롤/하이라이트해 보여준다. 큐가
+// 겹쳐 같은 문장이 중복으로 들어간 경우, finding 카드 하나만 봐서는 그
+// 앞뒤 줄과의 관계를 알아채기 어려워 앞뒤 줄까지 항상 같이 보이게 한다.
+// 현재 줄은 진하게, 멀어질수록 흐리게(아이폰 타이머 다이얼과 비슷한 느낌).
+function SrtSyncPanel({
+  segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
+  controllingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+}) {
+  const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
+  const [activeId, setActiveId] = useState(null);
+  const rowRefs = useRef({});
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || sorted.length === 0) return undefined;
+    function handleTimeUpdate() {
+      const srtTime = video.currentTime + videoOffsetSeconds;
+      const found =
+        sorted.find((s) => srtTime >= s.start && srtTime <= s.end) ??
+        [...sorted].reverse().find((s) => s.start <= srtTime) ??
+        sorted[0];
+      setActiveId(found.id);
+    }
+    video.addEventListener("timeupdate", handleTimeUpdate);
+    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
+  }, [videoRef, videoOffsetSeconds, sorted]);
+
+  // finding 카드를 누르면 timeupdate(재생 중에만 주기적으로 발생)를
+  // 기다리지 않고 클릭 즉시 그 줄로 스크롤+하이라이트한다.
+  useEffect(() => {
+    if (previewSegment?.id) setActiveId(previewSegment.id);
+  }, [previewSegment?.id, previewTick]);
+
+  useEffect(() => {
+    rowRefs.current[activeId]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeId]);
+
+  const activeIndex = sorted.findIndex((s) => s.id === activeId);
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <p className="mb-1.5 text-xs font-medium text-muted-foreground">전체 자막</p>
+      <ul className="max-h-80 space-y-1 overflow-y-auto">
+        {sorted.map((seg, i) => {
+          const distance = activeIndex === -1 ? 99 : Math.abs(i - activeIndex);
+          const opacityClass =
+            distance === 0 ? "opacity-100" : distance <= 2 ? "opacity-80" : distance <= 5 ? "opacity-50" : "opacity-25";
+          const canEdit = !controllingSegmentIds.has(seg.id);
+          const displayText = resolvedTextBySegment[seg.id] ?? seg.target_text ?? "";
+          const pending = srtPendingId === seg.id;
+
+          function handleRowClick(e) {
+            if (e.target.closest("button, textarea")) return;
+            onSeekSegment(seg);
+          }
+
+          function handleBlur(e) {
+            const value = e.target.value;
+            if (value !== displayText) onSaveSrtEdit(seg.id, value);
+          }
+
+          return (
+            <li
+              key={seg.id}
+              ref={(node) => {
+                rowRefs.current[seg.id] = node;
+              }}
+              onClick={handleRowClick}
+              className={`cursor-pointer rounded-md px-2 py-1.5 transition-opacity ${opacityClass} ${
+                distance === 0 ? "bg-primary/10 ring-1 ring-primary" : ""
+              }`}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {`${formatSrtTimestamp(seg.start)} --> ${formatSrtTimestamp(seg.end)}`}
+                </span>
+                {distance === 0 && !canEdit && (
+                  <span className="text-[10px] text-muted-foreground">Finding에서 처리</span>
+                )}
+              </div>
+              {canEdit ? (
+                <div>
+                  <textarea
+                    key={`${seg.id}:${displayText}`}
+                    defaultValue={displayText}
+                    rows={2}
+                    disabled={pending}
+                    onBlur={handleBlur}
+                    className="block w-full resize-none rounded-md border border-transparent bg-transparent p-0 font-mono text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50"
+                  />
+                  {srtErrors[seg.id] && (
+                    <p className="text-[10px] text-destructive">{srtErrors[seg.id]}</p>
+                  )}
+                </div>
+              ) : (
+                displayText && (
+                  <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{displayText}</p>
+                )
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function VideoPreviewPanel({
+  videoProxyUrl, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
+  controllingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+}) {
   if (!videoProxyUrl) {
     return (
-      <aside className="lg:sticky lg:top-6 lg:self-start">
+      <aside>
         <div className="flex aspect-video items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">
           영상 프록시를 사용할 수 없습니다.
         </div>
@@ -822,7 +934,7 @@ function VideoPreviewPanel({ videoProxyUrl, videoRef }) {
     );
   }
   return (
-    <aside className="lg:sticky lg:top-6 lg:self-start">
+    <aside>
       <div className="rounded-lg border border-border bg-card p-3 shadow-sm">
         <video
           ref={videoRef}
@@ -831,6 +943,21 @@ function VideoPreviewPanel({ videoProxyUrl, videoRef }) {
           playsInline
           className="w-full rounded-md border border-border bg-black"
         />
+        {segments && segments.length > 0 && (
+          <SrtSyncPanel
+            segments={segments}
+            videoRef={videoRef}
+            videoOffsetSeconds={videoOffsetSeconds}
+            previewSegment={previewSegment}
+            previewTick={previewTick}
+            onSeekSegment={onSeekSegment}
+            controllingSegmentIds={controllingSegmentIds}
+            resolvedTextBySegment={resolvedTextBySegment}
+            srtPendingId={srtPendingId}
+            srtErrors={srtErrors}
+            onSaveSrtEdit={onSaveSrtEdit}
+          />
+        )}
       </div>
     </aside>
   );
@@ -861,13 +988,17 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [sttEditText, setSttEditText] = useState("");
   const [sttPendingId, setSttPendingId] = useState(null);
   const [sttErrors, setSttErrors] = useState({});
+  // 전체 자막 동기화 패널(SrtSyncPanel)에서 finding 없는 줄의 번역문을
+  // 직접 고칠 때 쓰는 state — 텍스트 자체는 textarea가 들고 있고(항상
+  // 편집 가능, blur 시 저장), 여기서는 저장 중/에러 상태만 추적한다.
+  const [srtPendingId, setSrtPendingId] = useState(null);
+  const [srtErrors, setSrtErrors] = useState({});
   // STT 재검증이 성별 확인이 필요한 새 제안문구를 만들어놓고 사람 답을
   // 기다리는 경우, finding 카드 안에서 바로 답하기 위한 state — segment.id
   // 기준이라 sttPendingId/sttErrors와 같은 패턴이다.
   const [genderPendingId, setGenderPendingId] = useState(null);
   const [genderErrors, setGenderErrors] = useState({});
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
-  const [exportResult, setExportResult] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
   const [videoProxyUrl, setVideoProxyUrl] = useState(null);
   // segment.start/end는 대상언어 SRT 시계다 — 영상을 잘라 올려 SRT와 영상
@@ -876,6 +1007,14 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [videoOffsetSeconds, setVideoOffsetSeconds] = useState(0);
   const [previewSegment, setPreviewSegment] = useState(null);
   const previewVideoRef = useRef(null);
+  // 같은 finding 카드를 다시 눌러도(id가 안 바뀌어도) 구간 처음으로 다시
+  // 이동해 재생하도록 누를 때마다 값을 바꿔 아래 미리보기 이펙트를 강제로
+  // 재실행시킨다.
+  const [previewTick, setPreviewTick] = useState(0);
+  function previewFindingSegment(segment) {
+    setPreviewSegment(segment);
+    setPreviewTick((t) => t + 1);
+  }
 
   // 목록이 길어 스크롤이 깊어지면(1500+줄 상당) 맨 위로 버튼을 띄운다.
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -975,14 +1114,19 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     // 구간만 재생된다"는 기대에 맞게, 구간 끝(또는 그 이후)에서 재생이
     // 시작되면 항상 구간 처음으로 되감아 다시 그 구간만 재생한다 — 구간
     // 도중에 잠깐 멈췄다 이어보는 정상적인 일시정지/재개는 되감지 않는다.
+    // 구간 끝에 도달하면 멈추는 건 그대로 두되, 거기서 검수자가 재생 버튼을
+    // 다시 누르면(구간 뒤쪽도 보고 싶다는 뜻) 이번엔 막지 않고 흘려보낸다.
+    // 같은 finding 카드를 다시 누르면(previewTick 변경) 이 이펙트가 새로
+    // 실행되어 처음(seekStart)부터 다시 멈추는 원래 동작으로 리셋된다.
+    let boundaryCleared = false;
     function handleTimeUpdate() {
-      if (video.currentTime >= seekEnd) {
+      if (!boundaryCleared && video.currentTime >= seekEnd) {
         video.pause();
       }
     }
     function handlePlay() {
       if (video.currentTime >= seekEnd) {
-        video.currentTime = seekStart;
+        boundaryCleared = true;
       }
     }
     video.currentTime = seekStart;
@@ -999,7 +1143,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       video.removeEventListener("timeupdate", handleTimeUpdate);
       video.removeEventListener("play", handlePlay);
     };
-  }, [previewSegment?.id, previewSegment?.start, previewSegment?.end, videoOffsetSeconds]);
+  }, [previewSegment?.id, previewSegment?.start, previewSegment?.end, videoOffsetSeconds, previewTick]);
 
   async function handleAction(findingId, action, finalText = "") {
     setFindingErrors((prev) => ({ ...prev, [findingId]: null }));
@@ -1145,6 +1289,24 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     }
   }
 
+  async function handleSaveSrtEdit(segmentId, newText) {
+    setSrtErrors((prev) => ({ ...prev, [segmentId]: null }));
+    setSrtPendingId(segmentId);
+    try {
+      const result = await editTargetText(segmentId, newText);
+      setSegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? { ...s, target_text: result.target_text } : s))
+      );
+    } catch (err) {
+      setSrtErrors((prev) => ({
+        ...prev,
+        [segmentId]: err.message ?? "번역 수정 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setSrtPendingId(null);
+    }
+  }
+
   // 세그먼트의 성별을 답하면(단일 인물), 백엔드가 그 세그먼트의 pending
   // finding 제안문구도 이미 반영해뒀으므로 segments/findings를 모두
   // 다시 불러온다 — 카드의 "제안" 텍스트가 즉시 갱신되게.
@@ -1222,7 +1384,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           return;
         }
       }
-      setExportResult(result);
       downloadSrtFile(result.srt, result.filename);
       setExportStatus({ kind: "idle" });
     } catch (err) {
@@ -1231,13 +1392,34 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   }
 
   const isExporting = exportStatus.kind === "loading";
-  const formatWarnings = exportResult?.format_warnings ?? [];
   // Finding 카드에 STT 한국어 원문 + 그 구간 영상을 참고용으로 보여주기 위한
   // 조회용 — 이미 STT 사이드바에서 받아온 segments를 그대로 재사용한다
   // (추가 API 호출 없음).
   const segmentsById = segments
     ? Object.fromEntries(segments.map((s) => [s.id, s]))
     : {};
+
+  // 전체 자막 패널에서 번역문을 직접 고칠 수 있는 줄과 없는 줄을 가른다 —
+  // reject된 finding만 있는 줄은 export._final_text_by_segment가 무시하고
+  // segment.target_text로 폴백하므로 직접 수정이 그대로 반영되지만, pending/
+  // approved/modified finding이 있는 줄은 그 finding의 final_text가 최종
+  // 텍스트를 결정하므로 여기서 target_text를 고쳐도 export에 반영되지 않는다.
+  const controllingSegmentIds = new Set(
+    (findings ?? []).filter((f) => f.status !== "rejected").map((f) => f.segment_id)
+  );
+
+  // 전체 자막 패널에 finding이 이미 반영된 최종 텍스트를 보여주기 위한
+  // 맵 — export.py의 _final_text_by_segment와 동일한 규칙(검수자가 직접
+  // 확인한 것이 자동보정보다 나중에 적용돼 이긴다)을 그대로 따른다. 이게
+  // 없으면 승인/수정한 finding이 있어도 패널에는 여전히 세그먼트의 원래
+  // target_text만 보여 "선택했는데 안 바뀐다"는 착시가 생긴다.
+  const resolvedTargetTextBySegment = {};
+  (findings ?? [])
+    .filter((f) => (f.status === "approved" || f.status === "modified") && f.final_text)
+    .sort((a, b) => Number(Boolean(a.reviewed_at)) - Number(Boolean(b.reviewed_at)))
+    .forEach((f) => {
+      resolvedTargetTextBySegment[f.segment_id] = f.final_text;
+    });
 
   // 겹치는 짝이 없는 반쪽짜리 Segment(한국어만 있거나 대상언어만 있는
   // 경우) — 시간 순으로 보여준다.
@@ -1304,12 +1486,34 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           좁은 화면에서는 세로로 쌓이며 미리보기가 먼저 나온다. */}
       <main className="mx-auto max-w-screen-2xl px-6 py-8">
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[420px_1fr]">
-          <div>
+          <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
             <h1 className="mb-2 text-xl font-semibold text-foreground">리뷰</h1>
             <VideoPreviewPanel
               videoProxyUrl={videoProxyUrl}
               videoRef={previewVideoRef}
+              segments={segments}
+              videoOffsetSeconds={videoOffsetSeconds}
+              previewSegment={previewSegment}
+              previewTick={previewTick}
+              onSeekSegment={previewFindingSegment}
+              controllingSegmentIds={controllingSegmentIds}
+              resolvedTextBySegment={resolvedTargetTextBySegment}
+              srtPendingId={srtPendingId}
+              srtErrors={srtErrors}
+              onSaveSrtEdit={handleSaveSrtEdit}
             />
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
+                {isExporting && <Spinner />}
+                내보내기
+              </button>
+              {exportStatus.kind === "error" && (
+                <p role="status" aria-live="polite" className="text-sm text-destructive">
+                  {exportStatus.message}
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="space-y-8">
@@ -1370,7 +1574,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                           b={b}
                           segment={segmentsById[a.segment_id]}
                           isPreviewing={previewSegment?.id === a.segment_id}
-                          onPreview={setPreviewSegment}
+                          dimmed={Boolean(previewSegment) && previewSegment.id !== a.segment_id}
+                          onPreview={previewFindingSegment}
                           reviewerName={reviewerName}
                           pendingActions={pendingActions}
                           findingErrors={findingErrors}
@@ -1420,7 +1625,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                         finding={f}
                         segment={segmentsById[f.segment_id]}
                         isPreviewing={previewSegment?.id === f.segment_id}
-                        onPreview={setPreviewSegment}
+                        dimmed={Boolean(previewSegment) && previewSegment.id !== f.segment_id}
+                        onPreview={previewFindingSegment}
                         reviewerName={reviewerName}
                         pending={pendingActions[f.id] ?? null}
                         error={findingErrors[f.id]}
@@ -1475,7 +1681,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
 
                 function handleClick(e) {
                   if (e.target.closest("button, textarea, input, a, select")) return;
-                  setPreviewSegment(seg);
+                  previewFindingSegment(seg);
                 }
 
                 return (
@@ -1544,61 +1750,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                 </section>
               );
             })()}
-
-            <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold text-card-foreground">최종 SRT 내보내기</h2>
-                <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
-                  {isExporting && <Spinner />}
-                  내보내기
-                </button>
-              </div>
-
-              {exportStatus.kind === "error" && (
-                <p role="status" aria-live="polite" className="mb-3 text-sm text-destructive">
-                  {exportStatus.message}
-                </p>
-              )}
-
-              {exportResult && (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap gap-3 text-sm">
-                    <span className="rounded-md bg-muted px-3 py-1.5 text-muted-foreground">
-                      발견 건수: <strong className="text-foreground">{exportResult.stats.finding_count}</strong>
-                    </span>
-                    <span className="rounded-md bg-muted px-3 py-1.5 text-muted-foreground">
-                      반영율:{" "}
-                      <strong className="text-foreground">
-                        {Math.round(exportResult.stats.reflection_rate * 100)}%
-                      </strong>
-                    </span>
-                  </div>
-
-                  {formatWarnings.length > 0 && (
-                    <div className="rounded-md border border-warning/40 bg-warning/10 p-3">
-                      <p className="mb-1 text-sm font-medium text-warning">
-                        포맷 경고 {formatWarnings.length}건 (내보내기는 차단되지 않음)
-                      </p>
-                      <ul className="ml-4 list-disc space-y-0.5 text-xs text-warning">
-                        {formatWarnings.map((w, i) => {
-                          const seg = segmentsById[w.segment_id];
-                          return (
-                            <li key={`${w.segment_id}-${i}`}>
-                              [{w.rule}]{seg ? ` (${formatSrtTimestamp(seg.start)})` : ""} {w.detail}
-                              {w.auto_fixed ? " (자동 수정됨)" : ""}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  )}
-
-                  <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 font-mono text-xs text-foreground">
-                    {exportResult.srt}
-                  </pre>
-                </div>
-              )}
-            </section>
           </div>
         </div>
       </main>

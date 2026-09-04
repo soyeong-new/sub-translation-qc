@@ -95,6 +95,10 @@ class CorrectSttIn(BaseModel):
     reviewer_name: str
 
 
+class EditTargetTextIn(BaseModel):
+    target_text: str
+
+
 @router.get("/target-versions/{target_version_id}/findings")
 async def list_findings(target_version_id: str):
     async with async_session() as session:
@@ -516,3 +520,22 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
 
         await session.commit()
         return {"id": seg.id, "korean_text": seg.korean_text, "new_finding": new_finding}
+
+
+@router.post("/segments/{segment_id}/edit-target-text")
+async def edit_target_text(segment_id: str, payload: EditTargetTextIn):
+    """Finding이 안 걸린 줄도 번역문을 직접 고칠 수 있게 한다. export의
+    _final_text_by_segment는 그 세그먼트에 반영된(approved/modified) finding이
+    없으면 segment.target_text를 그대로 최종 텍스트로 쓰므로, 이 값만
+    바꾸면 별도 finding 없이 바로 최종 SRT에 반영된다. 이력은 남기지 않는다
+    (correct-stt의 SttCorrection과 달리 재검증도 하지 않는 단순 텍스트
+    교체라 이력을 남길 이유가 약함)."""
+    if violates_line_length(payload.target_text):
+        raise HTTPException(400, _LINE_LENGTH_ERROR)
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        seg.target_text = payload.target_text
+        await session.commit()
+        return {"id": seg.id, "target_text": seg.target_text}
