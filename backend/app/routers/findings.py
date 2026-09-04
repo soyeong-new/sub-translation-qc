@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -12,7 +13,8 @@ from app.db import async_session
 from app.models import TargetVersion, FindingRow, Segment, SttCorrection
 from app.core.grammar_necessity import check_grammar_necessity
 from app.core.requery import (
-    requery_finding, reverify_segment_after_stt_correction, RequeryNotSupportedError,
+    requery_finding, reverify_segment_after_stt_correction,
+    RequeryNotSupportedError, RequeryNoResultError,
     apply_resolved_gender_to_text, flag_new_gender_ambiguity, gloss_new_gender_words,
     reapply_gender_to_pending_findings,
 )
@@ -170,7 +172,7 @@ async def resolve_gender(segment_id: str, payload: ResolveGenderIn):
         tv = await session.get(TargetVersion, seg.target_version_id)
         if tv is not None:
             profile = load_profile(tv.target_language, tv.variant)
-            await reapply_gender_to_pending_findings(session, seg, profile.get("language"))
+            await reapply_gender_to_pending_findings(session, seg, get_provider(), profile)
         await session.commit()
         return {"id": seg.id, "resolved_gender_raw": seg.resolved_gender_raw}
 
@@ -197,7 +199,7 @@ async def resolve_gender_group(segment_id: str, payload: ResolveGenderGroupIn):
         # 있으면, 방금 답한 값을 그 제안문구에도 반영한다.
         if tv is not None:
             profile = load_profile(tv.target_language, tv.variant)
-            await reapply_gender_to_pending_findings(session, seg, profile.get("language"))
+            await reapply_gender_to_pending_findings(session, seg, get_provider(), profile)
         await session.commit()
         return {"id": seg.id, "resolved_gender_groups_raw": seg.resolved_gender_groups_raw}
 
@@ -326,6 +328,25 @@ async def reject_pair(finding_id: str, payload: RejectPairIn):
         }
 
 
+# ReviewView.jsx의 splitDescription()과 순서를 맞춰야 한다 — 더 구체적인
+# "제안" 태그부터 떼어야 "원본" 태그를 안 건드리고, "원본" 태그는 오른쪽
+# 끝에 그대로 둔 채(재질문과 무관, original_text는 안 바뀜) 그 왼쪽의
+# 제안 역번역 태그만 새 값으로 교체한다.
+_PROPOSAL_BACK_TRANSLATION_RE = re.compile(r" \(제안 한국어 역번역 참고: .+\)$", re.DOTALL)
+_ORIGINAL_BACK_TRANSLATION_RE = re.compile(r" \(원본 한국어 역번역 참고: .+\)$", re.DOTALL)
+_PLAIN_BACK_TRANSLATION_RE = re.compile(r" \(한국어 역번역 참고: .+\)$", re.DOTALL)
+
+
+def _refresh_proposal_back_translation(description: str, back_translation: str | None) -> str:
+    without_proposal = _PROPOSAL_BACK_TRANSLATION_RE.sub("", description)
+    original_match = _ORIGINAL_BACK_TRANSLATION_RE.search(without_proposal)
+    original_suffix = original_match.group(0) if original_match else ""
+    base = without_proposal[:original_match.start()] if original_match else without_proposal
+    base = _PLAIN_BACK_TRANSLATION_RE.sub("", base)
+    proposal_suffix = f" (한국어 역번역 참고: {back_translation})" if back_translation else ""
+    return base + proposal_suffix + original_suffix
+
+
 @router.post("/findings/{finding_id}/requery")
 async def requery(finding_id: str, payload: RequeryIn):
     async with async_session() as session:
@@ -342,21 +363,27 @@ async def requery(finding_id: str, payload: RequeryIn):
         knowledge = load_knowledge()
 
         try:
-            new_suggested_text = await requery_finding(
+            new_suggested_text, back_translation = await requery_finding(
                 finding, segment, payload.instruction, provider, knowledge, profile)
-        except RequeryNotSupportedError as exc:
+        except (RequeryNotSupportedError, RequeryNoResultError) as exc:
             raise HTTPException(400, str(exc))
 
         # 재질문도 S2와 같은 문제를 안고 있다 — AI가 문장을 다시 쓰면서
         # 이미 확정된 성별을 건드릴 수 있다. correct_stt와 동일하게 재적용한다.
-        new_suggested_text = await asyncio.to_thread(
-            apply_resolved_gender_to_text, segment, new_suggested_text, profile.get("language"))
+        new_suggested_text = await apply_resolved_gender_to_text(
+            segment, new_suggested_text, provider, profile)
         finding.suggested_text = new_suggested_text
         finding.status = "pending"
         finding.final_text = ""
         finding.reviewer_name = ""
         finding.reviewed_at = None
-        finding.description = f"[다시 질문: {payload.instruction}] {finding.description}"
+        # 역번역(검수자가 보는 "번역:" 태그)도 새 suggested_text 기준으로
+        # 갱신한다 — 안 그러면 제안문은 바뀌었는데 역번역만 예전 그대로
+        # 남는다(diagnosis). original_text 기준 "원본 한국어 역번역 참고"
+        # 태그는 재질문과 무관하니 그대로 보존한다.
+        refreshed_description = _refresh_proposal_back_translation(
+            finding.description, back_translation)
+        finding.description = f"[다시 질문: {payload.instruction}] {refreshed_description}"
         await session.commit()
         return {"id": finding.id, "status": finding.status, "suggested_text": finding.suggested_text}
 
@@ -400,9 +427,8 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
             # 확인이 필요하면(1차 검수 때는 없던 성별 표시 단어가 새로 생긴
             # 경우) 세그먼트를 다시 미확인 상태로 표시해 리뷰 화면에서
             # 사람에게 물어보게 한다.
-            language = profile.get("language")
-            fixed_text = await asyncio.to_thread(
-                apply_resolved_gender_to_text, seg, correction["corrected_text"], language)
+            fixed_text = await apply_resolved_gender_to_text(
+                seg, correction["corrected_text"], provider, profile)
             remaining_flags = await asyncio.to_thread(
                 check_grammar_necessity,
                 [{"id": segment_id, "target_text": fixed_text, "korean_text": seg.korean_text}], profile)

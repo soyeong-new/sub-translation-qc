@@ -56,6 +56,41 @@ async def test_requery_finding_updates_suggested_text_and_resets_to_pending(monk
 
 
 @pytest.mark.asyncio
+async def test_requery_refreshes_back_translation_replacing_stale_tag(monkeypatch):
+    """diagnosis: 재질문 후 suggested_text는 새 교정문으로 바뀌는데, 검수자가
+    보는 역번역("한국어 역번역 참고" 태그)은 예전 제안 기준 그대로 남아있었다
+    — 이제는 같은 응답의 back_translation으로 그 태그만 갱신해야 하고,
+    original_text에 대한 "원본 한국어 역번역 참고" 태그는 재질문과 무관하니
+    그대로 보존해야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    finding_id = await _make_finding(model="claude")
+    async with async_session() as session:
+        finding = await session.get(FindingRow, finding_id)
+        finding.description = (
+            "근거 (한국어 역번역 참고: 예전 역번역) (원본 한국어 역번역 참고: 원본 역번역)"
+        )
+        await session.commit()
+
+    with patch("app.providers.mock.MockProvider.correct_primary",
+               new=AsyncMock(return_value=[{"segment_id": "seg1", "category": "mistranslation",
+                                             "corrected_text": "hola más formal",
+                                             "description": "재질문 반영",
+                                             "back_translation": "새 역번역"}])):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(f"/findings/{finding_id}/requery",
+                                   json={"instruction": "더 격식있게", "reviewer_name": "김검수"})
+
+    assert r.status_code == 200
+    async with async_session() as session:
+        finding = await session.get(FindingRow, finding_id)
+    assert "새 역번역" in finding.description
+    assert "예전 역번역" not in finding.description
+    assert "원본 역번역" in finding.description
+
+
+@pytest.mark.asyncio
 async def test_requery_reapplies_already_confirmed_gender_to_new_suggestion(monkeypatch):
     """회귀: 재질문으로 AI가 문장을 다시 쓰면서 이미 확정된 성별을 무시하고
     다른 성별로 써버릴 수 있다 — S2 이중검증과 같은 문제라 같은 방식(재적용)
@@ -119,6 +154,26 @@ async def test_requery_shrinks_suggestion_that_exceeds_line_length(monkeypatch):
     suggested_text = r.json()["suggested_text"]
     assert suggested_text != long_text
     assert all(len(ln) <= 50 for ln in suggested_text.split("\n"))
+
+
+@pytest.mark.asyncio
+async def test_requery_returns_400_when_provider_returns_no_results(monkeypatch):
+    """회귀: LLM이 빈 배열을 돌려주면(재질문 지시와 배치용 스킵 지시가 충돌한
+    경우) 예전에는 200과 함께 원문 그대로를 조용히 돌려줘서, 검수자는 재질문이
+    실제로 반영됐는지 알 수 없었다 — 이제는 400으로 명시적으로 실패를
+    알려야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+    finding_id = await _make_finding(model="claude")
+
+    with patch("app.providers.mock.MockProvider.correct_primary",
+               new=AsyncMock(return_value=[])):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(f"/findings/{finding_id}/requery",
+                                   json={"instruction": "더 격식있게", "reviewer_name": "김검수"})
+
+    assert r.status_code == 400
 
 
 @pytest.mark.asyncio
