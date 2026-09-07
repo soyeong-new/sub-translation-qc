@@ -453,6 +453,30 @@ async def test_verify_and_refine_system_prompt_contains_shared_verification_bloc
 
 
 @pytest.mark.asyncio
+async def test_verify_and_refine_includes_glossary_block_when_entries_given(monkeypatch):
+    captured = {}
+
+    async def fake_call(self, system, user, **kwargs):
+        captured["system"] = system
+        return []
+
+    async def fake_retry_hangul_leaks(self, results, *a, **kw):
+        return results
+
+    monkeypatch.setattr(GptClient, "_call", fake_call)
+    monkeypatch.setattr(GptClient, "_retry_hangul_leaks", fake_retry_hangul_leaks)
+
+    client = GptClient(api_key="x", model="gpt-test")
+    profile = {"target_language": "es", "variant": "LATAM"}
+    glossary_entries = [{"korean_term": "김현", "category": "person",
+                          "canonical": "Kim Hyun", "aliases": []}]
+    await client.verify_and_refine([], profile, [], "", "", "", glossary_entries)
+
+    assert "[작품 용어집]" in captured["system"]
+    assert "김현 (person): Kim Hyun" in captured["system"]
+
+
+@pytest.mark.asyncio
 async def test_back_translate_system_prompt_contains_shared_judgment_criteria():
     """back_translate의 is_improvement 판정 문단도 claude/gpt가 교차 검증에
     쓰는 공유 기준이므로, 공유 빌더 결과를 그대로 포함해야 한다."""

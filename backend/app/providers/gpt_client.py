@@ -1,15 +1,16 @@
 """GPT API로 2차 검증(원문 대조 verify+rewrite)을 수행하는 얇은 SDK 래퍼."""
 
 import json
-from typing import List
+from typing import List, Optional
 from openai import AsyncOpenAI
 
 from app.providers.base import (
     contains_hangul, CATEGORY_ENUM, VERIFICATION_PRIORITY_PARAGRAPH,
-    BATCH_SCOPE_INTRO, BATCH_SKIP_CLEAN_LINE, REQUERY_SCOPE_INTRO, REQUERY_SKIP_CLEAN_LINE,
+    build_batch_scope_intro, BATCH_SKIP_CLEAN_LINE,
+    build_requery_scope_intro, REQUERY_SKIP_CLEAN_LINE,
     build_verification_checklist, build_json_instruction, build_json_instruction_requery,
     build_findings_schema_instruction, build_naturalness_instruction_line,
-    build_improvement_judgment_criteria,
+    build_improvement_judgment_criteria, build_glossary_block,
 )
 
 # envelope_declaration: gpt는 {"findings": [...]} 객체로 감싸 출력해야 해서
@@ -370,9 +371,11 @@ class GptClient:
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
-                                 extra_instruction: str = "") -> List[dict]:
+                                 extra_instruction: str = "",
+                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         language_label = _language_label(profile)
         naturalness_instruction = (profile.get("naturalness_check") or {}).get("llm_instruction", "")
+        glossary_block = build_glossary_block(glossary_entries or [])
 
         # extra_instruction은 지금 재질문(다시 질문하기, requery.py) 단건 호출만
         # 채워 보낸다 — 배치 검증(pipeline.py)은 항상 빈 문자열이다. 배치용
@@ -382,10 +385,10 @@ class GptClient:
         # 재현 — 재질문해도 반영이 안 됨). 그래서 이 값의 유무로 "애매하면
         # 스킵" vs "이미 지적됐으니 반드시 포함" 두 지시를 통째로 바꿔 끼운다.
         if extra_instruction:
-            scope_intro = REQUERY_SCOPE_INTRO
+            scope_intro = build_requery_scope_intro(glossary_block)
             skip_clean_line = REQUERY_SKIP_CLEAN_LINE
         else:
-            scope_intro = BATCH_SCOPE_INTRO
+            scope_intro = build_batch_scope_intro(glossary_block)
             skip_clean_line = BATCH_SKIP_CLEAN_LINE
 
         system = (
@@ -393,12 +396,13 @@ class GptClient:
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(대상언어 번역문)를 검증하라. "
             + scope_intro +
             VERIFICATION_PRIORITY_PARAGRAPH +
-            build_verification_checklist("대상언어", skip_clean_line) +
+            build_verification_checklist("대상언어", skip_clean_line, glossary_block) +
             f"⚠️ [자막 형태 및 글자수 절대 제약 - HARD CONSTRAINT]\n"
             f"- 모든 교정문(corrected_text)은 반드시 다음 제약을 엄격히 지켜서 작성하라: {format_constraint}\n"
             "- 각 줄의 글자수를 실제로 세어보고 제약 글자수를 초과하면 절/쉼표 경계에서 자연스럽게 줄바꿈(\\n)을 넣거나 표현을 다듬어 글자수 한도 내로 들어오게 작성하라.\n\n"
             f"참고 지식베이스: {knowledge}\n"
         )
+        system += glossary_block
 
         system += (
             f"사전에 없어 애매한 비속어 후보(참고용): "
