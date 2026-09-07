@@ -16,6 +16,152 @@ def contains_hangul(text: str) -> bool:
     return bool(_HANGUL_RE.search(text or ""))
 
 
+CATEGORY_ENUM = ["sensitivity", "mistranslation", "nuance_tone",
+                  "unnatural_style", "locale_convention"]
+
+VERIFICATION_PRIORITY_PARAGRAPH = (
+    "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
+    "오역/심의 정확성 > 씬 내 반복 표현 일관성 > 자연스러움. "
+    "위 우선순위를 지키는 한 원문의 어순·문장 구조를 그대로 따를 의무는 없다 — "
+    "같은 내용을 전달하면 문장을 자유롭게 재구성해 가장 자연스러운 표현으로 의역하라. "
+    "사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
+)
+
+BATCH_SCOPE_INTRO = (
+    "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
+    "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
+)
+BATCH_SKIP_CLEAN_LINE = "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n"
+
+REQUERY_SCOPE_INTRO = (
+    "이 세그먼트는 검수자가 이미 문제가 있다고 판단해 재검토를 요청한 것이다 — "
+    "너 스스로 '문제가 명백한지' 다시 판단해 건너뛰지 말고, 아래 [5단계 체크리스트]에서 "
+    "가장 가까운 카테고리를 찾아 검수자 지시사항을 반영한 교정 사항(findings)을 반드시 작성하라. "
+    "이 세그먼트를 배열에서 빼는 것은 금지된다.\n"
+    "⚠️ 아래 target_text는 이전 검토에서 이미 한 번 고친 결과물이다 — 네가(또는 다른 "
+    "모델이) 만들었다는 이유로 이미 맞다고 안일하게 판단하지 말고, korean_text와 처음부터 "
+    "다시 대조해 검수자 지시사항 관점에서 재검토하라.\n\n"
+)
+REQUERY_SKIP_CLEAN_LINE = (
+    "   - (재질문 예외) 이 세그먼트는 검수자가 이미 지적했으므로, 위 규칙과 달리 "
+    "반드시 응답 배열에 포함하라.\n"
+)
+
+
+def build_verification_checklist(language_label: str, skip_clean_line: str) -> str:
+    """[검수 범위 및 교정 원칙] + [5단계 순차 검증 체크리스트]. claude/gpt가
+    재질문 여부에 따라 다른 skip_clean_line만 끼워 넣고 나머지는 동일하게 쓴다."""
+    return (
+        "⚠️ [검수 범위 및 교정 원칙]\n"
+        "1. 반드시 교정해야 하는 대상:\n"
+        "   - 오역 및 핵심 의미 누락/와전 (category: \"mistranslation\")\n"
+        "   - 방송/미디어 심의 위반 비속어 (category: \"sensitivity\")\n"
+        "   - 한국어 구조를 그대로 따라가 현지인이 읽기에 어색한 직역투 (category: \"unnatural_style\")\n"
+        "   - 현지 문화권 관습, 관용구, 단위 표기 오류 (category: \"locale_convention\")\n"
+        "   - 지정된 성별(대상언어 문법상 성별 어미) 및 격식(존댓말/반말) 파라미터 위반\n"
+        "2. 교정 금지 대상 (취향 차이의 다듬기):\n"
+        "   - 의미 왜곡이 없고 현지 구어체로 이미 타당한 번역인데, 단순히 AI 개인 선호 어휘나 동의어로 다듬는 수정은 제안하지 마라.\n"
+        + skip_clean_line +
+        "   - nuance_tone(뉘앙스·어조)은 다음 경우에만 제안하라:\n"
+        f"     * 직역투로 인해 명백히 어색한 경우 (한국어 구조를 그대로 따라가 {language_label}로서 부자연스러운 경우)\n"
+        "     * 한국어 원문의 감정·톤(급함, 거침, 간결함, 여유로움 등)이 명확히 다르게 전달된 경우\n"
+        "   - 이미 자연스러운 구어체 표현이면 건드리지 마라. 원문의 감정·톤을 정확히 전달하고 있으면 제안하지 마라.\n\n"
+        "[5단계 순차 검증 체크리스트]\n"
+        "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
+        "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
+        "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
+        "2. 오역 및 핵심 의미 누락 (category: \"mistranslation\"):\n"
+        "   - 기준: korean_text의 실제 의미와 target_text의 번역 의미가 다르게 와전되었거나, 문장의 핵심 의미가 생략되었는가? 또는 원문의 구체적 사실(인물·장소·숫자·행동)이 생략·변경·추가되었는가? 단, 사실이 아닌 부연 설명·수식어를 줄인 것은 여기 해당하지 않는다.\n"
+        "   - 교정 지침: 원문의 뜻을 왜곡 없이 정확하게 전달하도록 교정하라.\n"
+        "3. 어색한 어조 및 직역투 (category: \"unnatural_style\" 또는 \"nuance_tone\"):\n"
+        f"   - 기준: 문법은 맞지만 한국어 어순/표현을 그대로 따라간 직역투라 {language_label}로서 어색한가? 또는 한국어 원문의 감정·톤이 명확히 다르게 전달되었는가?\n"
+        f"   - 교정 지침: 원문의 감정·톤을 정확히 살리면서 {language_label}권 현지인이 실제로 사용하는 자연스러운 구어체로 교정하라. 자막은 화면과 함께 순간적으로 읽는 매체이니 뜻이 통하는 선에서 최대한 간결하게 써라 — 화면으로 이미 전달되는 정보나 불필요한 부연 설명은 생략하라. 같은 씬 안에서 한국어 원문의 단어/표현이 반복되면, 문법적으로 다르게 써야 할 이유가 없는 한 같은 번역으로 통일하라.\n"
+        "   - 주의: 원문이 이미 자연스러운 구어체로 한국어의 감정·톤을 잘 전달하고 있으면 nuance_tone 제안을 하지 마라.\n"
+        "4. 문화 맥락 및 로컬라이제이션 (category: \"locale_convention\"):\n"
+        f"   - 기준: {language_label}권 문화 관습, 관용 표현, 단위 표기(미터법/화폐 등)에 안 맞는 번역이 있는가?\n"
+        "   - 교정 지침: 해당 언어권의 문화적 관습과 로컬라이제이션 관례에 맞게 교정하라.\n"
+        "5. 이미 반영된 성별/격식 형태 보존:\n"
+        "   - 기준: target_text에 이미 특정 성별 어미(대상언어 문법상 형용사·분사·명사 어미)나 격식(존댓말/반말) 형태가 반영되어 있을 수 있다 — 그 형태가 사전상 어색하거나 비표준으로 보여도, 검수 과정에서 의도적으로 맞춘 것이니 임의로 '자연스럽게' 되돌리지 마라.\n"
+        "   - 교정 지침: 위 1~4번 문제를 고치기 위해 교정문(`corrected_text`)을 작성할 때도, target_text에 이미 있는 성별 어미·격식 형태는 그대로 유지하라 — 오직 그 카테고리의 문제만 고쳐라.\n\n"
+    )
+
+
+def build_json_instruction(envelope_declaration: str) -> str:
+    """수정 불필요 항목 처리 지시(배치용). envelope_declaration만 API별로
+    다르고(claude: JSON 배열, gpt: {"findings": [...]} 객체) 나머지 스킵 로직은 동일하다."""
+    return (
+        envelope_declaration +
+        "수정이 필요 없는 세그먼트는 배열에 포함하지 마라. "
+        "검토 도중 판단을 바꿔 결국 수정이 필요 없다고 결론 내렸다면, 그 항목은 "
+        "배열에서 완전히 빼라 — description에 '다시 검토하니', '재검토 결과' 같은 "
+        "번복 과정을 남기지 마라. 배열에 포함하는 항목은 처음부터 끝까지 하나의 "
+        "최종 결론만 담아야 한다."
+    )
+
+
+def build_json_instruction_requery(envelope_declaration: str) -> str:
+    """수정 불필요 항목 처리 지시(재질문용) — 검수자가 이미 지적한 단건이므로
+    배열에서 빼는 것 자체를 금지한다."""
+    return (
+        envelope_declaration +
+        "이 세그먼트는 검수자가 이미 지적한 것이므로 배열에서 빼는 것은 금지된다 — 검토 도중 판단이 "
+        "바뀌더라도 배열에 포함한 채로, description에 '다시 검토하니', '재검토 결과' "
+        "같은 번복 과정 없이 하나의 최종 결론만 담아 작성하라."
+    )
+
+
+def build_findings_schema_instruction(lead_in: str) -> str:
+    """findings 응답 스키마 산문 설명. lead_in(배열을 어떻게 지칭할지)만
+    API별로 다르고 필드 설명은 동일하다."""
+    return (
+        lead_in +
+        'segment_id (문자열, 입력 pair의 "id"와 반드시 일치), '
+        'category (문자열, 반드시 다음 중 하나: '
+        '"sensitivity"(사전에 없어 애매한 비속어), '
+        '"mistranslation"(의미가 잘못 옮겨졌거나 함축된 의미가 빠진 경우), '
+        '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
+        '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
+        '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
+        "corrected_text (문자열, 최종 교정된 전체 대상언어 텍스트 — 절대 한국어로 쓰면 "
+        "안 된다. 아래 '한국어로 써라' 지침은 description 필드에만 적용되고 "
+        "corrected_text에는 적용되지 않는다), "
+        "description (문자열, 무엇을 왜 그렇게 고쳤는지 한국어로 설명). "
+        "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라. "
+        "description의 설명 문장 자체는 예외 없이 한국어로 써라 — 다른 언어로 "
+        "설명하지 마라. corrected_text는 정반대로 한국어를 절대 섞지 말고 대상언어로만 "
+        "써라. 단, 대상언어 원문 표현을 예시로 인용하는 것은 괜찮다(예: \"'경비아저씨' "
+        "표현이 어색해 'el guardia'로 수정\")."
+    )
+
+
+def build_naturalness_instruction_line(naturalness_instruction: str) -> str:
+    """언어 프로파일의 naturalness_check.llm_instruction 주입 줄. 비어 있으면
+    아무것도 추가하지 않는다."""
+    if not naturalness_instruction:
+        return ""
+    return f"자연스러움 지침: {naturalness_instruction}\n"
+
+
+def build_improvement_judgment_criteria(language_label: str) -> str:
+    """back_translate의 is_improvement 판정 문단. "정보 보존"이라는 뭉뚱그린
+    기준 대신, 판정 난이도를 감안해 두 개의 닫힌 목록(false 사유 / false
+    사유 아님)으로 쓴다(경량 모델이 수행하므로 열린 질문보다 부담이 적다)."""
+    return (
+        "2. text가 original_text보다 reference_korean의 의미·톤을 더 잘 "
+        f"살리는 자연스러운 {language_label} 표현인지 판단하라"
+        "(is_improvement). 의미 왜곡 없이 이미 자연스러운데 단순히 어휘 "
+        "취향만 다르다면 개선으로 보지 마라 — 동등하면 false.\n"
+        "다음 중 하나라도 해당하면 false다:\n"
+        "  - reference_korean과 다른 인물·장소·숫자·행동을 가리키게 되었다\n"
+        "  - reference_korean에 없던 사실이 새로 생겼다\n"
+        "  - 장면을 이해하는 데 필요한 사실이 사라졌다\n"
+        "다음은 false 사유가 아니다 — 해당하면 개선으로 인정하라:\n"
+        "  - 어순이 바뀌었다\n"
+        "  - 문장 구조가 재구성되었다\n"
+        "  - 자막 길이에 맞춰 중복되는 표현이나 부연 수식어가 압축되었다\n"
+    )
+
+
 class ProviderNotConfiguredError(RuntimeError):
     pass
 

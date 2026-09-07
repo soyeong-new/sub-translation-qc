@@ -4,46 +4,28 @@ import json
 from typing import List
 from openai import AsyncOpenAI
 
-from app.providers.base import contains_hangul
-
-_JSON_INSTRUCTION = (
-    '반드시 {"findings": [...]} 형태의 JSON 객체만 출력하라. 수정이 필요 없는 '
-    "세그먼트는 findings에 포함하지 마라. "
-    "검토 도중 판단을 바꿔 결국 수정이 필요 없다고 결론 내렸다면, 그 항목은 "
-    "findings에서 완전히 빼라 — description에 '다시 검토하니', '재검토 결과' 같은 "
-    "번복 과정을 남기지 마라. findings에 포함하는 항목은 처음부터 끝까지 하나의 "
-    "최종 결론만 담아야 한다."
+from app.providers.base import (
+    contains_hangul, CATEGORY_ENUM, VERIFICATION_PRIORITY_PARAGRAPH,
+    BATCH_SCOPE_INTRO, BATCH_SKIP_CLEAN_LINE, REQUERY_SCOPE_INTRO, REQUERY_SKIP_CLEAN_LINE,
+    build_verification_checklist, build_json_instruction, build_json_instruction_requery,
+    build_findings_schema_instruction, build_naturalness_instruction_line,
+    build_improvement_judgment_criteria,
 )
+
+# envelope_declaration: gpt는 {"findings": [...]} 객체로 감싸 출력해야 해서
+# claude(JSON 배열 직접 출력)와 선언 문장만 다르다.
+_JSON_INSTRUCTION = build_json_instruction(
+    '반드시 {"findings": [...]} 형태의 JSON 객체만 출력하라. ')
 
 # 재질문(extra_instruction 있음) 전용 — 위 _JSON_INSTRUCTION의 "빼라" 지시가
 # 검수자가 이미 지적한 단건 재검토와 충돌해 빈 응답을 유발하므로, 형식 지시는
 # 유지하되 스킵 지시만 "반드시 포함, 판단이 바뀌어도 배열에 남긴 채 결론만
 # 갱신"으로 바꿔 끼운다.
-_JSON_INSTRUCTION_REQUERY = (
-    '반드시 {"findings": [...]} 형태의 JSON 객체만 출력하라. 이 세그먼트는 검수자가 '
-    "이미 지적한 것이므로 findings에서 빼는 것은 금지된다 — 검토 도중 판단이 "
-    "바뀌더라도 findings에 포함한 채로, description에 '다시 검토하니', '재검토 결과' "
-    "같은 번복 과정 없이 하나의 최종 결론만 담아 작성하라."
-)
+_JSON_INSTRUCTION_REQUERY = build_json_instruction_requery(
+    '반드시 {"findings": [...]} 형태의 JSON 객체만 출력하라. ')
 
-_VERIFY_SCHEMA_INSTRUCTION = (
-    "findings 배열의 각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
-    'segment_id (문자열), '
-    'category (문자열, 반드시 다음 중 하나: '
-    '"sensitivity"(사전에 없어 애매한 비속어), '
-    '"mistranslation"(의미가 잘못 옮겨졌거나 함축된 의미가 빠진 경우), '
-    '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
-    '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
-    '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
-    "corrected_text (문자열, 최종 교정된 전체 대상언어 텍스트 — 절대 한국어로 "
-    "쓰면 안 된다. 아래 '한국어로 써라' 지침은 description 필드에만 적용되고 "
-    "corrected_text에는 적용되지 않는다), "
-    "description (문자열, 무엇을 왜 그렇게 고쳤는지 한국어로 설명). "
-    "이 키 이름을 정확히 그대로 사용하라 — 다른 이름이나 추가 키를 쓰지 마라. "
-    "description의 설명 문장 자체는 예외 없이 한국어로 써라 — 다른 언어로 "
-    "설명하지 마라. corrected_text는 정반대로 한국어를 절대 섞지 말고 대상언어로만 "
-    "써라. 단, 대상언어 원문 표현을 예시로 인용하는 것은 괜찮다."
-)
+_VERIFY_SCHEMA_INSTRUCTION = build_findings_schema_instruction(
+    "findings 배열의 각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: ")
 
 _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
     '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
@@ -150,11 +132,7 @@ _FINDINGS_SCHEMA = {
                         "type": "object",
                         "properties": {
                             "segment_id": {"type": "string"},
-                            "category": {
-                                "type": "string",
-                                "enum": ["sensitivity", "mistranslation", "nuance_tone",
-                                         "unnatural_style", "locale_convention"],
-                            },
+                            "category": {"type": "string", "enum": CATEGORY_ENUM},
                             "corrected_text": {"type": "string"},
                             "description": {"type": "string"},
                         },
@@ -186,11 +164,7 @@ _FINDINGS_SCHEMA_REQUERY = {
                         "type": "object",
                         "properties": {
                             "segment_id": {"type": "string"},
-                            "category": {
-                                "type": "string",
-                                "enum": ["sensitivity", "mistranslation", "nuance_tone",
-                                         "unnatural_style", "locale_convention"],
-                            },
+                            "category": {"type": "string", "enum": CATEGORY_ENUM},
                             "corrected_text": {"type": "string"},
                             "description": {"type": "string"},
                             "back_translation": {"type": "string"},
@@ -408,66 +382,18 @@ class GptClient:
         # 재현 — 재질문해도 반영이 안 됨). 그래서 이 값의 유무로 "애매하면
         # 스킵" vs "이미 지적됐으니 반드시 포함" 두 지시를 통째로 바꿔 끼운다.
         if extra_instruction:
-            scope_intro = (
-                "이 세그먼트는 검수자가 이미 문제가 있다고 판단해 재검토를 요청한 것이다 — "
-                "너 스스로 '문제가 명백한지' 다시 판단해 건너뛰지 말고, 아래 [5단계 체크리스트]에서 "
-                "가장 가까운 카테고리를 찾아 검수자 지시사항을 반영한 교정 사항(findings)을 "
-                "반드시 작성하라. 이 세그먼트를 findings에서 빼는 것은 금지된다.\n"
-                "⚠️ 아래 target_text는 이전 검토에서 이미 한 번 고친 결과물이다 — 네가(또는 다른 "
-                "모델이) 만들었다는 이유로 이미 맞다고 안일하게 판단하지 말고, korean_text와 처음부터 "
-                "다시 대조해 검수자 지시사항 관점에서 재검토하라.\n\n"
-            )
-            skip_clean_line = (
-                "   - (재질문 예외) 이 세그먼트는 검수자가 이미 지적했으므로, 위 규칙과 달리 "
-                "반드시 findings에 포함하라.\n"
-            )
+            scope_intro = REQUERY_SCOPE_INTRO
+            skip_clean_line = REQUERY_SKIP_CLEAN_LINE
         else:
-            scope_intro = (
-                "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
-                "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
-            )
-            skip_clean_line = "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n"
+            scope_intro = BATCH_SCOPE_INTRO
+            skip_clean_line = BATCH_SKIP_CLEAN_LINE
 
         system = (
             f"너는 한국어-{language_label} 자막의 전문 번역 검수자다. "
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(대상언어 번역문)를 검증하라. "
             + scope_intro +
-            "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
-            "오역/심의 정확성 > 정보 보존(고유명사·숫자·장소·행동 등 구체적 사실) > 씬 내 반복 표현 일관성 > 자연스러움. "
-            "특히 자연스럽게 다듬는 과정에서 원문에 있는 구체적 사실을 생략·변경·추가하면 안 된다 — 단, 이런 사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
-            "⚠️ [검수 범위 및 교정 원칙]\n"
-            "1. 반드시 교정해야 하는 대상:\n"
-            "   - 오역 및 핵심 의미 누락/와전 (category: \"mistranslation\")\n"
-            "   - 방송/미디어 심의 위반 비속어 (category: \"sensitivity\")\n"
-            "   - 한국어 구조를 그대로 따라가 현지인이 읽기에 어색한 직역투 (category: \"unnatural_style\")\n"
-            "   - 현지 문화권 관습, 관용구, 단위 표기 오류 (category: \"locale_convention\")\n"
-            "   - 지정된 성별(대상언어 문법상 성별 어미) 및 격식(존댓말/반말) 파라미터 위반\n"
-            "2. 교정 금지 대상 (취향 차이의 다듬기):\n"
-            "   - 의미 왜곡이 없고 현지 구어체로 이미 타당한 번역인데, 단순히 AI 개인 선호 어휘나 동의어로 다듬는 수정은 제안하지 마라.\n"
-            + skip_clean_line +
-            "   - nuance_tone(뉘앙스·어조)은 다음 경우에만 제안하라:\n"
-            "     * 직역투로 인해 명백히 어색한 경우 (한국어 구조를 그대로 따라가 대상언어로서 부자연스러운 경우)\n"
-            "     * 한국어 원문의 감정·톤(급함, 거침, 간결함, 여유로움 등)이 명확히 다르게 전달된 경우\n"
-            "   - 이미 자연스러운 구어체 표현이면 건드리지 마라. 원문의 감정·톤을 정확히 전달하고 있으면 제안하지 마라.\n\n"
-
-            "[5단계 순차 검증 체크리스트]\n"
-
-            "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
-            "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
-            "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
-            "2. 오역 및 핵심 의미 누락 (category: \"mistranslation\"):\n"
-            "   - 기준: korean_text의 실제 의미와 target_text의 번역 의미가 다르게 와전되었거나, 문장의 핵심 의미가 생략되었는가?\n"
-            "   - 교정 지침: 원문의 뜻을 왜곡 없이 정확하게 전달하도록 교정하라.\n"
-            "3. 어색한 어조 및 직역투 (category: \"unnatural_style\" 또는 \"nuance_tone\"):\n"
-            "   - 기준: 문법은 맞지만 한국어 어순/표현을 그대로 따라간 직역투라 대상언어로서 어색한가? 또는 한국어 원문의 감정·톤이 명확히 다르게 전달되었는가?\n"
-            "   - 교정 지침: 원문의 감정·톤을 정확히 살리면서 대상언어권 현지인이 실제로 사용하는 자연스러운 구어체로 교정하라. 자막은 화면과 함께 순간적으로 읽는 매체이니 뜻이 통하는 선에서 최대한 간결하게 써라 — 화면으로 이미 전달되는 정보나 불필요한 부연 설명은 생략하라. 같은 씬 안에서 한국어 원문의 단어/표현이 반복되면, 문법적으로 다르게 써야 할 이유가 없는 한 같은 번역으로 통일하라.\n"
-            "   - 주의: 원문이 이미 자연스러운 구어체로 한국어의 감정·톤을 잘 전달하고 있으면 nuance_tone 제안을 하지 마라.\n"
-            "4. 문화 맥락 및 로컬라이제이션 (category: \"locale_convention\"):\n"
-            "   - 기준: 대상언어권 문화 관습, 관용 표현, 단위 표기(미터법/화폐 등)에 안 맞는 번역이 있는가?\n"
-            "   - 교정 지침: 해당 언어권의 문화적 관습과 로컬라이제이션 관례에 맞게 교정하라.\n"
-            "5. 이미 반영된 성별/격식 형태 보존:\n"
-            "   - 기준: target_text에 이미 특정 성별 어미(대상언어 문법상 형용사·분사·명사 어미)나 격식(존댓말/반말) 형태가 반영되어 있을 수 있다 — 그 형태가 대상언어 사전상 어색하거나 비표준으로 보여도, 검수 과정에서 의도적으로 맞춘 것이니 임의로 '자연스럽게' 되돌리지 마라.\n"
-            "   - 교정 지침: 위 1~4번 문제를 고치기 위해 교정문(`corrected_text`)을 작성할 때도, target_text에 이미 있는 성별 어미·격식 형태는 그대로 유지하라 — 오직 그 카테고리의 문제만 고쳐라.\n\n"
+            VERIFICATION_PRIORITY_PARAGRAPH +
+            build_verification_checklist("대상언어", skip_clean_line) +
             f"⚠️ [자막 형태 및 글자수 절대 제약 - HARD CONSTRAINT]\n"
             f"- 모든 교정문(corrected_text)은 반드시 다음 제약을 엄격히 지켜서 작성하라: {format_constraint}\n"
             "- 각 줄의 글자수를 실제로 세어보고 제약 글자수를 초과하면 절/쉼표 경계에서 자연스럽게 줄바꿈(\\n)을 넣거나 표현을 다듬어 글자수 한도 내로 들어오게 작성하라.\n\n"
@@ -478,8 +404,7 @@ class GptClient:
             f"사전에 없어 애매한 비속어 후보(참고용): "
             f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
         )
-        if naturalness_instruction:
-            system += f"자연스러움 지침: {naturalness_instruction}\n"
+        system += build_naturalness_instruction_line(naturalness_instruction)
         json_instruction = _JSON_INSTRUCTION_REQUERY if extra_instruction else _JSON_INSTRUCTION
         schema_instruction = _VERIFY_SCHEMA_INSTRUCTION
         if extra_instruction:
@@ -542,13 +467,7 @@ class GptClient:
             "전달하라. 원문이 짧고 직설적이면 역번역도 짧고 직설적으로, "
             "원문에 존댓말·격식이 있으면 그 격식도 살려서 옮겨라 — 단순히 "
             "의미만 통하는 매끄러운 한국어 문장으로 다듬지 마라.\n"
-            "2. text가 original_text보다 reference_korean의 의미·톤을 더 잘 "
-            f"살리는 자연스러운 {language_label} 표현인지 판단하라"
-            "(is_improvement). 의미 왜곡 없이 이미 자연스러운데 단순히 어휘 "
-            "취향만 다르다면 개선으로 보지 마라 — 동등하면 false. text가 "
-            "아무리 자연스러워도 reference_korean에 있는 구체적 정보(인물·"
-            "장소·숫자·행동)를 생략·변경·추가했다면 무조건 false로 판정하라 "
-            "— 자연스러움은 정보 보존을 앞설 수 없다.\n"
+            + build_improvement_judgment_criteria(language_label)
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
