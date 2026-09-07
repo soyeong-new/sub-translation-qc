@@ -2,7 +2,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import pytest
-from app.providers.gpt_client import GptClient
+from app.providers.gpt_client import GptClient, _language_label
+from app.providers.base import (
+    VERIFICATION_PRIORITY_PARAGRAPH, BATCH_SKIP_CLEAN_LINE,
+    build_verification_checklist, build_improvement_judgment_criteria,
+)
 
 
 def _make_client_with_fake_sdk(response_text) -> GptClient:
@@ -85,7 +89,7 @@ async def test_verify_and_refine_forbids_skipping_when_extra_instruction_given()
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "절대 응답 배열에 포함하지 마라" not in sent_system
     assert "findings에 포함하지 마라" not in sent_system
-    assert "findings에서 빼는 것은 금지" in sent_system
+    assert "배열에서 빼는 것은 금지" in sent_system
 
 
 @pytest.mark.asyncio
@@ -431,3 +435,29 @@ async def test_apply_formality_falls_back_to_default_instruction_when_profile_em
     await client.apply_formality(items=[], profile={})
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "tú" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_verify_and_refine_system_prompt_contains_shared_verification_block():
+    """claude/gpt가 반드시 같아야 하는 우선순위 문단·5단계 체크리스트는
+    base.py의 공유 빌더 결과를 그대로 포함해야 한다 — 나중에 한쪽 클라이언트가
+    이 블록에 줄을 덧붙이거나 가공해서 쓰면 이 테스트가 잡는다."""
+    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
+    await client.verify_and_refine(
+        pairs=[], profile={"language": "es", "variant": "LATAM"},
+        pending_sensitive_hits=[], knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert VERIFICATION_PRIORITY_PARAGRAPH in sent_system
+    assert build_verification_checklist("대상언어", BATCH_SKIP_CLEAN_LINE) in sent_system
+
+
+@pytest.mark.asyncio
+async def test_back_translate_system_prompt_contains_shared_judgment_criteria():
+    """back_translate의 is_improvement 판정 문단도 claude/gpt가 교차 검증에
+    쓰는 공유 기준이므로, 공유 빌더 결과를 그대로 포함해야 한다."""
+    profile = {"language": "es", "variant": "LATAM"}
+    client = _make_client_with_fake_sdk(json.dumps({"results": []}))
+    await client.back_translate(texts=[], profile=profile)
+    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+    assert build_improvement_judgment_criteria(_language_label(profile)) in sent_system

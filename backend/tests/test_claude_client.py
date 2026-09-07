@@ -1,7 +1,11 @@
 import json
 from unittest.mock import AsyncMock, MagicMock
 import pytest
-from app.providers.claude_client import ClaudeClient
+from app.providers.claude_client import ClaudeClient, _language_label
+from app.providers.base import (
+    VERIFICATION_PRIORITY_PARAGRAPH, BATCH_SKIP_CLEAN_LINE,
+    build_verification_checklist, build_improvement_judgment_criteria,
+)
 
 
 def _make_client_with_fake_sdk(response_text: str) -> ClaudeClient:
@@ -362,3 +366,31 @@ async def test_back_translate_uses_target_language_from_profile_not_spanish():
     )
     sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
     assert "스페인어" not in sent_system
+
+
+@pytest.mark.asyncio
+async def test_correct_primary_system_prompt_contains_shared_verification_block():
+    """claude/gpt가 반드시 같아야 하는 우선순위 문단·5단계 체크리스트는
+    base.py의 공유 빌더 결과를 그대로 포함해야 한다 — 나중에 한쪽 클라이언트가
+    이 블록에 줄을 덧붙이거나 가공해서 쓰면 이 테스트가 잡는다."""
+    profile = {"language": "es", "variant": "LATAM"}
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.correct_primary(
+        pairs=[], profile=profile, pending_sensitive_hits=[],
+        knowledge="", format_constraint="",
+    )
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert VERIFICATION_PRIORITY_PARAGRAPH in sent_system
+    assert build_verification_checklist(
+        _language_label(profile), BATCH_SKIP_CLEAN_LINE) in sent_system
+
+
+@pytest.mark.asyncio
+async def test_back_translate_system_prompt_contains_shared_judgment_criteria():
+    """back_translate의 is_improvement 판정 문단도 claude/gpt가 교차 검증에
+    쓰는 공유 기준이므로, 공유 빌더 결과를 그대로 포함해야 한다."""
+    profile = {"language": "es", "variant": "LATAM"}
+    client = _make_client_with_fake_sdk(json.dumps([]))
+    await client.back_translate(texts=[], profile=profile)
+    sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
+    assert build_improvement_judgment_criteria(_language_label(profile)) in sent_system
