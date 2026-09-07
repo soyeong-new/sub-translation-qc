@@ -11,7 +11,7 @@ def load_knowledge(dir_path: Optional[str] = None) -> str:
     base = Path(dir_path) if dir_path else _DEFAULT_DIR
     lines = []
     for yml in sorted(base.glob("*.yaml")):
-        if yml.name in ("sensitive_terms.yaml", "glossary.yaml", "cta_patterns.yaml",
+        if yml.name in ("sensitive_terms.yaml", "cta_patterns.yaml",
                         "profanity_dictionary.yaml"):
             continue
         data = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
@@ -32,12 +32,6 @@ def load_sensitive_terms(dir_path: Optional[str] = None) -> List[str]:
     path = base / "sensitive_terms.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return data.get("terms", [])
-
-
-def load_glossary(dir_path: Optional[str] = None) -> List[dict]:
-    base = Path(dir_path) if dir_path else _DEFAULT_DIR
-    data = yaml.safe_load((base / "glossary.yaml").read_text(encoding="utf-8")) or {}
-    return data.get("entries", [])
 
 
 def load_cta_patterns(dir_path: Optional[str] = None) -> List[str]:

@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -2224,3 +2225,68 @@ async def test_run_pipeline_phase1_threads_known_gender_facts_to_grammar_check(t
         )
 
     assert captured["known_gender_facts"] == {"성경": "female"}
+
+
+def test_extract_glossary_terms_pass_calls_provider_with_filtered_pairs():
+    from app.core.pipeline import _extract_glossary_terms_pass
+    from app.providers.mock import MockProvider
+    from app.schemas import AlignedPair, SegmentText
+
+    captured = {}
+
+    class SpyProvider(MockProvider):
+        async def extract_glossary_terms(self, items, profile):
+            captured["items"] = items
+            return [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+
+    pairs = [
+        AlignedPair(id="p1",
+                    korean=SegmentText(start=0.0, end=1.0, text="김현아 밥 먹었어?"),
+                    target=SegmentText(start=0.0, end=1.0, text="Kim Hyun, comiste?")),
+        AlignedPair(id="p2", korean=None,
+                    target=SegmentText(start=1.0, end=2.0, text="no korean pair")),
+    ]
+    warnings = []
+
+    result = asyncio.run(_extract_glossary_terms_pass(
+        pairs, SpyProvider(), {"target_language": "es", "variant": "LATAM"}, "tv1", warnings))
+
+    assert result == [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+    assert captured["items"] == [{"id": "p1", "korean_text": "김현아 밥 먹었어?",
+                                   "target_text": "Kim Hyun, comiste?"}]
+    assert warnings == []
+
+
+def test_run_pipeline_phase2_passes_glossary_entries_to_correct_primary_and_returns_extractions():
+    from app.core.pipeline import run_pipeline_phase2
+    from app.providers.mock import MockProvider
+    from app.schemas import AlignedPair, SegmentText
+
+    captured = {}
+
+    class SpyProvider(MockProvider):
+        async def correct_primary(self, pairs, profile, pending_sensitive_hits,
+                                   knowledge, format_constraint, extra_instruction="",
+                                   glossary_entries=None):
+            captured["correct_primary_glossary_entries"] = glossary_entries
+            return []
+
+        async def extract_glossary_terms(self, items, profile):
+            return [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+
+    pairs = [
+        AlignedPair(id="p1",
+                    korean=SegmentText(start=0.0, end=1.0, text="김현아 밥 먹었어?"),
+                    target=SegmentText(start=0.0, end=1.0, text="Kim Hyun, comiste?")),
+    ]
+    glossary_entries = [{"korean_term": "김현", "category": "person",
+                          "canonical": "Kim Hyun", "aliases": []}]
+
+    result = asyncio.run(run_pipeline_phase2(
+        pairs, SpyProvider(), {"target_language": "es", "variant": "LATAM"},
+        {}, [], "tv1", {}, glossary_entries,
+    ))
+
+    assert captured["correct_primary_glossary_entries"] == glossary_entries
+    assert result["glossary_extractions"] == [
+        {"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]

@@ -1,6 +1,6 @@
 """테스트 전용 결정론적 가짜 ModelProvider 구현체."""
 
-from typing import List
+from typing import List, Optional
 from app.providers.base import ModelProvider
 
 
@@ -36,13 +36,15 @@ class MockProvider(ModelProvider):
     async def correct_primary(self, pairs: List[dict], profile: dict,
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
-                               extra_instruction: str = "") -> List[dict]:
+                               extra_instruction: str = "",
+                               glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         return _detect_corrections(pairs, pending_sensitive_hits)
 
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
-                                 extra_instruction: str = "") -> List[dict]:
+                                 extra_instruction: str = "",
+                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         return _detect_corrections(pairs, pending_sensitive_hits)
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
@@ -76,6 +78,9 @@ class MockProvider(ModelProvider):
 
     async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
         return [{"id": i["id"], "meaning": f"[뜻:{i['word']}]"} for i in items]
+
+    async def extract_glossary_terms(self, items: List[dict], profile: dict) -> List[dict]:
+        return []
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         return [{"id": i["id"], "corrected_text": f"[{i['formality']}] {i['target_text']}"}

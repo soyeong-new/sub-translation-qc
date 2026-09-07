@@ -331,3 +331,116 @@ async def test_storage_usage_reports_media_folder_size_separately(monkeypatch, t
     data = r.json()
     assert data["media_used"] == 1500
     assert "used" in data and "total" in data
+
+
+@pytest.mark.asyncio
+async def test_list_titles_includes_glossary():
+    from app.models import GlossaryEntry, GlossarySpelling
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+    async with async_session() as session:
+        entry = GlossaryEntry(title_id=title_id, korean_term="김현", category="person", aliases=[])
+        session.add(entry)
+        await session.flush()
+        session.add(GlossarySpelling(entry_id=entry.id, language="es", variant="LATAM",
+                                      canonical="Kim Hyun"))
+        await session.commit()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/titles")
+    title = next(t for t in r.json() if t["id"] == title_id)
+    assert len(title["glossary"]) == 1
+    assert title["glossary"][0]["korean_term"] == "김현"
+    assert title["glossary"][0]["spellings"] == {"es_LATAM": "Kim Hyun"}
+
+
+@pytest.mark.asyncio
+async def test_create_glossary_entry_and_patch_spelling():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+        r = await client.post(f"/titles/{title_id}/glossary",
+                               json={"korean_term": "김현", "category": "person", "aliases": []})
+        assert r.status_code == 200
+        entry_id = r.json()["id"]
+
+        r = await client.patch(f"/glossary/{entry_id}",
+                                json={"spellings": {"es_LATAM": "Kim Hyun"}})
+        assert r.status_code == 200
+        assert r.json()["spellings"] == {"es_LATAM": "Kim Hyun"}
+
+        listed = await client.get("/titles")
+    title = next(t for t in listed.json() if t["id"] == title_id)
+    assert title["glossary"][0]["spellings"] == {"es_LATAM": "Kim Hyun"}
+
+
+@pytest.mark.asyncio
+async def test_create_glossary_entry_duplicate_korean_term_returns_409():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+        r1 = await client.post(f"/titles/{title_id}/glossary",
+                                json={"korean_term": "김현", "category": "person", "aliases": []})
+        assert r1.status_code == 200
+
+        r2 = await client.post(f"/titles/{title_id}/glossary",
+                                json={"korean_term": "김현", "category": "person", "aliases": []})
+        assert r2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_glossary_entry_invalid_category_returns_422():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+        r = await client.post(f"/titles/{title_id}/glossary",
+                               json={"korean_term": "김현", "category": "nonsense", "aliases": []})
+        assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_glossary_entry_overwrites_existing_spelling():
+    """사람이 직접 고치는 PATCH는 자동 추출과 달리 기존 표기를 덮어써야
+    한다 — upsert_glossary_extraction의 '최초 확정 우선'과 대비되는
+    경로다."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+        entry_res = await client.post(f"/titles/{title_id}/glossary",
+                                       json={"korean_term": "김현", "category": "person", "aliases": []})
+        entry_id = entry_res.json()["id"]
+        await client.patch(f"/glossary/{entry_id}", json={"spellings": {"es_LATAM": "Kim Hyun"}})
+
+        r = await client.patch(f"/glossary/{entry_id}",
+                                json={"spellings": {"es_LATAM": "Kim Hyeon"}})
+        assert r.status_code == 200
+        assert r.json()["spellings"] == {"es_LATAM": "Kim Hyeon"}
+
+
+@pytest.mark.asyncio
+async def test_delete_glossary_entry_removes_it_from_listing():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+        entry_res = await client.post(f"/titles/{title_id}/glossary",
+                                       json={"korean_term": "김현", "category": "person", "aliases": []})
+        entry_id = entry_res.json()["id"]
+
+        r = await client.delete(f"/glossary/{entry_id}")
+        assert r.status_code == 200
+
+        listed = await client.get("/titles")
+    title = next(t for t in listed.json() if t["id"] == title_id)
+    assert title["glossary"] == []

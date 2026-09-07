@@ -18,7 +18,7 @@ from app.core.format_rules import (
 from app.core.safety_net import shrink_violating_lines, enforce_line_length
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import (
-    load_knowledge, load_sensitive_terms, load_glossary, load_cta_patterns,
+    load_knowledge, load_sensitive_terms, load_cta_patterns,
     load_profanity_dictionary,
 )
 from app.core.pretreatment import run_pretreatment
@@ -625,6 +625,27 @@ async def _safe_call(coro, label: str, note: str, target_version_id: str, warnin
         return []
 
 
+async def _extract_glossary_terms_pass(
+    pairs: list, provider: ModelProvider, profile: dict,
+    target_version_id: str, warnings: list,
+) -> list:
+    """정렬된 (korean_text, target_text) 쌍에서 작품 용어집 후보(고유명사)를
+    한 번의 LLM 호출로 추출한다. 한국어 원문이 없는 반쪽짜리 pair는 비교
+    기준이 없어 제외한다(_run_dual_verification_pass의 filtered_pairs와
+    동일한 필터)."""
+    filtered_pairs = [p for p in pairs if p.target is not None and p.korean is not None]
+    if not filtered_pairs:
+        return []
+    items = [
+        {"id": p.id, "korean_text": p.korean.text, "target_text": p.target.text}
+        for p in filtered_pairs
+    ]
+    return await _safe_call(
+        provider.extract_glossary_terms(items, profile),
+        "작품 용어집 추출", "이번 회차에서는 새 용어를 추출하지 못했습니다",
+        target_version_id, warnings)
+
+
 def _drop_malformed_corrections(corrections: list, label: str, target_version_id: str, warnings: list) -> list:
     """항목 하나하나에 segment_id가 빠진 채로 응답이 오는 경우(모델이 대량 입력에서
     가끔 필드를 누락함 — split_scenes 독스트링 참고) 이후 c["segment_id"] 접근에서
@@ -1013,6 +1034,7 @@ async def _run_dual_verification_pass(
     pairs: list, provider: ModelProvider, profile: dict,
     pending_sensitive_hits: list, knowledge: dict,
     format_constraint: str, target_version_id: str, resolved_registers: dict,
+    glossary_entries: Optional[list] = None,
 ) -> tuple[list, list]:
     """S2(이중 독립 검증) 패스. Claude와 GPT가 같은 원본을 동시에, 서로 뭘
     하는지 모른 채(앵커링 편향 방지) 독립적으로 검토한다 — 스페인어를 모르는
@@ -1064,12 +1086,12 @@ async def _run_dual_verification_pass(
             _safe_call(
                 provider.correct_primary(
                     chunk_dicts, profile, pending_sensitive_hits,
-                    knowledge, format_constraint),
+                    knowledge, format_constraint, glossary_entries=glossary_entries),
                 "Claude 검증", "해당 구간을 스킵하고 계속 진행", target_version_id, warnings),
             _safe_call(
                 provider.verify_and_refine(
                     chunk_dicts, profile, pending_sensitive_hits,
-                    knowledge, format_constraint),
+                    knowledge, format_constraint, glossary_entries=glossary_entries),
                 "GPT 검증", "해당 구간을 스킵하고 계속 진행", target_version_id, warnings),
         )
 
@@ -1456,12 +1478,11 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
 
     profile = load_profile(language, variant)
     sensitive_terms = load_sensitive_terms()
-    glossary = load_glossary()
     cta_patterns = load_cta_patterns()
     profanity_dictionary = load_profanity_dictionary()
 
     pretreatment = run_pretreatment(
-        pairs, glossary, cta_patterns, profanity_dictionary, sensitive_terms,
+        pairs, cta_patterns, profanity_dictionary, sensitive_terms,
         target_version_id,
     )
     pairs = pretreatment.pairs
@@ -1554,7 +1575,8 @@ async def _apply_resolved_formality(
 
 async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dict,
                                knowledge: dict, pending_sensitive_hits: list,
-                               target_version_id: str, resolved_registers: dict) -> dict:
+                               target_version_id: str, resolved_registers: dict,
+                               glossary_entries: Optional[list] = None) -> dict:
     """S2(Claude/GPT 이중 독립 검증) + S4(최종 안전망). 성별/격식 확인이
     필요한 줄이 모두 확정된 뒤에만 호출돼야 한다(run_pipeline_phase1의
     registers_need_confirmation이 False일 때, 또는 사람이 스텝퍼에서 답을
@@ -1578,12 +1600,16 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
     dual_verification_findings, dual_verification_warnings = await _run_dual_verification_pass(
         pairs, provider, profile,
         pending_sensitive_hits, knowledge, format_constraint,
-        target_version_id, resolved_registers,
+        target_version_id, resolved_registers, glossary_entries,
     )
 
     final_ellipsis_violations, safety_net_findings = await _run_final_safety_net(
         pairs, provider, target_version_id, dual_verification_findings,
     )
+
+    glossary_extractions = await _extract_glossary_terms_pass(
+        pairs, provider, profile, target_version_id, dual_verification_warnings)
+
     # line_length_violations는 여기 담아 반환하지 않는다 — shrink_violating_lines가
     # 이미 텍스트를 줄이고 그 결과를 category="formatting" Finding으로 반환했다.
     # 그런데도 여기 다시 담으면 repositories.py가 "이미 줄어든 뒤" 텍스트를
@@ -1596,6 +1622,7 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
         "format_violations": final_ellipsis_violations,
         "warnings": dual_verification_warnings,
         "findings": dual_verification_findings + safety_net_findings,
+        "glossary_extractions": glossary_extractions,
     }
 
 

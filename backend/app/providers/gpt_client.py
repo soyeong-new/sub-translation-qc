@@ -1,15 +1,16 @@
 """GPT API로 2차 검증(원문 대조 verify+rewrite)을 수행하는 얇은 SDK 래퍼."""
 
 import json
-from typing import List
+from typing import List, Optional
 from openai import AsyncOpenAI
 
 from app.providers.base import (
     contains_hangul, CATEGORY_ENUM, VERIFICATION_PRIORITY_PARAGRAPH,
-    BATCH_SCOPE_INTRO, BATCH_SKIP_CLEAN_LINE, REQUERY_SCOPE_INTRO, REQUERY_SKIP_CLEAN_LINE,
+    build_batch_scope_intro, BATCH_SKIP_CLEAN_LINE,
+    build_requery_scope_intro, REQUERY_SKIP_CLEAN_LINE,
     build_verification_checklist, build_json_instruction, build_json_instruction_requery,
     build_findings_schema_instruction, build_naturalness_instruction_line,
-    build_improvement_judgment_criteria,
+    build_improvement_judgment_criteria, build_glossary_block,
 )
 
 # envelope_declaration: gpt는 {"findings": [...]} 객체로 감싸 출력해야 해서
@@ -69,6 +70,18 @@ _GENDER_SWAP_SCHEMA_INSTRUCTION = (
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'id (문자열, 입력의 "id"와 반드시 일치), '
     "has_error (불리언, 문법 오류가 있으면 true)."
+)
+
+_GLOSSARY_EXTRACTION_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'korean_term (문자열, 한국어 대표형 — 이름/장소/상호/직함 등 고유명사의 '
+    "기본형. 축약형·호격형이 아니라 성+이름 전체 같은 완전한 형태로), "
+    'category (문자열, 반드시 다음 중 하나: "person", "place", "business", "title"), '
+    "canonical (문자열, target_text에서 실제로 쓰인 이 용어의 대상언어 표기). "
+    "이미 다른 회차에서 등록된 표기와 겹치는 인물이면 canonical은 그 대상언어 "
+    "문장에서 실제로 쓰인 표기 그대로 적어라(추측해서 통일하지 마라 — 통일 "
+    "여부 판단은 저장 단계에서 따로 한다)."
 )
 
 _DEFAULT_FORMALITY_INSTRUCTION = (
@@ -370,9 +383,11 @@ class GptClient:
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
-                                 extra_instruction: str = "") -> List[dict]:
+                                 extra_instruction: str = "",
+                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         language_label = _language_label(profile)
         naturalness_instruction = (profile.get("naturalness_check") or {}).get("llm_instruction", "")
+        glossary_block = build_glossary_block(glossary_entries or [])
 
         # extra_instruction은 지금 재질문(다시 질문하기, requery.py) 단건 호출만
         # 채워 보낸다 — 배치 검증(pipeline.py)은 항상 빈 문자열이다. 배치용
@@ -382,10 +397,10 @@ class GptClient:
         # 재현 — 재질문해도 반영이 안 됨). 그래서 이 값의 유무로 "애매하면
         # 스킵" vs "이미 지적됐으니 반드시 포함" 두 지시를 통째로 바꿔 끼운다.
         if extra_instruction:
-            scope_intro = REQUERY_SCOPE_INTRO
+            scope_intro = build_requery_scope_intro(glossary_block)
             skip_clean_line = REQUERY_SKIP_CLEAN_LINE
         else:
-            scope_intro = BATCH_SCOPE_INTRO
+            scope_intro = build_batch_scope_intro(glossary_block)
             skip_clean_line = BATCH_SKIP_CLEAN_LINE
 
         system = (
@@ -393,12 +408,13 @@ class GptClient:
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(대상언어 번역문)를 검증하라. "
             + scope_intro +
             VERIFICATION_PRIORITY_PARAGRAPH +
-            build_verification_checklist("대상언어", skip_clean_line) +
+            build_verification_checklist("대상언어", skip_clean_line, glossary_block) +
             f"⚠️ [자막 형태 및 글자수 절대 제약 - HARD CONSTRAINT]\n"
             f"- 모든 교정문(corrected_text)은 반드시 다음 제약을 엄격히 지켜서 작성하라: {format_constraint}\n"
             "- 각 줄의 글자수를 실제로 세어보고 제약 글자수를 초과하면 절/쉼표 경계에서 자연스럽게 줄바꿈(\\n)을 넣거나 표현을 다듬어 글자수 한도 내로 들어오게 작성하라.\n\n"
             f"참고 지식베이스: {knowledge}\n"
         )
+        system += glossary_block
 
         system += (
             f"사전에 없어 애매한 비속어 후보(참고용): "
@@ -496,6 +512,21 @@ class GptClient:
         )
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="단어 뜻풀이", model_override=self._light_model)
+
+    async def extract_glossary_terms(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 한국어 원문(korean_text)과 그 {language_label} 번역문"
+            "(target_text) 목록이다. 각 대사에서 사람 이름, 장소, 상호(가게·회사 "
+            "이름), 직함/호칭 중 다른 회차·다른 언어판에서도 표기가 일관되게 "
+            "유지되어야 하는 고유명사를 찾아라. 흔한 일반명사(엄마, 오빠, 사장님 "
+            "같은 관계/역할 호칭 그 자체)는 특정 인물을 가리키는 고유한 이름이 "
+            "아니면 뽑지 마라. 고유명사가 전혀 없는 대사는 결과에서 빼라.\n"
+            + _GLOSSARY_EXTRACTION_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="작품 용어집 추출",
+                                 model_override=self._light_model)
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)

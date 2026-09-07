@@ -2,15 +2,21 @@
 
 import shutil
 from datetime import datetime, timezone
+from typing import Literal
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from app.db import async_session
-from app.models import Title, Episode, TargetVersion, FindingRow, CharacterGenderFact
+from app.models import (
+    Title, Episode, TargetVersion, FindingRow, CharacterGenderFact,
+    GlossaryEntry, GlossarySpelling,
+)
 from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
 from app.core.uploads import MEDIA_ROOT
 from app.language_profiles.loader import list_profiles
+from app.repositories import create_glossary_entry, update_glossary_entry, delete_glossary_entry
 
 router = APIRouter()
 
@@ -32,6 +38,21 @@ class EpisodeIn(BaseModel):
 
 class CharacterGenderUpdateIn(BaseModel):
     gender: str
+
+
+GlossaryCategory = Literal["person", "place", "business", "title"]
+
+
+class GlossaryEntryIn(BaseModel):
+    korean_term: str
+    category: GlossaryCategory
+    aliases: list[str] = []
+
+
+class GlossaryEntryUpdateIn(BaseModel):
+    category: GlossaryCategory | None = None
+    aliases: list[str] | None = None
+    spellings: dict[str, str] | None = None
 
 
 @router.get("/language-profiles")
@@ -124,6 +145,22 @@ async def list_titles():
                 "id": fact.id, "character_name": fact.character_name, "gender": fact.gender,
             })
 
+        glossary_entry_rows = (await session.execute(
+            select(GlossaryEntry).order_by(GlossaryEntry.korean_term)
+        )).scalars().all()
+        glossary_spelling_rows = (await session.execute(
+            select(GlossarySpelling)
+        )).scalars().all()
+        spellings_by_entry: dict = {}
+        for s in glossary_spelling_rows:
+            spellings_by_entry.setdefault(s.entry_id, {})[f"{s.language}_{s.variant}"] = s.canonical
+        glossary_by_title: dict = {}
+        for e in glossary_entry_rows:
+            glossary_by_title.setdefault(e.title_id, []).append({
+                "id": e.id, "korean_term": e.korean_term, "category": e.category,
+                "aliases": e.aliases, "spellings": spellings_by_entry.get(e.id, {}),
+            })
+
         display_names = {
             (p["language"], p["variant"]): p["display_name"] for p in list_profiles()
         }
@@ -147,7 +184,8 @@ async def list_titles():
         return [
             {"id": t.id, "name": t.name, "type": t.type,
              "episodes": episodes_by_title.get(t.id, []),
-             "character_genders": gender_facts_by_title.get(t.id, [])}
+             "character_genders": gender_facts_by_title.get(t.id, []),
+             "glossary": glossary_by_title.get(t.id, [])}
             for t in titles
         ]
 
@@ -166,6 +204,56 @@ async def update_character_gender(fact_id: str, payload: CharacterGenderUpdateIn
         fact.gender = payload.gender
         await session.commit()
         return {"id": fact.id, "character_name": fact.character_name, "gender": fact.gender}
+
+
+@router.post("/titles/{title_id}/glossary")
+async def create_glossary_entry_route(title_id: str, payload: GlossaryEntryIn):
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        try:
+            entry = await create_glossary_entry(
+                session, title_id, payload.korean_term, payload.category, payload.aliases)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(409, "이미 등록된 용어입니다")
+        return {"id": entry.id, "korean_term": entry.korean_term, "category": entry.category,
+                "aliases": entry.aliases, "spellings": {}}
+
+
+@router.patch("/glossary/{entry_id}")
+async def update_glossary_entry_route(entry_id: str, payload: GlossaryEntryUpdateIn):
+    if payload.spellings is not None:
+        for key in payload.spellings:
+            parts = key.split("_", 1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise HTTPException(
+                    400, f'invalid spellings key "{key}" (expected "{{language}}_{{variant}}")')
+    async with async_session() as session:
+        entry = await update_glossary_entry(
+            session, entry_id, category=payload.category, aliases=payload.aliases,
+            spellings=payload.spellings)
+        if entry is None:
+            raise HTTPException(404, "glossary entry not found")
+        await session.commit()
+        spellings_rows = (await session.execute(
+            select(GlossarySpelling).where(GlossarySpelling.entry_id == entry_id)
+        )).scalars().all()
+        return {"id": entry.id, "korean_term": entry.korean_term, "category": entry.category,
+                "aliases": entry.aliases,
+                "spellings": {f"{s.language}_{s.variant}": s.canonical for s in spellings_rows}}
+
+
+@router.delete("/glossary/{entry_id}")
+async def delete_glossary_entry_route(entry_id: str):
+    async with async_session() as session:
+        deleted = await delete_glossary_entry(session, entry_id)
+        if not deleted:
+            raise HTTPException(404, "glossary entry not found")
+        await session.commit()
+        return {"deleted": True}
 
 
 @router.delete("/titles/{title_id}")

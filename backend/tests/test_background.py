@@ -488,3 +488,89 @@ async def test_analyze_and_save_persists_detected_video_offset(tmp_path, monkeyp
         assert tv.video_offset_seconds == pytest.approx(55.0, abs=1.5)
 
 
+@pytest.mark.asyncio
+async def test_run_phase2_and_save_injects_and_persists_glossary(monkeypatch):
+    from app.repositories import get_glossary_prompt_entries, upsert_glossary_extraction
+    from app.providers.mock import MockProvider
+    from app.background import _run_phase2_and_save
+
+    captured = {}
+
+    class SpyProvider(MockProvider):
+        async def correct_primary(self, pairs, profile, pending_sensitive_hits,
+                                   knowledge, format_constraint, extra_instruction="",
+                                   glossary_entries=None):
+            captured["glossary_entries"] = glossary_entries
+            return []
+
+        async def extract_glossary_terms(self, items, profile):
+            return [{"korean_term": "설악산", "category": "place", "canonical": "Mount Seorak"}]
+
+    async with async_session() as session:
+        title = Title(name="T", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, episode_no=1, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                            status="analyzing")
+        session.add(tv)
+        await session.flush()
+        session.add(Segment(target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                             korean_text="설악산에 가자", target_text="Vamos a Seorak"))
+        await session.commit()
+        title_id, tv_id = title.id, tv.id
+
+        await upsert_glossary_extraction(session, title_id, "es", "LATAM",
+                                          [{"korean_term": "설악산", "category": "place",
+                                            "canonical": "Mount Seorak (existing)"}])
+        await session.commit()
+
+    await _run_phase2_and_save(tv_id, SpyProvider())
+
+    assert captured["glossary_entries"] == [
+        {"korean_term": "설악산", "category": "place", "aliases": [],
+         "canonical": "Mount Seorak (existing)"}]
+
+    async with async_session() as session:
+        entries = await get_glossary_prompt_entries(session, title_id, "es", "LATAM")
+    assert len(entries) == 1
+    assert entries[0]["canonical"] == "Mount Seorak (existing)"
+
+
+@pytest.mark.asyncio
+async def test_run_phase2_and_save_survives_malformed_glossary_extraction(monkeypatch):
+    """extract_glossary_terms가 category/canonical이 빠진 항목을 돌려줘도
+    (LLM 출력 오염) 이미 완료된 phase2 분석 결과 저장까지 실패시켜서는 안
+    된다 — 용어집 저장은 별도 트랜잭션/예외 처리로 분리되어 있어야 한다."""
+    from app.providers.mock import MockProvider
+    from app.background import _run_phase2_and_save
+
+    class MalformedGlossaryProvider(MockProvider):
+        async def extract_glossary_terms(self, items, profile):
+            return [{"korean_term": "설악산"}]  # category/canonical 누락
+
+    async with async_session() as session:
+        title = Title(name="T", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, episode_no=1, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                            status="analyzing")
+        session.add(tv)
+        await session.flush()
+        session.add(Segment(target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                             korean_text="설악산에 가자", target_text="Vamos a Seorak"))
+        await session.commit()
+        tv_id = tv.id
+
+    await _run_phase2_and_save(tv_id, MalformedGlossaryProvider())
+
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, tv_id)
+        assert tv.status == "review"
+
+

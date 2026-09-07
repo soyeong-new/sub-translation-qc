@@ -17,7 +17,7 @@ def contains_hangul(text: str) -> bool:
 
 
 CATEGORY_ENUM = ["sensitivity", "mistranslation", "nuance_tone",
-                  "unnatural_style", "locale_convention"]
+                  "unnatural_style", "locale_convention", "glossary"]
 
 VERIFICATION_PRIORITY_PARAGRAPH = (
     "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
@@ -27,30 +27,50 @@ VERIFICATION_PRIORITY_PARAGRAPH = (
     "사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
 )
 
-BATCH_SCOPE_INTRO = (
-    "각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [5단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
-    "'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 5개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
-)
+def build_batch_scope_intro(glossary_block: str = "") -> str:
+    step_count = 6 if glossary_block else 5
+    return (
+        f"각 세그먼트를 먼저 전체적으로 읽고, 명백한 문제가 있다고 확신되는 경우에만 아래 [{step_count}단계 체크리스트]에서 해당하는 카테고리를 찾아 교정 사항(findings)을 작성하라. "
+        f"'혹시 여기도 어느 카테고리 하나쯤 해당되지 않을까' 하는 식으로 {step_count}개 카테고리를 억지로 하나씩 끼워 맞추려 하지 마라 — 명백한 문제가 없는 세그먼트는 그냥 건너뛰어라.\n\n"
+    )
+
 BATCH_SKIP_CLEAN_LINE = "   - 수정할 오류가 없는 깨끗한 문장은 절대 응답 배열에 포함하지 마라.\n"
 
-REQUERY_SCOPE_INTRO = (
-    "이 세그먼트는 검수자가 이미 문제가 있다고 판단해 재검토를 요청한 것이다 — "
-    "너 스스로 '문제가 명백한지' 다시 판단해 건너뛰지 말고, 아래 [5단계 체크리스트]에서 "
-    "가장 가까운 카테고리를 찾아 검수자 지시사항을 반영한 교정 사항(findings)을 반드시 작성하라. "
-    "이 세그먼트를 배열에서 빼는 것은 금지된다.\n"
-    "⚠️ 아래 target_text는 이전 검토에서 이미 한 번 고친 결과물이다 — 네가(또는 다른 "
-    "모델이) 만들었다는 이유로 이미 맞다고 안일하게 판단하지 말고, korean_text와 처음부터 "
-    "다시 대조해 검수자 지시사항 관점에서 재검토하라.\n\n"
-)
+def build_requery_scope_intro(glossary_block: str = "") -> str:
+    step_count = 6 if glossary_block else 5
+    return (
+        "이 세그먼트는 검수자가 이미 문제가 있다고 판단해 재검토를 요청한 것이다 — "
+        "너 스스로 '문제가 명백한지' 다시 판단해 건너뛰지 말고, "
+        f"아래 [{step_count}단계 체크리스트]에서 "
+        "가장 가까운 카테고리를 찾아 검수자 지시사항을 반영한 교정 사항(findings)을 반드시 작성하라. "
+        "이 세그먼트를 배열에서 빼는 것은 금지된다.\n"
+        "⚠️ 아래 target_text는 이전 검토에서 이미 한 번 고친 결과물이다 — 네가(또는 다른 "
+        "모델이) 만들었다는 이유로 이미 맞다고 안일하게 판단하지 말고, korean_text와 처음부터 "
+        "다시 대조해 검수자 지시사항 관점에서 재검토하라.\n\n"
+    )
+
 REQUERY_SKIP_CLEAN_LINE = (
     "   - (재질문 예외) 이 세그먼트는 검수자가 이미 지적했으므로, 위 규칙과 달리 "
     "반드시 응답 배열에 포함하라.\n"
 )
 
 
-def build_verification_checklist(language_label: str, skip_clean_line: str) -> str:
-    """[검수 범위 및 교정 원칙] + [5단계 순차 검증 체크리스트]. claude/gpt가
-    재질문 여부에 따라 다른 skip_clean_line만 끼워 넣고 나머지는 동일하게 쓴다."""
+def build_verification_checklist(language_label: str, skip_clean_line: str,
+                                  glossary_block: str = "") -> str:
+    """[검수 범위 및 교정 원칙] + [N단계 순차 검증 체크리스트]. claude/gpt가
+    재질문 여부에 따라 다른 skip_clean_line만 끼워 넣고 나머지는 동일하게
+    쓴다. glossary_block이 있으면(작품 용어집에 이미 확정된 표기가 하나라도
+    있으면) 고유명사 표기 일관성 항목이 체크리스트에 추가되고 단계 수가
+    6단계로 늘어난다 — glossary_block은 이 함수 밖(호출부)에서 실제
+    [작품 용어집] 내용으로 시스템 프롬프트에 삽입된다."""
+    step_count = 6 if glossary_block else 5
+    glossary_item = (
+        '5. 고유명사 표기 일관성 (category: "glossary"):\n'
+        '   - 기준: 아래 [작품 용어집]에 등록된 한국어 용어가 korean_text에 있는데, target_text의 표기가 용어집의 표기와 다른가?\n'
+        '   - 교정 지침: 용어집 표기로 통일하되, 문장 문법(관사·전치사·성수 일치)에 맞게 자연스럽게 넣어라. 용어집에 없는 고유명사는 건드리지 마라.\n'
+        '   - 주의: 같은 성씨를 쓰는 다른 인물 등 문맥상 다른 대상을 가리키는 게 분명하면 교정하지 마라.\n'
+        '   - [작품 용어집]의 한국어 용어는 대표형이다. 축약형·호격형(예: 김현 → 현, 현아)도 같은 대상으로 보고 같은 스펠링을 쓰되, 문장에서 실제로 부르는 형태(성+이름 전체 / 이름만)는 원문을 따라라.\n'
+    ) if glossary_block else ""
     return (
         "⚠️ [검수 범위 및 교정 원칙]\n"
         "1. 반드시 교정해야 하는 대상:\n"
@@ -66,7 +86,7 @@ def build_verification_checklist(language_label: str, skip_clean_line: str) -> s
         f"     * 직역투로 인해 명백히 어색한 경우 (한국어 구조를 그대로 따라가 {language_label}로서 부자연스러운 경우)\n"
         "     * 한국어 원문의 감정·톤(급함, 거침, 간결함, 여유로움 등)이 명확히 다르게 전달된 경우\n"
         "   - 이미 자연스러운 구어체 표현이면 건드리지 마라. 원문의 감정·톤을 정확히 전달하고 있으면 제안하지 마라.\n\n"
-        "[5단계 순차 검증 체크리스트]\n"
+        f"[{step_count}단계 순차 검증 체크리스트]\n"
         "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
         "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
         "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
@@ -80,9 +100,10 @@ def build_verification_checklist(language_label: str, skip_clean_line: str) -> s
         "4. 문화 맥락 및 로컬라이제이션 (category: \"locale_convention\"):\n"
         f"   - 기준: {language_label}권 문화 관습, 관용 표현, 단위 표기(미터법/화폐 등)에 안 맞는 번역이 있는가?\n"
         "   - 교정 지침: 해당 언어권의 문화적 관습과 로컬라이제이션 관례에 맞게 교정하라.\n"
-        "5. 이미 반영된 성별/격식 형태 보존:\n"
+        + glossary_item +
+        f"{step_count}. 이미 반영된 성별/격식 형태 보존:\n"
         "   - 기준: target_text에 이미 특정 성별 어미(대상언어 문법상 형용사·분사·명사 어미)나 격식(존댓말/반말) 형태가 반영되어 있을 수 있다 — 그 형태가 사전상 어색하거나 비표준으로 보여도, 검수 과정에서 의도적으로 맞춘 것이니 임의로 '자연스럽게' 되돌리지 마라.\n"
-        "   - 교정 지침: 위 1~4번 문제를 고치기 위해 교정문(`corrected_text`)을 작성할 때도, target_text에 이미 있는 성별 어미·격식 형태는 그대로 유지하라 — 오직 그 카테고리의 문제만 고쳐라.\n\n"
+        f"   - 교정 지침: 위 1~{step_count - 1}번 문제를 고치기 위해 교정문(`corrected_text`)을 작성할 때도, target_text에 이미 있는 성별 어미·격식 형태는 그대로 유지하라 — 오직 그 카테고리의 문제만 고쳐라.\n\n"
     )
 
 
@@ -121,7 +142,8 @@ def build_findings_schema_instruction(lead_in: str) -> str:
         '"mistranslation"(의미가 잘못 옮겨졌거나 함축된 의미가 빠진 경우), '
         '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
         '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
-        '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
+        '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현), '
+        '"glossary"(작품 용어집에 등록된 고유명사 표기와 다르게 번역된 경우)), '
         "corrected_text (문자열, 최종 교정된 전체 대상언어 텍스트 — 절대 한국어로 쓰면 "
         "안 된다. 아래 '한국어로 써라' 지침은 description 필드에만 적용되고 "
         "corrected_text에는 적용되지 않는다), "
@@ -140,6 +162,22 @@ def build_naturalness_instruction_line(naturalness_instruction: str) -> str:
     if not naturalness_instruction:
         return ""
     return f"자연스러움 지침: {naturalness_instruction}\n"
+
+
+def build_glossary_block(entries: List[dict]) -> str:
+    """작품 용어집을 검증 프롬프트에 주입할 [작품 용어집] 블록으로 만든다.
+    entries가 비어 있으면(첫 회차·첫 언어라 아직 확정된 표기가 없으면) 빈
+    문자열을 반환해, build_verification_checklist의 체크리스트에서 고유명사
+    표기 일관성 항목 자체가 빠지게 한다."""
+    if not entries:
+        return ""
+    lines = ["[작품 용어집]"]
+    for e in entries:
+        line = f"- {e['korean_term']} ({e['category']}): {e['canonical']}"
+        if e.get("aliases"):
+            line += f" (별칭: {', '.join(e['aliases'])})"
+        lines.append(line)
+    return "\n".join(lines) + "\n\n"
 
 
 def build_improvement_judgment_criteria(language_label: str) -> str:
@@ -180,19 +218,22 @@ class ModelProvider(ABC):
     async def correct_primary(self, pairs: List[dict], profile: dict,
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
-                               extra_instruction: str = "") -> List[dict]:
+                               extra_instruction: str = "",
+                               glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         """Claude 검증 패스: 원본(korean_text/target_text)을 처음부터 독립적으로
         검토해 사전에 없는 애매한 비속어, 번역정확성·문화맥락·뉘앙스어조·
-        자연스러운흐름(직역투)·함축의미·로컬라이제이션 문제를 찾아 고친다.
-        GPT 검증 패스(verify_and_refine)와 동시에 같은 원본을 받아 서로
-        독립적으로 판단한다 — 어느 쪽도 상대가 뭘 했는지 모른다(파이프라인이
-        둘의 일치/불일치를 나중에 병합해 신뢰도 신호로 쓴다). 글로서리 표기
-        통일(새 인물 이름)은 긴 컨텍스트에서 신뢰도가 낮아 여기서 다루지 않는다
-        — glossary.yaml에 직접 등록하는 방식으로 대체한다. 성별/격식은 화자를
-        특정할 근거가 없어 여기서 다루지 않는다 — check_grammar_necessity로
-        걸러 사람이 직접 확인한다. 변경이 필요한 세그먼트만 반환한다. 반환값은
+        자연스러운흐름(직역투)·함축의미·로컬라이제이션·작품 용어집 고유명사 표기
+        (glossary_entries가 있을 때만) 문제를 찾아 고친다. GPT 검증 패스
+        (verify_and_refine)와 동시에 같은 원본을 받아 서로 독립적으로 판단한다
+        — 어느 쪽도 상대가 뭘 했는지 모른다(파이프라인이 둘의 일치/불일치를
+        나중에 병합해 신뢰도 신호로 쓴다). glossary_entries는 title+language
+        단위로 이미 확정된 [작품 용어집] 항목(get_glossary_prompt_entries)이다
+        — 비어 있으면(첫 회차·첫 언어) 체크리스트에서 고유명사 항목 자체가
+        빠진다. 성별/격식은 화자를 특정할 근거가 없어 여기서 다루지 않는다
+        — check_grammar_necessity로 걸러 사람이 직접 확인한다. 변경이 필요한
+        세그먼트만 반환한다. 반환값은
         [{"segment_id": str,
-        "category": "sensitivity"|"mistranslation"|"nuance_tone"|"unnatural_style"|"locale_convention",
+        "category": "sensitivity"|"mistranslation"|"nuance_tone"|"unnatural_style"|"locale_convention"|"glossary",
         "corrected_text": str, "description": str(한국어)}, ...]"""
         ...
 
@@ -200,13 +241,15 @@ class ModelProvider(ABC):
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
-                                 extra_instruction: str = "") -> List[dict]:
+                                 extra_instruction: str = "",
+                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         """GPT 검증 패스: correct_primary와 대칭적으로, 같은 원본을 처음부터
         독립적으로 검토한다. Claude가 뭘 고쳤는지/안 고쳤는지 알려주지 않는다
         — "이전 교정을 검토"하는 프레이밍은 앵커링 편향(모델이 제시된 답을
         독립적으로 재도출하기보다 그냥 승인하는 쪽으로 기우는 현상)을 유발해
-        정확도를 낮춘다. 변경이 필요한 세그먼트만 반환한다. 반환값은
-        correct_primary와 동일한 형태."""
+        정확도를 낮춘다. glossary_entries도 correct_primary와 동일하게 받는다.
+        변경이 필요한 세그먼트만 반환한다. 반환값은 correct_primary와 동일한
+        형태."""
         ...
 
     @abstractmethod
@@ -262,6 +305,18 @@ class ModelProvider(ABC):
         수 있음). 입력은 [{"id": str, "word": str, "context": str(그 단어가
         들어간 문장)}, ...], 반환값은 [{"id": str, "meaning": str(간결한
         한국어 뜻)}, ...]."""
+        ...
+
+    @abstractmethod
+    async def extract_glossary_terms(self, items: List[dict], profile: dict) -> List[dict]:
+        """정렬된 (korean_text, target_text) 쌍에서 다른 회차·다른 언어판에서도
+        표기가 일관되어야 하는 고유명사(인물/장소/상호/직함)를 찾아 이번 회차
+        번역문의 표기를 뽑는다. 저장 단계(repositories.upsert_glossary_extraction)
+        가 title 단위로 upsert하며, 이미 확정된 표기는 절대 덮어쓰지 않는다 —
+        이 호출은 후보만 뽑고 최종 결정은 하지 않는다. 입력은
+        [{"id": str, "korean_text": str, "target_text": str}, ...], 반환값은
+        [{"korean_term": str, "category": "person"|"place"|"business"|"title",
+        "canonical": str}, ...] — 고유명사가 없는 항목은 응답에서 빠진다."""
         ...
 
     @abstractmethod

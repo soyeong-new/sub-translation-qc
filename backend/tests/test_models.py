@@ -64,3 +64,19 @@ async def test_segments_table_has_resolution_columns():
     for col in ("gender_check_needed", "formality_check_needed",
                 "resolved_gender_raw", "resolved_formality_raw"):
         assert col in columns, f"{col} 컬럼이 없음"
+
+
+def test_glossary_entry_and_spelling_have_expected_columns():
+    from app.models import GlossaryEntry, GlossarySpelling
+
+    entry = GlossaryEntry(title_id="t1", korean_term="김현", category="person", aliases=["짱구"])
+    assert entry.title_id == "t1"
+    assert entry.korean_term == "김현"
+    assert entry.category == "person"
+    assert entry.aliases == ["짱구"]
+
+    spelling = GlossarySpelling(entry_id="e1", language="es", variant="LATAM", canonical="Kim Hyun")
+    assert spelling.entry_id == "e1"
+    assert spelling.language == "es"
+    assert spelling.variant == "LATAM"
+    assert spelling.canonical == "Kim Hyun"
