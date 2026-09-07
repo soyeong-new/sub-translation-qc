@@ -249,3 +249,12 @@ export const uploadSrtKo = (file, onProgress) =>
 export const listTitles = () => request("/titles");
 
 export const getStorageUsage = () => request("/storage");
+
+export const postGlossaryEntry = (titleId, data) =>
+  request(`/titles/${titleId}/glossary`, { method: "POST", body: JSON.stringify(data) });
+
+export const patchGlossaryEntry = (entryId, data) =>
+  request(`/glossary/${entryId}`, { method: "PATCH", body: JSON.stringify(data) });
+
+export const deleteGlossaryEntry = (entryId) =>
+  request(`/glossary/${entryId}`, { method: "DELETE" });

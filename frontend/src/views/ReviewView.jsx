@@ -48,6 +48,7 @@ const CATEGORY_LABELS = {
   locale_convention: "로컬라이제이션",
   sensitivity: "민감어",
   formatting: "포맷팅",
+  glossary: "표기 통일",
 };
 
 const CATEGORY_BADGE_CLASS = {

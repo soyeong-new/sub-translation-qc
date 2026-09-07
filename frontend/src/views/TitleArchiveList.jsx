@@ -8,6 +8,7 @@ import {
   listTitles, deleteTitle, deleteTargetVersion, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
   listLanguageProfiles, uploadSrt, uploadSrtKo, uploadVideo, createEpisode,
   createTargetVersion, runAnalysis, updateTitleType, updateCharacterGender,
+  postGlossaryEntry, patchGlossaryEntry,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -26,6 +27,18 @@ function profileKey(p) {
 
 function formatGB(bytes) {
   return (bytes / 1024 ** 3).toFixed(1);
+}
+
+// 용어집 피벗 테이블의 언어 컬럼들 — 이 title 아래 실제로 존재하는
+// (언어, variant) 조합만 보여준다(전역 언어 목록이 아니라).
+function glossaryLanguageColumns(title) {
+  const keys = new Set();
+  title.episodes.forEach((ep) => {
+    ep.target_versions.forEach((tv) => {
+      keys.add(`${tv.target_language}_${tv.variant}`);
+    });
+  });
+  return Array.from(keys);
 }
 
 // 펼쳐놓은 title 카드 id들 — 새로고침해도 유지되도록 App.jsx의 qc_screen과
@@ -302,6 +315,36 @@ function AddEpisodeForm({ titleId, languageProfiles, isMountedRef, onDone, onCan
   );
 }
 
+// 용어집 표기 셀 — 클릭하면 입력창으로 바뀌고, blur 시 값이 바뀌었을 때만
+// PATCH를 보낸다(불필요한 요청 방지).
+function GlossarySpellingCell({ entry, columnKey, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(entry.spellings[columnKey] || "");
+
+  if (!editing) {
+    return (
+      <span className="block cursor-pointer text-foreground" onClick={() => setEditing(true)}>
+        {entry.spellings[columnKey] || <span className="text-muted-foreground">—</span>}
+      </span>
+    );
+  }
+  return (
+    <input
+      className="w-full rounded border border-input bg-background px-1 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={async () => {
+        setEditing(false);
+        if (value !== (entry.spellings[columnKey] || "")) {
+          await patchGlossaryEntry(entry.id, { spellings: { [columnKey]: value } });
+          onSaved();
+        }
+      }}
+    />
+  );
+}
+
 export default function TitleArchiveList({ onOpen }) {
   const [titles, setTitles] = useState(null); // null = 로딩 중
   const [filterType, setFilterType] = useState("all"); // "all" | "movie" | "series"
@@ -436,6 +479,21 @@ export default function TitleArchiveList({ onOpen }) {
     } finally {
       if (isMountedRef.current) setBusyId(null);
     }
+  }
+
+  async function onAddGlossaryEntry(titleId) {
+    const koreanTerm = window.prompt("한국어 용어(예: 인물 이름)를 입력하세요");
+    if (!koreanTerm) return;
+    try {
+      await postGlossaryEntry(titleId, { korean_term: koreanTerm, category: "person", aliases: [] });
+      refresh();
+    } catch (err) {
+      setError(err.message ?? "용어 추가 중 오류가 발생했습니다.");
+    }
+  }
+
+  function onGlossaryChanged() {
+    refresh();
   }
 
   function handleDelete(title) {
@@ -658,6 +716,44 @@ export default function TitleArchiveList({ onOpen }) {
                   </ul>
                 </details>
               )}
+              <details className="mt-3 border-t border-border/40 pt-3">
+                <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">
+                  작품 용어집 ({title.glossary.length}개)
+                </summary>
+                <div className="mt-1.5 overflow-x-auto">
+                  <table className="w-full border-collapse text-xs">
+                    <thead>
+                      <tr>
+                        <th className="border border-border px-2 py-1 text-left text-muted-foreground">한국어 용어</th>
+                        {glossaryLanguageColumns(title).map((col) => (
+                          <th key={col} className="border border-border px-2 py-1 text-left text-muted-foreground">
+                            {col}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {title.glossary.map((entry) => (
+                        <tr key={entry.id}>
+                          <td className="border border-border px-2 py-1 text-foreground">{entry.korean_term}</td>
+                          {glossaryLanguageColumns(title).map((col) => (
+                            <td key={col} className="border border-border px-2 py-1">
+                              <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onGlossaryChanged} />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <button
+                    type="button"
+                    className="mt-1.5 text-xs text-primary hover:underline"
+                    onClick={() => onAddGlossaryEntry(title.id)}
+                  >
+                    + 용어 추가
+                  </button>
+                </div>
+              </details>
               {title.episodes.map((ep) => {
               const usedKeys = new Set(ep.target_versions.map((tv) => `${tv.target_language}_${tv.variant}`));
               const availableProfiles = languageProfiles.filter((p) => !usedKeys.has(profileKey(p)));
