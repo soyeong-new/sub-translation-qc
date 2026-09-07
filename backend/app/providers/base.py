@@ -142,6 +142,22 @@ def build_naturalness_instruction_line(naturalness_instruction: str) -> str:
     return f"자연스러움 지침: {naturalness_instruction}\n"
 
 
+def build_glossary_block(entries: List[dict]) -> str:
+    """작품 용어집을 검증 프롬프트에 주입할 [작품 용어집] 블록으로 만든다.
+    entries가 비어 있으면(첫 회차·첫 언어라 아직 확정된 표기가 없으면) 빈
+    문자열을 반환해, build_verification_checklist의 체크리스트에서 고유명사
+    표기 일관성 항목 자체가 빠지게 한다."""
+    if not entries:
+        return ""
+    lines = ["[작품 용어집]"]
+    for e in entries:
+        line = f"- {e['korean_term']} ({e['category']}): {e['canonical']}"
+        if e.get("aliases"):
+            line += f" (별칭: {', '.join(e['aliases'])})"
+        lines.append(line)
+    return "\n".join(lines) + "\n\n"
+
+
 def build_improvement_judgment_criteria(language_label: str) -> str:
     """back_translate의 is_improvement 판정 문단. "정보 보존"이라는 뭉뚱그린
     기준 대신, 판정 난이도를 감안해 두 개의 닫힌 목록(false 사유 / false
