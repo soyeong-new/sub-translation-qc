@@ -13,17 +13,6 @@ class PretreatmentResult:
     pending_sensitive_hits: List[dict] = field(default_factory=list)
 
 
-def _apply_glossary(text: str, entries: List[dict]) -> Tuple[str, List[str]]:
-    applied = []
-    for entry in entries:
-        canonical = entry["canonical"]
-        for alias in entry.get("aliases", []):
-            if alias != canonical and alias in text:
-                text = text.replace(alias, canonical)
-                applied.append(f"{alias} → {canonical}")
-    return text, applied
-
-
 def _apply_cta_patterns(text: str, patterns: List[str]) -> Tuple[str, List[str]]:
     applied = []
     for pattern in patterns:
@@ -73,12 +62,15 @@ def find_pending_sensitive_hits(pairs: List[AlignedPair], sensitive_terms: List[
     return hits
 
 
-def run_pretreatment(pairs: List[AlignedPair], glossary_entries: List[dict],
-                      cta_patterns: List[str], profanity_entries: List[dict],
-                      sensitive_terms: List[str], target_version_id: str) -> PretreatmentResult:
-    """design §전체 파이프라인 S1: #3(뻔한 비속어)·#4(글로서리)·#6(CTA)을 LLM 없이
-    먼저 처리한다. profanity_entries에 없는 민감어 후보(sensitive_terms 매칭)는
-    애매한 경우로 보고 Claude 1차로 넘긴다(pending_sensitive_hits)."""
+def run_pretreatment(pairs: List[AlignedPair], cta_patterns: List[str],
+                      profanity_entries: List[dict], sensitive_terms: List[str],
+                      target_version_id: str) -> PretreatmentResult:
+    """design §전체 파이프라인 S1: #3(뻔한 비속어)·#6(CTA)을 LLM 없이 먼저
+    처리한다. 고유명사 표기 통일(#4, 구 glossary.yaml 기계적 치환)은 같은
+    성씨를 쓰는 다른 인물을 구분 못 해 폐기됐다 — 이제는 S2 검증 프롬프트에
+    [작품 용어집]을 주입해 LLM이 문맥을 보고 판단한다(category: "glossary").
+    profanity_entries에 없는 민감어 후보(sensitive_terms 매칭)는 애매한
+    경우로 보고 Claude 1차로 넘긴다(pending_sensitive_hits)."""
     findings: List[Finding] = []
 
     for pair in pairs:
@@ -87,16 +79,11 @@ def run_pretreatment(pairs: List[AlignedPair], glossary_entries: List[dict],
         original = pair.target.text
         text = original
 
-        text, glossary_hits = _apply_glossary(text, glossary_entries)
         text, cta_hits = _apply_cta_patterns(text, cta_patterns)
         text, profanity_hits = _apply_profanity_dictionary(text, profanity_entries)
 
         if text != original:
             pair.target.text = text
-            if glossary_hits:
-                findings.append(_make_finding(
-                    target_version_id, pair.id, "glossary",
-                    f"고유명사 표기 통일: {', '.join(glossary_hits)}", original, text))
             if cta_hits:
                 findings.append(_make_finding(
                     target_version_id, pair.id, "cta",
