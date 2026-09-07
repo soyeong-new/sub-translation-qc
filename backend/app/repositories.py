@@ -4,7 +4,10 @@ import unicodedata
 from typing import List
 from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion
+from app.models import (
+    FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion,
+    GlossaryEntry, GlossarySpelling,
+)
 from app.schemas import Finding
 
 
@@ -301,3 +304,121 @@ async def get_episode_gender_facts(session: AsyncSession, episode_id: str,
         elif key not in facts and gender_raw in ("male", "female"):
             facts[key] = gender_raw
     return facts
+
+
+def _language_variant_key(language: str, variant: str) -> str:
+    return f"{language}_{variant}"
+
+
+async def get_glossary_prompt_entries(session: AsyncSession, title_id: str,
+                                       language: str, variant: str) -> list:
+    """검증 프롬프트에 주입할 [작품 용어집] 항목만 돌려준다 — 이 (language,
+    variant)에 대해 이미 GlossarySpelling이 등록된 항목만 포함한다(아직
+    등록 안 된 언어판은 뭐라고 부를지 모르므로 프롬프트에 넣을 수 없다).
+    build_glossary_block이 바로 쓸 수 있는 평평한 dict 리스트로 반환한다."""
+    rows = (await session.execute(
+        select(GlossaryEntry.korean_term, GlossaryEntry.category, GlossaryEntry.aliases,
+               GlossarySpelling.canonical)
+        .join(GlossarySpelling, GlossarySpelling.entry_id == GlossaryEntry.id)
+        .where(
+            GlossaryEntry.title_id == title_id,
+            GlossarySpelling.language == language,
+            GlossarySpelling.variant == variant,
+        )
+    )).all()
+    return [
+        {"korean_term": korean_term, "category": category, "aliases": aliases, "canonical": canonical}
+        for korean_term, category, aliases, canonical in rows
+    ]
+
+
+async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
+                                      language: str, variant: str, extractions: list) -> None:
+    """자동 추출된 후보(extract_glossary_terms의 결과)를 title 단위로
+    upsert한다. (title_id, korean_term)이 이미 있으면 새 GlossaryEntry를 또
+    만들지 않고 재사용한다. GlossarySpelling은 (entry_id, language, variant)에
+    이미 행이 있으면 절대 덮어쓰지 않는다 — "최초 확정 우선"(design §잔존
+    리스크: 첫 등록 표기가 이후 재분석에서도 계속 쓰인다). 사람이 PATCH
+    /glossary/{entry_id}로 직접 고치는 것과 다른 경로다."""
+    if not extractions:
+        return
+    existing_entries = (await session.execute(
+        select(GlossaryEntry).where(GlossaryEntry.title_id == title_id)
+    )).scalars().all()
+    entry_by_term = {e.korean_term: e for e in existing_entries}
+
+    for extraction in extractions:
+        term = extraction["korean_term"]
+        entry = entry_by_term.get(term)
+        if entry is None:
+            entry = GlossaryEntry(title_id=title_id, korean_term=term,
+                                   category=extraction["category"], aliases=[])
+            session.add(entry)
+            await session.flush()
+            entry_by_term[term] = entry
+
+        existing_spelling = (await session.execute(
+            select(GlossarySpelling).where(
+                GlossarySpelling.entry_id == entry.id,
+                GlossarySpelling.language == language,
+                GlossarySpelling.variant == variant,
+            )
+        )).scalar_one_or_none()
+        if existing_spelling is None:
+            session.add(GlossarySpelling(
+                entry_id=entry.id, language=language, variant=variant,
+                canonical=extraction["canonical"],
+            ))
+    await session.flush()
+
+
+async def create_glossary_entry(session: AsyncSession, title_id: str, korean_term: str,
+                                 category: str, aliases: list) -> GlossaryEntry:
+    entry = GlossaryEntry(title_id=title_id, korean_term=korean_term,
+                           category=category, aliases=aliases)
+    session.add(entry)
+    await session.flush()
+    return entry
+
+
+async def update_glossary_entry(session: AsyncSession, entry_id: str,
+                                 category: str = None, aliases: list = None,
+                                 spellings: dict = None):
+    """부분 수정(머지) — category/aliases 또는 spellings 중 온 것만 바꾼다.
+    spellings는 {"{language}_{variant}": canonical} 형태다(TitleArchiveList가
+    target_version을 구분할 때 쓰는 것과 같은 키 형식). 사람이 직접 고치는
+    경로이므로(자동 추출과 달리) 기존 표기를 그대로 덮어쓴다."""
+    entry = await session.get(GlossaryEntry, entry_id)
+    if entry is None:
+        return None
+    if category is not None:
+        entry.category = category
+    if aliases is not None:
+        entry.aliases = aliases
+    if spellings is not None:
+        existing = (await session.execute(
+            select(GlossarySpelling).where(GlossarySpelling.entry_id == entry_id)
+        )).scalars().all()
+        existing_by_key = {
+            _language_variant_key(s.language, s.variant): s for s in existing
+        }
+        for key, canonical in spellings.items():
+            language, variant = key.split("_", 1)
+            spelling = existing_by_key.get(key)
+            if spelling is not None:
+                spelling.canonical = canonical
+            else:
+                session.add(GlossarySpelling(
+                    entry_id=entry_id, language=language, variant=variant, canonical=canonical))
+    await session.flush()
+    return entry
+
+
+async def delete_glossary_entry(session: AsyncSession, entry_id: str) -> bool:
+    entry = await session.get(GlossaryEntry, entry_id)
+    if entry is None:
+        return False
+    await session.execute(delete(GlossarySpelling).where(GlossarySpelling.entry_id == entry_id))
+    await session.delete(entry)
+    await session.flush()
+    return True
