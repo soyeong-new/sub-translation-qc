@@ -2,9 +2,11 @@
 
 import shutil
 from datetime import datetime, timezone
+from typing import Literal
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from app.db import async_session
 from app.models import (
     Title, Episode, TargetVersion, FindingRow, CharacterGenderFact,
@@ -38,14 +40,17 @@ class CharacterGenderUpdateIn(BaseModel):
     gender: str
 
 
+GlossaryCategory = Literal["person", "place", "business", "title"]
+
+
 class GlossaryEntryIn(BaseModel):
     korean_term: str
-    category: str
+    category: GlossaryCategory
     aliases: list[str] = []
 
 
 class GlossaryEntryUpdateIn(BaseModel):
-    category: str | None = None
+    category: GlossaryCategory | None = None
     aliases: list[str] | None = None
     spellings: dict[str, str] | None = None
 
@@ -207,15 +212,25 @@ async def create_glossary_entry_route(title_id: str, payload: GlossaryEntryIn):
         title = await session.get(Title, title_id)
         if title is None:
             raise HTTPException(404, "title not found")
-        entry = await create_glossary_entry(
-            session, title_id, payload.korean_term, payload.category, payload.aliases)
-        await session.commit()
+        try:
+            entry = await create_glossary_entry(
+                session, title_id, payload.korean_term, payload.category, payload.aliases)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(409, "이미 등록된 용어입니다")
         return {"id": entry.id, "korean_term": entry.korean_term, "category": entry.category,
                 "aliases": entry.aliases, "spellings": {}}
 
 
 @router.patch("/glossary/{entry_id}")
 async def update_glossary_entry_route(entry_id: str, payload: GlossaryEntryUpdateIn):
+    if payload.spellings is not None:
+        for key in payload.spellings:
+            parts = key.split("_", 1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise HTTPException(
+                    400, f'invalid spellings key "{key}" (expected "{{language}}_{{variant}}")')
     async with async_session() as session:
         entry = await update_glossary_entry(
             session, entry_id, category=payload.category, aliases=payload.aliases,

@@ -195,15 +195,25 @@ async def _run_phase2_and_save(target_version_id: str, provider: ModelProvider) 
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )
 
+        title_id, target_language, variant = episode.title_id, tv.target_language, tv.variant
+
         async with async_session() as session:
             await save_phase2_result(session, target_version_id, phase2)
-            await upsert_glossary_extraction(
-                session, episode.title_id, tv.target_language, tv.variant,
-                phase2.get("glossary_extractions", []))
             tv = await session.get(TargetVersion, target_version_id)
             tv.status = "review"
             tv.warnings = (tv.warnings or []) + (phase2.get("warnings") or []) or None
             await session.commit()
+
+        try:
+            async with async_session() as session:
+                await upsert_glossary_extraction(
+                    session, title_id, target_language, variant,
+                    phase2.get("glossary_extractions", []))
+                await session.commit()
+        except Exception:
+            logger.exception(
+                "용어집 저장 실패 (target_version_id=%s) — 분석 결과는 정상 저장됨",
+                target_version_id)
     except asyncio.TimeoutError:
         logger.warning("_run_phase2_and_save 타임아웃 (target_version_id=%s)", target_version_id)
         await _mark_failed(target_version_id, "검증 시간 초과 (1시간)")

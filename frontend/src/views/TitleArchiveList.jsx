@@ -8,7 +8,7 @@ import {
   listTitles, deleteTitle, deleteTargetVersion, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
   listLanguageProfiles, uploadSrt, uploadSrtKo, uploadVideo, createEpisode,
   createTargetVersion, runAnalysis, updateTitleType, updateCharacterGender,
-  postGlossaryEntry, patchGlossaryEntry,
+  postGlossaryEntry, patchGlossaryEntry, deleteGlossaryEntry,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 
@@ -317,7 +317,7 @@ function AddEpisodeForm({ titleId, languageProfiles, isMountedRef, onDone, onCan
 
 // 용어집 표기 셀 — 클릭하면 입력창으로 바뀌고, blur 시 값이 바뀌었을 때만
 // PATCH를 보낸다(불필요한 요청 방지).
-function GlossarySpellingCell({ entry, columnKey, onSaved }) {
+function GlossarySpellingCell({ entry, columnKey, onSaved, onError }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(entry.spellings[columnKey] || "");
 
@@ -337,8 +337,12 @@ function GlossarySpellingCell({ entry, columnKey, onSaved }) {
       onBlur={async () => {
         setEditing(false);
         if (value !== (entry.spellings[columnKey] || "")) {
-          await patchGlossaryEntry(entry.id, { spellings: { [columnKey]: value } });
-          onSaved();
+          try {
+            await patchGlossaryEntry(entry.id, { spellings: { [columnKey]: value } });
+            onSaved();
+          } catch (err) {
+            onError(err.message ?? "표기 저장 중 오류가 발생했습니다.");
+          }
         }
       }}
     />
@@ -494,6 +498,16 @@ export default function TitleArchiveList({ onOpen }) {
 
   function onGlossaryChanged() {
     refresh();
+  }
+
+  async function onDeleteGlossaryEntry(entryId) {
+    if (!window.confirm("이 용어를 삭제할까요?")) return;
+    try {
+      await deleteGlossaryEntry(entryId);
+      refresh();
+    } catch (err) {
+      setError(err.message ?? "용어 삭제 중 오류가 발생했습니다.");
+    }
   }
 
   function handleDelete(title) {
@@ -730,6 +744,7 @@ export default function TitleArchiveList({ onOpen }) {
                             {col}
                           </th>
                         ))}
+                        <th className="border border-border px-2 py-1"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -738,9 +753,19 @@ export default function TitleArchiveList({ onOpen }) {
                           <td className="border border-border px-2 py-1 text-foreground">{entry.korean_term}</td>
                           {glossaryLanguageColumns(title).map((col) => (
                             <td key={col} className="border border-border px-2 py-1">
-                              <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onGlossaryChanged} />
+                              <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onGlossaryChanged} onError={setError} />
                             </td>
                           ))}
+                          <td className="border border-border px-2 py-1">
+                            <button
+                              type="button"
+                              className="text-muted-foreground hover:text-destructive"
+                              aria-label={`${entry.korean_term} 삭제`}
+                              onClick={() => onDeleteGlossaryEntry(entry.id)}
+                            >
+                              ×
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>

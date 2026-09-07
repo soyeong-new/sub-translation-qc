@@ -348,11 +348,14 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
     entry_by_term = {e.korean_term: e for e in existing_entries}
 
     for extraction in extractions:
-        term = extraction["korean_term"]
+        term = extraction.get("korean_term")
+        canonical = extraction.get("canonical")
+        if not term or not canonical:
+            continue
         entry = entry_by_term.get(term)
         if entry is None:
             entry = GlossaryEntry(title_id=title_id, korean_term=term,
-                                   category=extraction["category"], aliases=[])
+                                   category=extraction.get("category", "person"), aliases=[])
             session.add(entry)
             await session.flush()
             entry_by_term[term] = entry
@@ -367,7 +370,7 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
         if existing_spelling is None:
             session.add(GlossarySpelling(
                 entry_id=entry.id, language=language, variant=variant,
-                canonical=extraction["canonical"],
+                canonical=canonical,
             ))
     await session.flush()
 
@@ -405,6 +408,10 @@ async def update_glossary_entry(session: AsyncSession, entry_id: str,
         for key, canonical in spellings.items():
             language, variant = key.split("_", 1)
             spelling = existing_by_key.get(key)
+            if not canonical or not canonical.strip():
+                if spelling is not None:
+                    await session.delete(spelling)
+                continue
             if spelling is not None:
                 spelling.canonical = canonical
             else:

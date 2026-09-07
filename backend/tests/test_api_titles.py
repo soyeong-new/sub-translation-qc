@@ -381,6 +381,34 @@ async def test_create_glossary_entry_and_patch_spelling():
 
 
 @pytest.mark.asyncio
+async def test_create_glossary_entry_duplicate_korean_term_returns_409():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+        r1 = await client.post(f"/titles/{title_id}/glossary",
+                                json={"korean_term": "김현", "category": "person", "aliases": []})
+        assert r1.status_code == 200
+
+        r2 = await client.post(f"/titles/{title_id}/glossary",
+                                json={"korean_term": "김현", "category": "person", "aliases": []})
+        assert r2.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_glossary_entry_invalid_category_returns_422():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+
+        r = await client.post(f"/titles/{title_id}/glossary",
+                               json={"korean_term": "김현", "category": "nonsense", "aliases": []})
+        assert r.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_patch_glossary_entry_overwrites_existing_spelling():
     """사람이 직접 고치는 PATCH는 자동 추출과 달리 기존 표기를 덮어써야
     한다 — upsert_glossary_extraction의 '최초 확정 우선'과 대비되는
