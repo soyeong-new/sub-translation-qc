@@ -20,6 +20,7 @@ from app.core.pretreatment import find_pending_sensitive_hits
 from app.core.ingest import delete_original_video
 from app.repositories import (
     save_phase1_result, save_phase2_result, get_character_gender_facts, get_episode_gender_facts,
+    get_glossary_prompt_entries, upsert_glossary_extraction,
 )
 from app.providers.base import get_provider, ModelProvider
 from app.language_profiles.loader import load_profile
@@ -167,10 +168,13 @@ async def _run_phase2_and_save(target_version_id: str, provider: ModelProvider) 
     try:
         async with async_session() as session:
             tv = await session.get(TargetVersion, target_version_id)
+            episode = await session.get(Episode, tv.episode_id)
             segments = (await session.execute(
                 select(Segment).where(Segment.target_version_id == target_version_id)
                 .order_by(Segment.index)
             )).scalars().all()
+            glossary_entries = await get_glossary_prompt_entries(
+                session, episode.title_id, tv.target_language, tv.variant)
 
         profile = load_profile(tv.target_language, tv.variant)
         knowledge = load_knowledge()
@@ -186,13 +190,16 @@ async def _run_phase2_and_save(target_version_id: str, provider: ModelProvider) 
         phase2 = await asyncio.wait_for(
             run_pipeline_phase2(
                 pairs, provider, profile, knowledge, pending_sensitive_hits,
-                target_version_id, resolved_registers,
+                target_version_id, resolved_registers, glossary_entries,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,
         )
 
         async with async_session() as session:
             await save_phase2_result(session, target_version_id, phase2)
+            await upsert_glossary_extraction(
+                session, episode.title_id, tv.target_language, tv.variant,
+                phase2.get("glossary_extractions", []))
             tv = await session.get(TargetVersion, target_version_id)
             tv.status = "review"
             tv.warnings = (tv.warnings or []) + (phase2.get("warnings") or []) or None
