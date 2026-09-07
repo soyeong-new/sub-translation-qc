@@ -72,6 +72,18 @@ _GENDER_SWAP_SCHEMA_INSTRUCTION = (
     "has_error (불리언, 문법 오류가 있으면 true)."
 )
 
+_GLOSSARY_EXTRACTION_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'korean_term (문자열, 한국어 대표형 — 이름/장소/상호/직함 등 고유명사의 '
+    "기본형. 축약형·호격형이 아니라 성+이름 전체 같은 완전한 형태로), "
+    'category (문자열, 반드시 다음 중 하나: "person", "place", "business", "title"), '
+    "canonical (문자열, target_text에서 실제로 쓰인 이 용어의 대상언어 표기). "
+    "이미 다른 회차에서 등록된 표기와 겹치는 인물이면 canonical은 그 대상언어 "
+    "문장에서 실제로 쓰인 표기 그대로 적어라(추측해서 통일하지 마라 — 통일 "
+    "여부 판단은 저장 단계에서 따로 한다)."
+)
+
 _DEFAULT_FORMALITY_INSTRUCTION = (
     "informal이면 tú 활용형(2인칭 단수 반말)으로, formal이면 usted 활용형"
     "(3인칭 단수 활용 기반 존댓말)으로."
@@ -500,6 +512,21 @@ class GptClient:
         )
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="단어 뜻풀이", model_override=self._light_model)
+
+    async def extract_glossary_terms(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 한국어 원문(korean_text)과 그 {language_label} 번역문"
+            "(target_text) 목록이다. 각 대사에서 사람 이름, 장소, 상호(가게·회사 "
+            "이름), 직함/호칭 중 다른 회차·다른 언어판에서도 표기가 일관되게 "
+            "유지되어야 하는 고유명사를 찾아라. 흔한 일반명사(엄마, 오빠, 사장님 "
+            "같은 관계/역할 호칭 그 자체)는 특정 인물을 가리키는 고유한 이름이 "
+            "아니면 뽑지 마라. 고유명사가 전혀 없는 대사는 결과에서 빼라.\n"
+            + _GLOSSARY_EXTRACTION_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="작품 용어집 추출",
+                                 model_override=self._light_model)
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)

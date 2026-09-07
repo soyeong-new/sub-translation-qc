@@ -477,6 +477,28 @@ async def test_verify_and_refine_includes_glossary_block_when_entries_given(monk
 
 
 @pytest.mark.asyncio
+async def test_extract_glossary_terms_returns_call_result(monkeypatch):
+    captured = {}
+
+    async def fake_call(self, system, user, key=None, label=None, model_override=None):
+        captured["system"] = system
+        captured["user"] = user
+        captured["model_override"] = model_override
+        return [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+
+    monkeypatch.setattr(GptClient, "_call", fake_call)
+    client = GptClient(api_key="x", model="gpt-test")
+    profile = {"target_language": "es", "variant": "LATAM"}
+    items = [{"id": "s1", "korean_text": "김현아 밥 먹었어?", "target_text": "Kim Hyun, ¿comiste?"}]
+
+    result = await client.extract_glossary_terms(items, profile)
+
+    assert result == [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+    assert captured["model_override"] == client._light_model
+    assert "고유명사" in captured["system"]
+
+
+@pytest.mark.asyncio
 async def test_back_translate_system_prompt_contains_shared_judgment_criteria():
     """back_translate의 is_improvement 판정 문단도 claude/gpt가 교차 검증에
     쓰는 공유 기준이므로, 공유 빌더 결과를 그대로 포함해야 한다."""
