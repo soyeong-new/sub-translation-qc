@@ -1,6 +1,6 @@
 """Claude/GPT 클라이언트를 ModelProvider 인터페이스로 묶는 실제 프로바이더."""
 
-from typing import List
+from typing import List, Optional
 from app.providers.base import ModelProvider
 from app.providers.claude_client import ClaudeClient
 from app.providers.gpt_client import GptClient
@@ -25,19 +25,21 @@ class LiveModelProvider(ModelProvider):
     async def correct_primary(self, pairs: List[dict], profile: dict,
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
-                               extra_instruction: str = "") -> List[dict]:
+                               extra_instruction: str = "",
+                               glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         return await self._claude.correct_primary(
             pairs, profile, pending_sensitive_hits,
-            knowledge, format_constraint, extra_instruction,
+            knowledge, format_constraint, extra_instruction, glossary_entries,
         )
 
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
-                                 extra_instruction: str = "") -> List[dict]:
+                                 extra_instruction: str = "",
+                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         return await self._gpt.verify_and_refine(
             pairs, profile, pending_sensitive_hits,
-            knowledge, format_constraint, extra_instruction,
+            knowledge, format_constraint, extra_instruction, glossary_entries,
         )
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
@@ -61,6 +63,9 @@ class LiveModelProvider(ModelProvider):
 
     async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.gloss_words(items, profile)
+
+    async def extract_glossary_terms(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.extract_glossary_terms(items, profile)
 
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.apply_formality(items, profile)
