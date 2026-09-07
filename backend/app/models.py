@@ -154,3 +154,29 @@ class CharacterGenderFact(Base):
     title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
     character_name: Mapped[str] = mapped_column(String)
     gender: Mapped[str] = mapped_column(String)  # "male" | "female"
+
+
+class GlossaryEntry(Base):
+    __tablename__ = "glossary_entries"
+    __table_args__ = (UniqueConstraint("title_id", "korean_term"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
+    korean_term: Mapped[str] = mapped_column(String)
+    category: Mapped[str] = mapped_column(String)  # "person" | "place" | "business" | "title"
+    # 규칙으로 자동 유도되지 않는 별명만 담는다(예: 김현의 별명 "짱구") —
+    # 축약형·호격형(예: 현, 현아)은 프롬프트 지침으로 이미 같은 대상으로
+    # 처리되므로 여기 저장하지 않는다.
+    aliases: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class GlossarySpelling(Base):
+    __tablename__ = "glossary_spellings"
+    __table_args__ = (UniqueConstraint("entry_id", "language", "variant"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    entry_id: Mapped[str] = mapped_column(ForeignKey("glossary_entries.id"))
+    language: Mapped[str] = mapped_column(String)
+    variant: Mapped[str] = mapped_column(String)
+    # 그 언어판의 확정 표기. 행이 없으면 그 언어판엔 아직 등록되지 않았다는
+    # 뜻 — 자동 추출은 이 행이 이미 있으면 절대 덮어쓰지 않는다("최초 확정
+    # 우선", 사람의 PATCH만 덮어쓸 수 있다).
+    canonical: Mapped[str] = mapped_column(String)
