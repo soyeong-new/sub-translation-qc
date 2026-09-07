@@ -2,6 +2,8 @@ from app.providers.base import (
     build_glossary_block,
     build_batch_scope_intro,
     build_requery_scope_intro,
+    build_verification_checklist,
+    BATCH_SKIP_CLEAN_LINE,
 )
 
 
@@ -44,3 +46,20 @@ def test_build_requery_scope_intro_default_is_five_step():
 def test_build_requery_scope_intro_with_glossary_is_six_step():
     intro = build_requery_scope_intro("[작품 용어집]\n- 김현 (person): Kim Hyun\n\n")
     assert "[6단계 체크리스트]" in intro
+
+
+def test_build_verification_checklist_default_has_five_steps_no_glossary_item():
+    checklist = build_verification_checklist("스페인어", BATCH_SKIP_CLEAN_LINE)
+    assert "[5단계 순차 검증 체크리스트]" in checklist
+    assert 'category: "glossary"' not in checklist
+    assert "위 1~4번 문제를 고치기 위해" in checklist
+
+
+def test_build_verification_checklist_with_glossary_block_has_six_steps():
+    glossary_block = "[작품 용어집]\n- 김현 (person): Kim Hyun\n\n"
+    checklist = build_verification_checklist("스페인어", BATCH_SKIP_CLEAN_LINE, glossary_block)
+    assert "[6단계 순차 검증 체크리스트]" in checklist
+    assert '5. 고유명사 표기 일관성 (category: "glossary"):' in checklist
+    assert "아래 [작품 용어집]에 등록된 한국어 용어" in checklist
+    assert "6. 이미 반영된 성별/격식 형태 보존:" in checklist
+    assert "위 1~5번 문제를 고치기 위해" in checklist

@@ -55,9 +55,22 @@ REQUERY_SKIP_CLEAN_LINE = (
 )
 
 
-def build_verification_checklist(language_label: str, skip_clean_line: str) -> str:
-    """[검수 범위 및 교정 원칙] + [5단계 순차 검증 체크리스트]. claude/gpt가
-    재질문 여부에 따라 다른 skip_clean_line만 끼워 넣고 나머지는 동일하게 쓴다."""
+def build_verification_checklist(language_label: str, skip_clean_line: str,
+                                  glossary_block: str = "") -> str:
+    """[검수 범위 및 교정 원칙] + [N단계 순차 검증 체크리스트]. claude/gpt가
+    재질문 여부에 따라 다른 skip_clean_line만 끼워 넣고 나머지는 동일하게
+    쓴다. glossary_block이 있으면(작품 용어집에 이미 확정된 표기가 하나라도
+    있으면) 고유명사 표기 일관성 항목이 체크리스트에 추가되고 단계 수가
+    6단계로 늘어난다 — glossary_block은 이 함수 밖(호출부)에서 실제
+    [작품 용어집] 내용으로 시스템 프롬프트에 삽입된다."""
+    step_count = 6 if glossary_block else 5
+    glossary_item = (
+        '5. 고유명사 표기 일관성 (category: "glossary"):\n'
+        '   - 기준: 아래 [작품 용어집]에 등록된 한국어 용어가 korean_text에 있는데, target_text의 표기가 용어집의 표기와 다른가?\n'
+        '   - 교정 지침: 용어집 표기로 통일하되, 문장 문법(관사·전치사·성수 일치)에 맞게 자연스럽게 넣어라. 용어집에 없는 고유명사는 건드리지 마라.\n'
+        '   - 주의: 같은 성씨를 쓰는 다른 인물 등 문맥상 다른 대상을 가리키는 게 분명하면 교정하지 마라.\n'
+        '   - [작품 용어집]의 한국어 용어는 대표형이다. 축약형·호격형(예: 김현 → 현, 현아)도 같은 대상으로 보고 같은 스펠링을 쓰되, 문장에서 실제로 부르는 형태(성+이름 전체 / 이름만)는 원문을 따라라.\n'
+    ) if glossary_block else ""
     return (
         "⚠️ [검수 범위 및 교정 원칙]\n"
         "1. 반드시 교정해야 하는 대상:\n"
@@ -73,7 +86,7 @@ def build_verification_checklist(language_label: str, skip_clean_line: str) -> s
         f"     * 직역투로 인해 명백히 어색한 경우 (한국어 구조를 그대로 따라가 {language_label}로서 부자연스러운 경우)\n"
         "     * 한국어 원문의 감정·톤(급함, 거침, 간결함, 여유로움 등)이 명확히 다르게 전달된 경우\n"
         "   - 이미 자연스러운 구어체 표현이면 건드리지 마라. 원문의 감정·톤을 정확히 전달하고 있으면 제안하지 마라.\n\n"
-        "[5단계 순차 검증 체크리스트]\n"
+        f"[{step_count}단계 순차 검증 체크리스트]\n"
         "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
         "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
         "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
@@ -87,9 +100,10 @@ def build_verification_checklist(language_label: str, skip_clean_line: str) -> s
         "4. 문화 맥락 및 로컬라이제이션 (category: \"locale_convention\"):\n"
         f"   - 기준: {language_label}권 문화 관습, 관용 표현, 단위 표기(미터법/화폐 등)에 안 맞는 번역이 있는가?\n"
         "   - 교정 지침: 해당 언어권의 문화적 관습과 로컬라이제이션 관례에 맞게 교정하라.\n"
-        "5. 이미 반영된 성별/격식 형태 보존:\n"
+        + glossary_item +
+        f"{step_count}. 이미 반영된 성별/격식 형태 보존:\n"
         "   - 기준: target_text에 이미 특정 성별 어미(대상언어 문법상 형용사·분사·명사 어미)나 격식(존댓말/반말) 형태가 반영되어 있을 수 있다 — 그 형태가 사전상 어색하거나 비표준으로 보여도, 검수 과정에서 의도적으로 맞춘 것이니 임의로 '자연스럽게' 되돌리지 마라.\n"
-        "   - 교정 지침: 위 1~4번 문제를 고치기 위해 교정문(`corrected_text`)을 작성할 때도, target_text에 이미 있는 성별 어미·격식 형태는 그대로 유지하라 — 오직 그 카테고리의 문제만 고쳐라.\n\n"
+        f"   - 교정 지침: 위 1~{step_count - 1}번 문제를 고치기 위해 교정문(`corrected_text`)을 작성할 때도, target_text에 이미 있는 성별 어미·격식 형태는 그대로 유지하라 — 오직 그 카테고리의 문제만 고쳐라.\n\n"
     )
 
 
