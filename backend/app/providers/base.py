@@ -218,19 +218,22 @@ class ModelProvider(ABC):
     async def correct_primary(self, pairs: List[dict], profile: dict,
                                pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
-                               extra_instruction: str = "") -> List[dict]:
+                               extra_instruction: str = "",
+                               glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         """Claude 검증 패스: 원본(korean_text/target_text)을 처음부터 독립적으로
         검토해 사전에 없는 애매한 비속어, 번역정확성·문화맥락·뉘앙스어조·
-        자연스러운흐름(직역투)·함축의미·로컬라이제이션 문제를 찾아 고친다.
-        GPT 검증 패스(verify_and_refine)와 동시에 같은 원본을 받아 서로
-        독립적으로 판단한다 — 어느 쪽도 상대가 뭘 했는지 모른다(파이프라인이
-        둘의 일치/불일치를 나중에 병합해 신뢰도 신호로 쓴다). 글로서리 표기
-        통일(새 인물 이름)은 긴 컨텍스트에서 신뢰도가 낮아 여기서 다루지 않는다
-        — glossary.yaml에 직접 등록하는 방식으로 대체한다. 성별/격식은 화자를
-        특정할 근거가 없어 여기서 다루지 않는다 — check_grammar_necessity로
-        걸러 사람이 직접 확인한다. 변경이 필요한 세그먼트만 반환한다. 반환값은
+        자연스러운흐름(직역투)·함축의미·로컬라이제이션·작품 용어집 고유명사 표기
+        (glossary_entries가 있을 때만) 문제를 찾아 고친다. GPT 검증 패스
+        (verify_and_refine)와 동시에 같은 원본을 받아 서로 독립적으로 판단한다
+        — 어느 쪽도 상대가 뭘 했는지 모른다(파이프라인이 둘의 일치/불일치를
+        나중에 병합해 신뢰도 신호로 쓴다). glossary_entries는 title+language
+        단위로 이미 확정된 [작품 용어집] 항목(get_glossary_prompt_entries)이다
+        — 비어 있으면(첫 회차·첫 언어) 체크리스트에서 고유명사 항목 자체가
+        빠진다. 성별/격식은 화자를 특정할 근거가 없어 여기서 다루지 않는다
+        — check_grammar_necessity로 걸러 사람이 직접 확인한다. 변경이 필요한
+        세그먼트만 반환한다. 반환값은
         [{"segment_id": str,
-        "category": "sensitivity"|"mistranslation"|"nuance_tone"|"unnatural_style"|"locale_convention",
+        "category": "sensitivity"|"mistranslation"|"nuance_tone"|"unnatural_style"|"locale_convention"|"glossary",
         "corrected_text": str, "description": str(한국어)}, ...]"""
         ...
 
@@ -238,13 +241,15 @@ class ModelProvider(ABC):
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
                                  pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
-                                 extra_instruction: str = "") -> List[dict]:
+                                 extra_instruction: str = "",
+                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         """GPT 검증 패스: correct_primary와 대칭적으로, 같은 원본을 처음부터
         독립적으로 검토한다. Claude가 뭘 고쳤는지/안 고쳤는지 알려주지 않는다
         — "이전 교정을 검토"하는 프레이밍은 앵커링 편향(모델이 제시된 답을
         독립적으로 재도출하기보다 그냥 승인하는 쪽으로 기우는 현상)을 유발해
-        정확도를 낮춘다. 변경이 필요한 세그먼트만 반환한다. 반환값은
-        correct_primary와 동일한 형태."""
+        정확도를 낮춘다. glossary_entries도 correct_primary와 동일하게 받는다.
+        변경이 필요한 세그먼트만 반환한다. 반환값은 correct_primary와 동일한
+        형태."""
         ...
 
     @abstractmethod
@@ -300,6 +305,18 @@ class ModelProvider(ABC):
         수 있음). 입력은 [{"id": str, "word": str, "context": str(그 단어가
         들어간 문장)}, ...], 반환값은 [{"id": str, "meaning": str(간결한
         한국어 뜻)}, ...]."""
+        ...
+
+    @abstractmethod
+    async def extract_glossary_terms(self, items: List[dict], profile: dict) -> List[dict]:
+        """정렬된 (korean_text, target_text) 쌍에서 다른 회차·다른 언어판에서도
+        표기가 일관되어야 하는 고유명사(인물/장소/상호/직함)를 찾아 이번 회차
+        번역문의 표기를 뽑는다. 저장 단계(repositories.upsert_glossary_extraction)
+        가 title 단위로 upsert하며, 이미 확정된 표기는 절대 덮어쓰지 않는다 —
+        이 호출은 후보만 뽑고 최종 결정은 하지 않는다. 입력은
+        [{"id": str, "korean_text": str, "target_text": str}, ...], 반환값은
+        [{"korean_term": str, "category": "person"|"place"|"business"|"title",
+        "canonical": str}, ...] — 고유명사가 없는 항목은 응답에서 빠진다."""
         ...
 
     @abstractmethod
