@@ -17,7 +17,7 @@ def contains_hangul(text: str) -> bool:
 
 
 CATEGORY_ENUM = ["sensitivity", "mistranslation", "nuance_tone",
-                  "unnatural_style", "locale_convention"]
+                  "unnatural_style", "locale_convention", "glossary"]
 
 VERIFICATION_PRIORITY_PARAGRAPH = (
     "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
@@ -142,7 +142,8 @@ def build_findings_schema_instruction(lead_in: str) -> str:
         '"mistranslation"(의미가 잘못 옮겨졌거나 함축된 의미가 빠진 경우), '
         '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
         '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
-        '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현)), '
+        '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현), '
+        '"glossary"(작품 용어집에 등록된 고유명사 표기와 다르게 번역된 경우)), '
         "corrected_text (문자열, 최종 교정된 전체 대상언어 텍스트 — 절대 한국어로 쓰면 "
         "안 된다. 아래 '한국어로 써라' 지침은 description 필드에만 적용되고 "
         "corrected_text에는 적용되지 않는다), "

@@ -3,7 +3,9 @@ from app.providers.base import (
     build_batch_scope_intro,
     build_requery_scope_intro,
     build_verification_checklist,
+    build_findings_schema_instruction,
     BATCH_SKIP_CLEAN_LINE,
+    CATEGORY_ENUM,
 )
 
 
@@ -63,3 +65,12 @@ def test_build_verification_checklist_with_glossary_block_has_six_steps():
     assert "아래 [작품 용어집]에 등록된 한국어 용어" in checklist
     assert "6. 이미 반영된 성별/격식 형태 보존:" in checklist
     assert "위 1~5번 문제를 고치기 위해" in checklist
+
+
+def test_category_enum_includes_glossary():
+    assert "glossary" in CATEGORY_ENUM
+
+
+def test_build_findings_schema_instruction_includes_glossary_category():
+    instruction = build_findings_schema_instruction("lead in text")
+    assert '"glossary"(작품 용어집에 등록된 고유명사 표기와 다르게 번역된 경우)' in instruction
