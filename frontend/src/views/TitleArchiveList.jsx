@@ -523,7 +523,7 @@ function NewTitleForm({ languageProfiles, isMountedRef, onCreated, onCancel }) {
   return (
     <div className="mx-auto max-w-xl">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-card-foreground">New Title</h1>
+        <h1 className="text-2xl font-semibold text-card-foreground">새 작품 등록</h1>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className={rerunBtnClass}>
           취소
         </button>
