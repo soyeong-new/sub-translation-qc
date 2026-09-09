@@ -7,6 +7,7 @@
 // 이동한다 — React key로 강제 리마운트하지 않는다.
 
 import { useEffect, useRef, useState } from "react";
+import QQLogo from "../components/QQLogo.jsx";
 
 // 자막 타이밍이 실제 발화와 살짝 안 맞거나 씬이 잘리는 경우가 있어,
 // 재생 구간 앞뒤로 여유를 준다. 뒤쪽이 실제로 더 많이 어긋나는 경우가
@@ -87,7 +88,7 @@ export function GenderQuestion({
         </p>
       )}
       {referent && (
-        <p className="mb-3 rounded-md bg-accent/10 px-3 py-2 text-sm text-foreground">
+        <p className="mb-3 rounded-md bg-muted/60 px-3 py-2 text-sm text-foreground">
           이 성별은 <strong>{referent}</strong>의 성별입니다.
         </p>
       )}
@@ -135,6 +136,7 @@ export function GenderQuestion({
 // 덮어써서 저장된다).
 export default function FlaggedSegmentStepper({
   segments, videoProxyUrl, videoOffsetSeconds = 0,
+  titleName, episodeNo, versionDisplayName,
   onResolveGender, onResolveGenderGroup, onResolveFormality, onComplete, completePending, onExit,
 }) {
   const [currentIndex, setCurrentIndex] = useState(() => {
@@ -285,8 +287,7 @@ export default function FlaggedSegmentStepper({
 
   if (!currentSegment) {
     return (
-      <div role="dialog" aria-modal="true"
-        className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 p-6">
+      <div className="flex min-h-screen items-center justify-center bg-background p-6">
         <div className="max-w-sm rounded-lg border border-border bg-card p-6 text-center shadow-lg">
           <p className="text-sm text-foreground">확인할 줄이 없습니다.</p>
           <div className="mt-4 flex justify-center gap-2">
@@ -307,144 +308,203 @@ export default function FlaggedSegmentStepper({
   const genderGroups = currentSegment.resolved_gender_groups_raw || [];
 
   return (
-    <div role="dialog" aria-modal="true" aria-labelledby="stepper-heading"
-      className="fixed inset-0 z-50 flex flex-col bg-background">
-      <header className="flex items-center justify-between border-b border-border px-6 py-4">
-        <div>
-          {onExit && (
-            <button onClick={onExit} className={ghostBtnClass}>목록으로</button>
-          )}
-        </div>
-        <div className="flex gap-2">
-          {allResolved && (
-            <button disabled={completePending} onClick={onComplete} className={primaryBtnClass}>
-              AI 검증 시작하기
-            </button>
-          )}
+    <div className="min-h-screen bg-background">
+      <h1 className="sr-only">성별·격식 확인</h1>
+      {/* ReviewView 헤더와 같은 구조(로고+뒤로가기+breadcrumb)를 그대로
+          재사용한다 — 검수자 이름 입력 자리에 "지금 몇 번째 줄을 보고
+          있는지"(스테퍼 위치) 진행 바가 대신 들어간다. AI 검증 버튼은
+          미확인 줄이 남아 있는 동안 사라지지 않고 비활성 상태로 자리를
+          지켜, 헤더 폭이 들썩이지 않게 한다. */}
+      <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-card/90 px-6 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl items-center gap-4">
+          <div className="flex shrink-0 items-center gap-3">
+            <QQLogo className="h-5 w-auto" />
+            {onExit && (
+              <button
+                onClick={onExit}
+                className="flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                  <path fillRule="evenodd" d="M17 10a.75.75 0 0 1-.75.75H5.612l4.158 3.96a.75.75 0 1 1-1.04 1.08l-5.5-5.25a.75.75 0 0 1 0-1.08l5.5-5.25a.75.75 0 1 1 1.04 1.08L5.612 9.25H16.25A.75.75 0 0 1 17 10Z" clipRule="evenodd" />
+                </svg>
+                목록으로
+              </button>
+            )}
+          </div>
+
+          <div className="h-6 w-px shrink-0 bg-border" />
+
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
+            {titleName && <span className="truncate font-medium text-foreground">{titleName}</span>}
+            {episodeNo != null && (
+              <>
+                <span className="shrink-0 text-muted-foreground">·</span>
+                <span className="shrink-0 text-muted-foreground">{episodeNo}화</span>
+              </>
+            )}
+            {versionDisplayName && (
+              <>
+                <span className="shrink-0 text-muted-foreground">·</span>
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                  {versionDisplayName}
+                </span>
+              </>
+            )}
+          </div>
+
+          <div className="h-6 w-px shrink-0 bg-border" />
+
+          <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            <span className="whitespace-nowrap text-xs text-muted-foreground">확인 중인 줄</span>
+            <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-muted-foreground/50"
+                style={{ width: `${((currentIndex + 1) / segments.length) * 100}%` }}
+              />
+            </div>
+            <span className="whitespace-nowrap text-xs text-muted-foreground">
+              {currentIndex + 1} / {segments.length}
+            </span>
+          </div>
+
+          <div className="h-6 w-px shrink-0 bg-border" />
+
+          <button
+            disabled={!allResolved || completePending}
+            onClick={onComplete}
+            className={`${primaryBtnClass} shrink-0`}
+          >
+            AI 검증 시작하기
+          </button>
         </div>
       </header>
 
-      <div className="flex flex-1 flex-col gap-6 overflow-auto p-6 lg:flex-row">
-        <div className="lg:w-2/5">
-          <h2 id="stepper-heading" className="mb-2 text-lg font-semibold text-foreground">
-            성별·격식 확인
-          </h2>
-          {videoProxyUrl ? (
-            <video
-              ref={videoRef}
-              src={videoProxyUrl}
-              playsInline
-              controls
-              className="w-full rounded-lg border border-border bg-black"
-            />
-          ) : (
-            <div className="flex aspect-video items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">
-              영상 프록시를 사용할 수 없습니다.
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(300px,38%)_1fr]">
+          <div className="space-y-3 lg:sticky lg:top-20 lg:self-start">
+            <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
+              {videoProxyUrl ? (
+                <video
+                  ref={videoRef}
+                  src={videoProxyUrl}
+                  playsInline
+                  controls
+                  className="w-full rounded-lg border border-border bg-black"
+                />
+              ) : (
+                <div className="flex aspect-video items-center justify-center rounded-lg border border-dashed border-border text-sm text-muted-foreground">
+                  영상 프록시를 사용할 수 없습니다.
+                </div>
+              )}
             </div>
-          )}
-        </div>
-
-        <div className="space-y-6 lg:w-3/5">
-          <p className="text-sm text-muted-foreground">
-            {currentIndex + 1} / {segments.length}
-          </p>
-
-          <div
-            onClick={replayCurrentSegment}
-            className="cursor-pointer rounded-md border border-border bg-card p-4"
-          >
-            <h3 className="mb-3 text-sm font-semibold text-foreground">한국어 원문</h3>
-            <p className="whitespace-pre-wrap text-sm text-foreground">{currentSegment.korean_text}</p>
           </div>
 
-          {currentSegment.gender_check_needed && (
-            <section aria-labelledby="stepper-gender-heading" className="rounded-lg border border-border bg-card p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <h3 id="stepper-gender-heading" className="text-sm font-semibold text-foreground">성별</h3>
-                {genderResolved && <span className="text-xs text-success">확인됨</span>}
-              </div>
-              <div className="space-y-4">
-                {genderGroups.length > 1 && (
-                  <p className="text-xs text-muted-foreground">
-                    이 줄엔 성별이 다른 인물이 {genderGroups.length}명 있습니다 — 각각 따로 확인해주세요.
-                  </p>
-                )}
-                {genderGroups.length > 0 ? (
-                  genderGroups.map((group, index) => (
-                    <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border/60 p-3" : ""}>
+          <div className="space-y-3">
+            {/* 원문/성별/격식을 카드 3장으로 나누지 않고 하나의 카드에
+                통합한다 — 이 화면 자체가 "한 줄에 대한 질문들"만 보여주는
+                단일 초점 화면이라, ReviewView의 FindingCard 안에
+                InlineGenderQuestion이 내부 섹션으로 들어가 있는 것과 같은
+                방식이 더 맞다. 성별/격식 섹션은 색이 아니라 회색 톤
+                진하기로 구분한다(미확인 쪽이 더 짙다). */}
+            <div
+              onClick={replayCurrentSegment}
+              className="cursor-pointer rounded-lg border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/40"
+            >
+              <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">한국어 원문</p>
+              <p className="whitespace-pre-wrap text-sm text-foreground">{currentSegment.korean_text}</p>
+
+              {currentSegment.gender_check_needed && (
+                <section aria-labelledby="stepper-gender-heading" className="mt-4 rounded-md border border-border bg-muted p-3">
+                  <div className="mb-3 flex items-center gap-2">
+                    <h3 id="stepper-gender-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">성별</h3>
+                    {genderResolved && <span className="text-xs text-muted-foreground">확인됨</span>}
+                  </div>
+                  <div className="space-y-4">
+                    {genderGroups.length > 1 && (
+                      <p className="text-xs text-muted-foreground">
+                        이 줄엔 성별이 다른 인물이 {genderGroups.length}명 있습니다 — 각각 따로 확인해주세요.
+                      </p>
+                    )}
+                    {genderGroups.length > 0 ? (
+                      genderGroups.map((group, index) => (
+                        <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border/60 bg-card p-3" : ""}>
+                          <GenderQuestion
+                            heading={
+                              genderGroups.length > 1
+                                ? (group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`)
+                                : null
+                            }
+                            words={group.words}
+                            wordMeanings={group.word_meanings}
+                            referent={genderGroups.length > 1 ? null : group.referent}
+                            resolvedGender={group.gender}
+                            suggestedGender={group.suggested_gender}
+                            pending={pending}
+                            onSelect={(gender) => handleResolveGenderGroup(index, gender)}
+                          />
+                        </div>
+                      ))
+                    ) : (
                       <GenderQuestion
-                        heading={
-                          genderGroups.length > 1
-                            ? (group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`)
-                            : null
-                        }
-                        words={group.words}
-                        wordMeanings={group.word_meanings}
-                        referent={genderGroups.length > 1 ? null : group.referent}
-                        resolvedGender={group.gender}
-                        suggestedGender={group.suggested_gender}
+                        resolvedGender={currentSegment.resolved_gender_raw}
                         pending={pending}
-                        onSelect={(gender) => handleResolveGenderGroup(index, gender)}
+                        onSelect={(gender) => handleResolveGender(gender)}
                       />
-                    </div>
-                  ))
-                ) : (
-                  <GenderQuestion
-                    resolvedGender={currentSegment.resolved_gender_raw}
-                    pending={pending}
-                    onSelect={(gender) => handleResolveGender(gender)}
-                  />
-                )}
-              </div>
-            </section>
-          )}
+                    )}
+                  </div>
+                </section>
+              )}
 
-          {currentSegment.formality_check_needed && (
-            <section aria-labelledby="stepper-formality-heading" className="rounded-lg border border-border bg-card p-4">
-              <div className="mb-3 flex items-center gap-2">
-                <h3 id="stepper-formality-heading" className="text-sm font-semibold text-foreground">격식</h3>
-                {formalityResolved && <span className="text-xs text-success">확인됨</span>}
-              </div>
-              <div className="flex gap-2">
-                <button
-                  disabled={pending}
-                  onClick={() => handleResolveFormality("formal")}
-                  className={currentSegment.resolved_formality_raw === "formal" ? selectedBtnClass : binaryBtnClass}
-                >
-                  존댓말
-                </button>
-                <button
-                  disabled={pending}
-                  onClick={() => handleResolveFormality("informal")}
-                  className={currentSegment.resolved_formality_raw === "informal" ? selectedBtnClass : binaryBtnClass}
-                >
-                  반말
-                </button>
-              </div>
-            </section>
-          )}
+              {currentSegment.formality_check_needed && (
+                <section aria-labelledby="stepper-formality-heading" className="mt-3 rounded-md border border-border bg-muted/40 p-3">
+                  <div className="mb-3 flex items-center gap-2">
+                    <h3 id="stepper-formality-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">격식</h3>
+                    {formalityResolved && <span className="text-xs text-muted-foreground">확인됨</span>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      disabled={pending}
+                      onClick={() => handleResolveFormality("formal")}
+                      className={currentSegment.resolved_formality_raw === "formal" ? selectedBtnClass : binaryBtnClass}
+                    >
+                      존댓말
+                    </button>
+                    <button
+                      disabled={pending}
+                      onClick={() => handleResolveFormality("informal")}
+                      className={currentSegment.resolved_formality_raw === "informal" ? selectedBtnClass : binaryBtnClass}
+                    >
+                      반말
+                    </button>
+                  </div>
+                </section>
+              )}
+            </div>
 
-          {error && (
-            <p role="status" aria-live="polite" className="text-sm text-destructive">{error}</p>
-          )}
+            {error && (
+              <p role="status" aria-live="polite" className="text-sm text-destructive">{error}</p>
+            )}
+          </div>
         </div>
-      </div>
+      </main>
 
-      <footer className="flex items-center justify-between border-t border-border px-6 py-4">
-        <button
-          disabled={pending || currentIndex === 0}
-          onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
-          className={navBtnClass}
-        >
-          &larr; 이전 줄
-        </button>
-        <button
-          disabled={pending || currentIndex === segments.length - 1}
-          onClick={() => setCurrentIndex((i) => Math.min(segments.length - 1, i + 1))}
-          className={navBtnClass}
-        >
-          다음 줄 &rarr;
-        </button>
+      <footer className="sticky bottom-0 z-20 border-t border-border bg-card/90 px-6 py-4 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between">
+          <button
+            disabled={pending || currentIndex === 0}
+            onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
+            className={navBtnClass}
+          >
+            &larr; 이전 줄
+          </button>
+          <button
+            disabled={pending || currentIndex === segments.length - 1}
+            onClick={() => setCurrentIndex((i) => Math.min(segments.length - 1, i + 1))}
+            className={navBtnClass}
+          >
+            다음 줄 &rarr;
+          </button>
+        </div>
       </footer>
     </div>
   );

@@ -18,6 +18,11 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
   // SRT 시계 그대로라 영상 seek 시 이 값을 빼서 영상 파일 자체의 시계로
   // 변환해야 정확한 장면이 나온다.
   const [videoOffsetSeconds, setVideoOffsetSeconds] = useState(0);
+  // ReviewView 헤더와 같은 breadcrumb(작품명·화차·언어)을 보여주기 위한 값 —
+  // getTargetVersion 응답을 그대로 재사용한다.
+  const [titleName, setTitleName] = useState(null);
+  const [episodeNo, setEpisodeNo] = useState(null);
+  const [versionDisplayName, setVersionDisplayName] = useState(null);
   const [error, setError] = useState(null);
   const [completePending, setCompletePending] = useState(false);
   // 확인을 다 마쳤는데(성별/격식 답변 완료) "AI 검증 시작하기" 버튼을 그
@@ -54,6 +59,9 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
         setSegments(flagged.filter((s) => !isSegmentResolved(s)));
         setVideoProxyUrl(tv.video_proxy_url ?? null);
         setVideoOffsetSeconds(tv.video_offset_seconds ?? 0);
+        setTitleName(tv.title_name ?? null);
+        setEpisodeNo(tv.episode_no ?? null);
+        setVersionDisplayName(tv.display_name ?? null);
       })
       .catch((err) => {
         if (!cancelled) setError(err.message ?? "확인할 줄을 불러오지 못했습니다.");
@@ -140,6 +148,9 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
         segments={segments}
         videoProxyUrl={videoProxyUrl}
         videoOffsetSeconds={videoOffsetSeconds}
+        titleName={titleName}
+        episodeNo={episodeNo}
+        versionDisplayName={versionDisplayName}
         onResolveGender={handleResolveGender}
         onResolveGenderGroup={handleResolveGenderGroup}
         onResolveFormality={handleResolveFormality}
