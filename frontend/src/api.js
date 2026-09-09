@@ -41,6 +41,9 @@ export const createTitle = (name, type) =>
 export const updateTitleType = (titleId, type) =>
   request(`/titles/${titleId}`, { method: "PATCH", body: JSON.stringify({ type }) });
 
+export const updateTitleName = (titleId, name) =>
+  request(`/titles/${titleId}`, { method: "PATCH", body: JSON.stringify({ name }) });
+
 export const updateCharacterGender = (factId, gender) =>
   request(`/character-genders/${factId}`, { method: "PATCH", body: JSON.stringify({ gender }) });
 

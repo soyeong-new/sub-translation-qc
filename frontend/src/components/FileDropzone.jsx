@@ -28,7 +28,7 @@ export default function FileDropzone({ id, label, accept, file, onFileSelected, 
 
   return (
     <div>
-      <label id={`${id}-label`} htmlFor={id} className="mb-1.5 block text-sm font-medium text-foreground">
+      <label id={`${id}-label`} htmlFor={id} className="mb-1.5 block text-xs font-medium text-foreground">
         {label}
       </label>
       <div

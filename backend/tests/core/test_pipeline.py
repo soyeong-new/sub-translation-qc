@@ -348,6 +348,14 @@ async def test_back_translate_proposals_chunks_large_batches():
         async def back_translate_with_claude(texts, profile):
             return []
 
+        @staticmethod
+        async def judge_improvement_with_gpt(texts, profile):
+            return [{"id": t["id"], "is_improvement": True} for t in texts]
+
+        @staticmethod
+        async def judge_improvement_with_claude(texts, profile):
+            return [{"id": t["id"], "is_improvement": True} for t in texts]
+
     total = CHUNK_MAX_SIZE + 5  # 한 청크로는 안 들어가는 양
     claude_only = [{"segment_id": f"p{i}", "corrected_text": f"texto {i}"} for i in range(total)]
 
@@ -383,6 +391,14 @@ async def test_back_translate_proposals_survives_one_chunk_failing():
         @staticmethod
         async def back_translate_with_claude(texts, profile):
             return []
+
+        @staticmethod
+        async def judge_improvement_with_gpt(texts, profile):
+            return [{"id": t["id"], "is_improvement": True} for t in texts]
+
+        @staticmethod
+        async def judge_improvement_with_claude(texts, profile):
+            return [{"id": t["id"], "is_improvement": True} for t in texts]
 
     total = CHUNK_MAX_SIZE + 5
     claude_only = [{"segment_id": f"p{i}", "corrected_text": f"texto {i}"} for i in range(total)]
@@ -421,6 +437,14 @@ async def test_back_translate_proposals_recovers_from_transient_failure_via_retr
         async def back_translate_with_claude(texts, profile):
             return []
 
+        @staticmethod
+        async def judge_improvement_with_gpt(texts, profile):
+            return [{"id": t["id"], "is_improvement": True} for t in texts]
+
+        @staticmethod
+        async def judge_improvement_with_claude(texts, profile):
+            return [{"id": t["id"], "is_improvement": True} for t in texts]
+
     claude_only = [{"segment_id": "p0", "corrected_text": "texto 0"}]
 
     backtranslation_by_id, _, _, warnings = await _back_translate_proposals(
@@ -431,6 +455,48 @@ async def test_back_translate_proposals_recovers_from_transient_failure_via_retr
     assert call_count["n"] == 2  # 첫 시도 실패 후 한 번 더 시도함
     assert warnings == []  # 재시도로 복구됐으니 경고 없음
     assert backtranslation_by_id[("p0", "claude_authored")] == "역번역:texto 0"
+
+
+@pytest.mark.asyncio
+async def test_back_translate_proposals_skips_translation_for_not_improved():
+    """개선 아님으로 판정된 항목은 어차피 폐기되므로 역번역 호출 자체를
+    생략해야 한다 — 판정을 먼저 하고, 통과한 문구만 역번역한다."""
+    from app.core.pipeline import _back_translate_proposals
+
+    translated_ids = []
+
+    class _FakeProvider:
+        @staticmethod
+        async def judge_improvement_with_gpt(texts, profile):
+            return [{"id": t["id"], "is_improvement": t["id"] != "p0"} for t in texts]
+
+        @staticmethod
+        async def judge_improvement_with_claude(texts, profile):
+            return []
+
+        @staticmethod
+        async def back_translate_with_gpt(texts, profile):
+            translated_ids.extend(t["id"] for t in texts)
+            return [{"id": t["id"], "korean_text": f"역번역:{t['text']}"} for t in texts]
+
+        @staticmethod
+        async def back_translate_with_claude(texts, profile):
+            return []
+
+    claude_only = [
+        {"segment_id": "p0", "corrected_text": "texto 0"},
+        {"segment_id": "p1", "corrected_text": "texto 1"},
+    ]
+
+    backtranslation_by_id, _, not_improved, warnings = await _back_translate_proposals(
+        _FakeProvider(), {"language": "es"}, agreed=[], claude_only=claude_only, gpt_only=[],
+        target_version_id="tv1", pairs=[],
+    )
+
+    assert not_improved == {("p0", "claude_authored")}
+    assert translated_ids == ["p1"]  # p0는 역번역 콜 자체에서 빠짐
+    assert ("p0", "claude_authored") not in backtranslation_by_id
+    assert backtranslation_by_id[("p1", "claude_authored")] == "역번역:texto 1"
 
 
 @pytest.mark.asyncio
@@ -692,7 +758,7 @@ async def test_pipeline_uses_embedding_dp_when_korean_srt_path_given(tmp_path):
     # 영상 동기화용으로만 짧게(첫 큐 끝 + 여유분) 호출된다 — 내용용 전체
     # STT는 여전히 안 돈다. 원본(/fake/video.mp4)이 아니라 프록시 경로로
     # 호출돼야 한다.
-    mock_extract.assert_called_once_with("/fake/proxy.mp4", duration_seconds=pytest.approx(97.0))
+    mock_extract.assert_called_once_with("/fake/proxy.mp4", duration_seconds=pytest.approx(187.0))
     korean_pair = next(p for p in result["pairs"] if p.korean is not None)
     assert korean_pair.korean.text == "안녕하세요!"
     assert korean_pair.korean.start == 5.0

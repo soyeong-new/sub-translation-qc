@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from app.providers.gpt_client import GptClient, _language_label
 from app.providers.base import (
-    VERIFICATION_PRIORITY_PARAGRAPH, BATCH_SKIP_CLEAN_LINE,
+    build_verification_priority_paragraph, BATCH_SKIP_CLEAN_LINE,
     build_verification_checklist, build_improvement_judgment_criteria,
 )
 
@@ -352,7 +352,7 @@ async def test_back_translate_uses_json_schema_response_format_with_required_fie
     item_schema = call_kwargs["response_format"]["json_schema"]["schema"][
         "properties"]["results"]["items"]
     assert set(item_schema["required"]) == {
-        "id", "korean_text", "original_korean_text", "is_improvement"}
+        "id", "korean_text", "original_korean_text"}
 
 
 @pytest.mark.asyncio
@@ -448,7 +448,7 @@ async def test_verify_and_refine_system_prompt_contains_shared_verification_bloc
         pending_sensitive_hits=[], knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-    assert VERIFICATION_PRIORITY_PARAGRAPH in sent_system
+    assert build_verification_priority_paragraph() in sent_system
     assert build_verification_checklist("대상언어", BATCH_SKIP_CLEAN_LINE) in sent_system
 
 
@@ -499,11 +499,21 @@ async def test_extract_glossary_terms_returns_call_result(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_back_translate_system_prompt_contains_shared_judgment_criteria():
-    """back_translate의 is_improvement 판정 문단도 claude/gpt가 교차 검증에
+async def test_judge_improvement_system_prompt_contains_shared_judgment_criteria():
+    """judge_improvement의 is_improvement 판정 문단은 claude/gpt가 교차 검증에
     쓰는 공유 기준이므로, 공유 빌더 결과를 그대로 포함해야 한다."""
     profile = {"language": "es", "variant": "LATAM"}
     client = _make_client_with_fake_sdk(json.dumps({"results": []}))
-    await client.back_translate(texts=[], profile=profile)
+    await client.judge_improvement(texts=[], profile=profile)
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert build_improvement_judgment_criteria(_language_label(profile)) in sent_system
+
+
+@pytest.mark.asyncio
+async def test_judge_improvement_returns_is_improvement_per_id():
+    payload = {"results": [{"id": "p1", "is_improvement": False}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.judge_improvement(
+        texts=[{"id": "p1", "text": "hola"}], profile={"language": "es", "variant": "LATAM"},
+    )
+    assert result == payload["results"]

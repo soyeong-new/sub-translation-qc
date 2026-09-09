@@ -138,6 +138,33 @@ async def test_update_title_changes_type():
 
 
 @pytest.mark.asyncio
+async def test_update_title_changes_name():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "movie"})
+        title_id = title_res.json()["id"]
+
+        r = await client.patch(f"/titles/{title_id}", json={"name": "  New Name  "})
+        assert r.status_code == 200
+        assert r.json()["name"] == "New Name"
+
+        listed = await client.get("/titles")
+    updated = next(t for t in listed.json() if t["id"] == title_id)
+    assert updated["name"] == "New Name"
+
+
+@pytest.mark.asyncio
+async def test_update_title_rejects_blank_name():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "movie"})
+        title_id = title_res.json()["id"]
+
+        r = await client.patch(f"/titles/{title_id}", json={"name": "   "})
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_update_title_returns_404_for_unknown_title():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

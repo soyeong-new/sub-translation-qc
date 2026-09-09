@@ -17,6 +17,7 @@ import {
   excludeSegment,
 } from "../api.js";
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
+import QQLogo from "../components/QQLogo.jsx";
 
 // 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
 // 아니다(backend/app/core/requery.py의 requery_finding 참고) — 검수자가
@@ -61,18 +62,13 @@ const CATEGORY_BADGE_CLASS = {
 };
 const FALLBACK_BADGE_CLASS = "bg-muted text-muted-foreground border-border";
 
+// findings 필터 탭에서만 쓰는 라벨 — 카드 배지("승인됨" 등)를 없앤 뒤로는
+// 이 필터 탭이 유일한 소비처라, 탭에 어울리는 짧은 형태로 둔다.
 const STATUS_LABELS = {
   pending: "대기중",
-  approved: "승인됨",
-  rejected: "거부됨",
-  modified: "수정됨",
-};
-
-const STATUS_BADGE_CLASS = {
-  pending: "bg-muted text-muted-foreground border-border",
-  approved: "bg-success/10 text-success border-success/30",
-  rejected: "bg-destructive/10 text-destructive border-destructive/30",
-  modified: "bg-warning/10 text-warning border-warning/30",
+  approved: "승인",
+  rejected: "거부",
+  modified: "수정",
 };
 
 // 카드 테두리에 처리 상태를 반영한다 — 승인/거부/수정해도 카드가 목록에서
@@ -103,7 +99,7 @@ const inputClass =
 const labelClass = "mb-1.5 block text-sm font-medium text-foreground";
 
 const btnBase =
-  "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium " +
+  "inline-flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium " +
   "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
   "focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -143,7 +139,7 @@ const MAX_LINE_CHARS = 50;
 function CharCount({ text }) {
   const lines = text.split("\n");
   return (
-    <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+    <span className="whitespace-nowrap text-xs text-muted-foreground">
       {lines.map((line, i) => (
         <span key={i}>
           {i > 0 && " / "}
@@ -293,7 +289,7 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
 }
 
 function FindingCard({
-  finding, segment, isPreviewing, dimmed, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
+  finding, segment, isPreviewing, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
   requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
   sttEditing, sttEditText, sttPending, sttError, onSttEditTextChange, onStartSttEdit, onCancelSttEdit, onSaveSttEdit,
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
@@ -304,7 +300,6 @@ function FindingCard({
   const busy = pending != null;
   const canAct = Boolean(reviewerName.trim()) && !busy;
   const categoryClass = CATEGORY_BADGE_CLASS[finding.category] || FALLBACK_BADGE_CLASS;
-  const statusClass = STATUS_BADGE_CLASS[finding.status] || FALLBACK_BADGE_CLASS;
 
   // 카드를 클릭하면 그 구간을 미리보기 재생한다 — 단, 버튼/입력 요소를 누른
   // 클릭은 승인/거부/수정 등 원래 동작을 가려서는 안 되므로 걸러낸다.
@@ -317,29 +312,25 @@ function FindingCard({
   return (
     <li
       onClick={handleCardClick}
-      className={`rounded-lg border-2 bg-card p-4 shadow-sm transition-opacity ${segment ? "cursor-pointer" : ""} ${
+      data-segment-id={finding.segment_id}
+      className={`rounded-lg border bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
         isPreviewing ? "ring-1 ring-primary" : ""
-      } ${dimmed ? "opacity-40" : ""} ${cardBorderClass(finding)}`}
+      } ${cardBorderClass(finding)}`}
     >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${categoryClass}`}>
           {CATEGORY_LABELS[finding.category] || finding.category}
         </span>
-        {finding.status !== "approved" && finding.status !== "rejected" && (
-          <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${statusClass}`}>
-            {STATUS_LABELS[finding.status] || finding.status}
-          </span>
-        )}
-        {finding.model && (
+        {finding.model && finding.model !== "claude" && finding.model !== "gpt" && (
           <span className="inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-            {finding.model === "claude" ? "Claude" : finding.model === "gpt" ? "GPT" : finding.model}
+            {finding.model}
           </span>
         )}
       </div>
 
       {requeryInstruction && (
-        <div className="mb-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+        <div className="mb-3 border-t border-primary/30 pt-2">
+          <p className="text-xs font-semibold text-primary">
             재질문 결과 — 검토 후 승인/거부해주세요
           </p>
           <p className="mt-1 text-xs text-muted-foreground">지시: {requeryInstruction}</p>
@@ -354,9 +345,9 @@ function FindingCard({
           결과일 수 있다. 검수자가 별도 STT 사이드바를 뒤지지 않고 그 자리에서
           바로 "번역이 틀렸나, STT가 틀렸나"를 가늠할 수 있게 참고용으로 붙인다. */}
       {koreanText && (
-        <div className="mb-3 rounded-md border border-dashed border-accent/80 bg-accent/5 p-3">
+        <div className="mb-3 border-t border-border/60 pt-2">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               한국어 원문
             </p>
             {/* STT가 잘못 알아들은 게 원인이면, 검수자가 그 자리에서 바로
@@ -366,7 +357,7 @@ function FindingCard({
               <button
                 disabled={!reviewerName.trim()}
                 onClick={onStartSttEdit}
-                className={`${btnBase} border border-input bg-background px-2 py-0.5 text-xs text-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50`}
+                className="text-xs font-medium text-primary transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
               >
                 한국어 수정
               </button>
@@ -418,7 +409,7 @@ function FindingCard({
 
       {/* 원본/제안 대비: 데스크톱에서 나란히(2열), 좁은 화면에서는 세로로 쌓임 */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="rounded-md border border-border bg-muted/40 p-3">
+        <div className="rounded-md border border-border bg-muted/60 p-3">
           <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.original_text}</p>
           {originalBackTranslation && (
@@ -445,7 +436,7 @@ function FindingCard({
           (검수자가 직접 고쳤거나, 승인 시점에 50자 제약 위반이라 자동으로
           줄었거나) 다를 때만 별도로 보여준다 (export 시 실제 반영되는 텍스트). */}
       {finding.final_text && finding.final_text !== finding.suggested_text && (
-        <div className="mt-3 rounded-md border border-warning/40 bg-warning/10 p-3">
+        <div className="mt-3 border-t border-warning/30 pt-2">
           <p className="mb-1 text-xs font-medium uppercase tracking-wide text-warning">
             저장된 최종 텍스트
             {finding.status === "approved" && " (글자수 제약으로 자동 축약됨)"}
@@ -545,7 +536,7 @@ function FindingCard({
 // 텍스트가 불확실해지는 걸 막는다(export.py는 승인/수정된 finding 중
 // 하나를 골라야 하는데, 승인된 게 둘이면 어느 게 이길지 애매했다).
 function PairedFindingCard({
-  a, b, segment, isPreviewing, dimmed, onPreview, reviewerName,
+  a, b, segment, isPreviewing, onPreview, reviewerName,
   pendingActions, findingErrors, editingId, editText, onEditTextChange,
   onPick, onReject, onRejectBoth, onStartEdit, onCancelEdit,
   requeryingId, requeryText, requeryPendingId, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
@@ -560,7 +551,7 @@ function PairedFindingCard({
     onPreview(segment);
   }
 
-  function renderCandidate(finding, label) {
+  function renderCandidate(finding) {
     const { description, backTranslation, proposalBackTranslation, requeryInstruction } = splitDescription(finding.description);
     const pending = pendingActions[finding.id] ?? null;
     const error = findingErrors[finding.id];
@@ -569,26 +560,13 @@ function PairedFindingCard({
     const requeryPending = requeryPendingId === finding.id;
     const busy = pending != null;
     const canAct = Boolean(reviewerName.trim()) && !busy;
-    const categoryClass = CATEGORY_BADGE_CLASS[finding.category] || FALLBACK_BADGE_CLASS;
 
     return (
-      <div className={`rounded-md border-2 bg-muted/20 p-3 ${cardBorderClass(finding)}`}>
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs font-semibold text-foreground">{label}</span>
-          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${categoryClass}`}>
-            {CATEGORY_LABELS[finding.category] || finding.category}
-          </span>
-          {finding.status !== "approved" && finding.status !== "rejected" && (
-            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${STATUS_BADGE_CLASS[finding.status] || FALLBACK_BADGE_CLASS}`}>
-              {STATUS_LABELS[finding.status] || finding.status}
-            </span>
-          )}
-        </div>
-
+      <div className={`rounded-md border bg-muted/20 p-3 ${cardBorderClass(finding)}`}>
         {requeryInstruction && (
-          <div className="mb-2 rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">재질문 결과</p>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">지시: {requeryInstruction}</p>
+          <div className="mb-2 border-t border-primary/30 pt-1.5">
+            <p className="text-xs font-semibold text-primary">재질문 결과</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">지시: {requeryInstruction}</p>
           </div>
         )}
 
@@ -598,12 +576,12 @@ function PairedFindingCard({
 
         <div className="rounded-md border border-primary/30 bg-primary/5 p-2">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-primary">제안</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-primary">제안</p>
             <CharCount text={finding.suggested_text} />
           </div>
           <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
-            <p className="mt-1.5 whitespace-pre-wrap text-[11px] text-muted-foreground">
+            <p className="mt-1.5 whitespace-pre-wrap text-xs text-muted-foreground">
               번역: {proposalBackTranslation || backTranslation}
             </p>
           )}
@@ -713,29 +691,43 @@ function PairedFindingCard({
   return (
     <li
       onClick={handleCardClick}
-      className={`rounded-lg border bg-card p-4 shadow-sm transition-opacity ${segment ? "cursor-pointer" : ""} ${
+      data-segment-id={a.segment_id}
+      className={`rounded-lg border bg-card p-4 shadow-sm ${segment ? "cursor-pointer" : ""} ${
         isPreviewing ? "border-primary ring-1 ring-primary" : "border-border"
-      } ${dimmed ? "opacity-40" : ""}`}
+      }`}
     >
-      {a.status === "pending" && b.status === "pending" && (
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-xs font-semibold text-accent-foreground">
-            Claude/GPT 의견 다름 — 하나를 선택해주세요
-          </span>
-        </div>
-      )}
+      {/* pending -> resolved 전환 시에도 카드 높이가 줄지 않도록 배지 자리를
+          항상 유지한다 — 안 그러면 처리할 때마다 아래 목록이 조금씩 위로
+          당겨져 검수자가 보던 파인딩이 계속 밀려 올라가 보인다. */}
+      {/* pending 상태에선 "선택 완료" 배지 텍스트를 아예 안 보여주되, invisible로
+          같은 크기를 그대로 차지시켜 선택 완료 전환 시 카드 높이가 안 바뀌게
+          한다(높이가 바뀌면 처리할 때마다 아래 목록이 위로 당겨져 보인다).
+          카테고리(오역 등)는 두 후보가 같은 세그먼트를 다루므로 a 기준으로
+          하나만, 단일 FindingCard와 같은 자리에 보여준다. */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${CATEGORY_BADGE_CLASS[a.category] || FALLBACK_BADGE_CLASS}`}>
+          {CATEGORY_LABELS[a.category] || a.category}
+        </span>
+        <span
+          className={`inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground ${
+            a.status === "pending" && b.status === "pending" ? "invisible" : ""
+          }`}
+        >
+          선택 완료
+        </span>
+      </div>
 
       {koreanText && (
-        <div className="mb-3 rounded-md border border-dashed border-accent/80 bg-accent/5 p-3">
+        <div className="mb-3 border-t border-border/60 pt-2">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-accent-foreground/80">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               한국어 원문
             </p>
             {segment && !sttEditing && (
               <button
                 disabled={!reviewerName.trim()}
                 onClick={onStartSttEdit}
-                className={`${btnBase} border border-input bg-background px-2 py-0.5 text-xs text-foreground hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50`}
+                className="text-xs font-medium text-primary transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
               >
                 한국어 수정
               </button>
@@ -785,7 +777,7 @@ function PairedFindingCard({
         onResolveGenderGroup={onResolveGenderGroup}
       />
 
-      <div className="mb-3 rounded-md border border-border bg-muted/40 p-3">
+      <div className="mb-3 border-t border-border/60 pt-2">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
           {/* 둘 다 원본보다 못한 제안일 때 — 개별 카드를 하나씩 거부하지
@@ -802,9 +794,10 @@ function PairedFindingCard({
         <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{a.original_text}</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {renderCandidate(a, a.model === "claude" ? "Claude" : "GPT")}
-        {renderCandidate(b, b.model === "claude" ? "Claude" : "GPT")}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr]">
+        {renderCandidate(a)}
+        <div aria-hidden="true" className="hidden w-px bg-border sm:block" />
+        {renderCandidate(b)}
       </div>
     </li>
   );
@@ -819,18 +812,36 @@ function PairedFindingCard({
 // 앞뒤 줄과의 관계를 알아채기 어려워 앞뒤 줄까지 항상 같이 보이게 한다.
 // 현재 줄은 진하게, 멀어질수록 흐리게(아이폰 타이머 다이얼과 비슷한 느낌).
 function SrtSyncPanel({
-  segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
+  videoSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   controllingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+  boundaryClearedRef,
 }) {
   const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
   const [activeId, setActiveId] = useState(null);
   const rowRefs = useRef({});
+  const listRef = useRef(null);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || sorted.length === 0) return undefined;
     function handleTimeUpdate() {
       const srtTime = video.currentTime + videoOffsetSeconds;
+      // 미리보기 중인 finding 구간(패딩 포함) 안에서는 재생 위치로 다시
+      // 매칭하지 않고 그 finding의 줄로 고정한다. seek 직후엔 currentTime이
+      // 아직 확정되지 않아 이전 줄 범위를 잠깐 가리키는 경우가 있어서, 매번
+      // 시간으로 새로 매칭하면 화면이 앞뒤 줄로 튀었다 돌아온다. timeupdate는
+      // 프레임 단위로 정확히 안 오기 때문에 패딩 경계를 살짝 넘은 tick이
+      // 하필 다음 줄의 시간 범위 안으로 오버슈트하는 경우가 있는데, 이때도
+      // 검수자가 실제로 재생을 이어보지 않은 이상(boundaryClearedRef) 그냥
+      // 자동정지 직후이므로 다음 줄로 넘기지 않고 계속 고정한다.
+      const previewing = previewSegment && sorted.find((s) => s.id === previewSegment.id);
+      if (previewing) {
+        const overPad = srtTime > previewing.end + PREVIEW_PAD_END_SECONDS;
+        if (!overPad || !boundaryClearedRef.current) {
+          setActiveId(previewing.id);
+          return;
+        }
+      }
       const found =
         sorted.find((s) => srtTime >= s.start && srtTime <= s.end) ??
         [...sorted].reverse().find((s) => s.start <= srtTime) ??
@@ -839,24 +850,82 @@ function SrtSyncPanel({
     }
     video.addEventListener("timeupdate", handleTimeUpdate);
     return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [videoRef, videoOffsetSeconds, sorted]);
+  }, [videoRef, videoOffsetSeconds, sorted, previewSegment, boundaryClearedRef]);
 
   // finding 카드를 누르면 timeupdate(재생 중에만 주기적으로 발생)를
-  // 기다리지 않고 클릭 즉시 그 줄로 스크롤+하이라이트한다.
+  // 기다리지 않고 클릭 즉시 그 줄로 하이라이트한다.
   useEffect(() => {
     if (previewSegment?.id) setActiveId(previewSegment.id);
   }, [previewSegment?.id, previewTick]);
 
+  // 창(window) 스크롤은 finding 카드를 화면 중앙으로 옮기는 효과(ReviewView
+  // 쪽)가 전담한다. 여기서는 "전체 자막" 미니 목록 내부만 스크롤해 해당
+  // 줄이 보이게 한다 — scrollIntoView를 그대로 쓰면 조상 스크롤 컨테이너인
+  // 창까지 같이 움직여서, 재생이 다음 줄로 자연스럽게 넘어갈 때마다 관련
+  // finding 카드가 없는데도 화면이 계속 아래로 밀려 내려간다.
   useEffect(() => {
-    rowRefs.current[activeId]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const row = rowRefs.current[activeId];
+    const container = listRef.current;
+    if (!row || !container) return;
+    const rowRect = row.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const delta = rowRect.top - containerRect.top - containerRect.height / 2 + rowRect.height / 2;
+    container.scrollBy({ top: delta, behavior: "smooth" });
   }, [activeId]);
 
   const activeIndex = sorted.findIndex((s) => s.id === activeId);
 
+  // 이전/다음 구간 이동 — activeIndex가 -1(아직 아무 줄도 활성화 안 됨)이면
+  // "다음"은 첫 줄로, "이전"은 아무 데도 갈 곳이 없다(sorted[-2] → undefined,
+  // no-op). onSeekSegment는 목록 줄 클릭과 완전히 같은 경로라 재생 위치/패딩
+  // 계산도 동일하게 정확히 맞는다.
+  function goToOffset(offset) {
+    const base = activeIndex === -1 ? -1 : activeIndex;
+    const target = sorted[base + offset];
+    if (target) onSeekSegment(target);
+  }
+
+  // 화살표 키(←/→)로도 구간 이동 — 입력 요소에 포커스가 있을 때는(이름 입력,
+  // 수정/재질문 textarea 등) 커서 이동을 가로채면 안 되므로 건너뛴다.
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      e.preventDefault();
+      goToOffset(e.key === "ArrowRight" ? 1 : -1);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [sorted, activeIndex, onSeekSegment]);
+
   return (
-    <div className="mt-3 border-t border-border pt-3">
-      <p className="mb-1.5 text-xs font-medium text-muted-foreground">전체 자막</p>
-      <ul className="max-h-80 space-y-1 overflow-y-auto">
+    <>
+      <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
+        {videoSlot}
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => goToOffset(-1)}
+            disabled={activeIndex <= 0}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            &#9664; 이전 구간
+          </button>
+          <span className="text-[11px] text-muted-foreground">방향키(&larr;/&rarr;)로 이동</span>
+          <button
+            type="button"
+            onClick={() => goToOffset(1)}
+            disabled={activeIndex !== -1 && activeIndex >= sorted.length - 1}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            다음 구간 &#9654;
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 rounded-xl border border-border bg-card p-3 shadow-sm">
+        <p className="mb-1.5 text-xs font-medium text-muted-foreground">전체 자막</p>
+        <ul ref={listRef} className="max-h-80 space-y-1 overflow-y-auto p-1">
         {sorted.map((seg, i) => {
           const distance = activeIndex === -1 ? 99 : Math.abs(i - activeIndex);
           const opacityClass =
@@ -886,44 +955,49 @@ function SrtSyncPanel({
                 distance === 0 ? "bg-primary/10 ring-1 ring-primary" : ""
               }`}
             >
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="font-mono text-[10px] text-muted-foreground">
-                  {`${formatSrtTimestamp(seg.start)} --> ${formatSrtTimestamp(seg.end)}`}
-                </span>
-                {distance === 0 && !canEdit && (
-                  <span className="text-[10px] text-muted-foreground">Finding에서 처리</span>
-                )}
+              <div className="font-mono text-[11px] text-muted-foreground">
+                {`${formatSrtTimestamp(seg.start)} --> ${formatSrtTimestamp(seg.end)}`}
               </div>
               {canEdit ? (
                 <div>
                   <textarea
                     key={`${seg.id}:${displayText}`}
                     defaultValue={displayText}
-                    rows={2}
+                    rows={distance === 0 ? 4 : 2}
                     disabled={pending}
                     onBlur={handleBlur}
-                    className="block w-full resize-none rounded-md border border-transparent bg-transparent p-0 font-mono text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50"
+                    className={`block w-full resize-none rounded-md border border-transparent bg-transparent p-0 text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50 ${
+                      distance === 0 ? "font-medium" : ""
+                    }`}
                   />
                   {srtErrors[seg.id] && (
-                    <p className="text-[10px] text-destructive">{srtErrors[seg.id]}</p>
+                    <p className="text-xs text-destructive">{srtErrors[seg.id]}</p>
                   )}
                 </div>
               ) : (
                 displayText && (
-                  <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{displayText}</p>
+                  <p
+                    className={`text-xs text-foreground ${
+                      distance === 0 ? "whitespace-pre-wrap font-medium" : "truncate"
+                    }`}
+                  >
+                    {displayText}
+                  </p>
                 )
               )}
             </li>
           );
         })}
-      </ul>
-    </div>
+        </ul>
+      </div>
+    </>
   );
 }
 
 function VideoPreviewPanel({
   videoProxyUrl, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   controllingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+  boundaryClearedRef,
 }) {
   if (!videoProxyUrl) {
     return (
@@ -934,32 +1008,36 @@ function VideoPreviewPanel({
       </aside>
     );
   }
+  const video = (
+    <video
+      ref={videoRef}
+      src={videoProxyUrl}
+      controls
+      playsInline
+      className="aspect-video w-full rounded-lg border border-border bg-black"
+    />
+  );
   return (
-    <aside>
-      <div className="rounded-lg border border-border bg-card p-3 shadow-sm">
-        <video
-          ref={videoRef}
-          src={videoProxyUrl}
-          controls
-          playsInline
-          className="w-full rounded-md border border-border bg-black"
+    <aside className="space-y-3">
+      {segments && segments.length > 0 ? (
+        <SrtSyncPanel
+          videoSlot={video}
+          segments={segments}
+          videoRef={videoRef}
+          videoOffsetSeconds={videoOffsetSeconds}
+          previewSegment={previewSegment}
+          previewTick={previewTick}
+          onSeekSegment={onSeekSegment}
+          controllingSegmentIds={controllingSegmentIds}
+          resolvedTextBySegment={resolvedTextBySegment}
+          srtPendingId={srtPendingId}
+          srtErrors={srtErrors}
+          onSaveSrtEdit={onSaveSrtEdit}
+          boundaryClearedRef={boundaryClearedRef}
         />
-        {segments && segments.length > 0 && (
-          <SrtSyncPanel
-            segments={segments}
-            videoRef={videoRef}
-            videoOffsetSeconds={videoOffsetSeconds}
-            previewSegment={previewSegment}
-            previewTick={previewTick}
-            onSeekSegment={onSeekSegment}
-            controllingSegmentIds={controllingSegmentIds}
-            resolvedTextBySegment={resolvedTextBySegment}
-            srtPendingId={srtPendingId}
-            srtErrors={srtErrors}
-            onSaveSrtEdit={onSaveSrtEdit}
-          />
-        )}
-      </div>
+      ) : (
+        <div className="rounded-xl border border-border bg-card p-3 shadow-sm">{video}</div>
+      )}
     </aside>
   );
 }
@@ -999,9 +1077,16 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 기준이라 sttPendingId/sttErrors와 같은 패턴이다.
   const [genderPendingId, setGenderPendingId] = useState(null);
   const [genderErrors, setGenderErrors] = useState({});
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
   const [videoProxyUrl, setVideoProxyUrl] = useState(null);
+  // 헤더 브레드크럼(타이틀/회차/언어)용 — findings와 별개로 target version
+  // 메타데이터에서만 얻을 수 있다.
+  const [titleName, setTitleName] = useState(null);
+  const [episodeNo, setEpisodeNo] = useState(null);
+  const [versionDisplayName, setVersionDisplayName] = useState(null);
   // segment.start/end는 대상언어 SRT 시계다 — 영상을 잘라 올려 SRT와 영상
   // 파일 시계가 어긋나 있으면(detect_global_offset이 감지) seek 시 이 값을
   // 빼서 영상 파일 자체의 시계로 변환해야 한다.
@@ -1012,10 +1097,24 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 이동해 재생하도록 누를 때마다 값을 바꿔 아래 미리보기 이펙트를 강제로
   // 재실행시킨다.
   const [previewTick, setPreviewTick] = useState(0);
+  // 구간 끝에서 자동정지된 뒤 검수자가 재생을 다시 눌러 구간 밖까지 보기로
+  // 했는지 추적한다 — SrtSyncPanel이 이 값으로 "패딩을 살짝 넘겼을 뿐인
+  // 자동정지"와 "진짜로 다음 대사까지 이어보는 중"을 구분한다.
+  const boundaryClearedRef = useRef(false);
   function previewFindingSegment(segment) {
     setPreviewSegment(segment);
     setPreviewTick((t) => t + 1);
   }
+
+  // finding을 클릭하거나(또는 왼쪽 SRT 줄을 클릭해) 미리보기가 바뀌면, 그
+  // finding 카드가 화면 중앙에 오도록 스크롤한다 — 왼쪽 SRT 하이라이트와
+  // 오른쪽 finding 카드가 항상 같이 맞춰져 보이게 하기 위함.
+  useEffect(() => {
+    if (!previewSegment?.id) return;
+    document
+      .querySelector(`[data-segment-id="${previewSegment.id}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [previewSegment?.id, previewTick]);
 
   // 목록이 길어 스크롤이 깊어지면(1500+줄 상당) 맨 위로 버튼을 띄운다.
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -1030,24 +1129,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [segments, setSegments] = useState(null);
   const [excludePendingId, setExcludePendingId] = useState(null);
   const [excludeErrors, setExcludeErrors] = useState({});
-
-  // Hard(전체 표시)/Normal(클로드+지피티 둘 다 합의한 건만 카드로 안
-  // 보여줌) 화면 필터. 단일모델만 지적한 건은 한쪽 의견이라 부정확할 수
-  // 있어 Normal에서도 계속 보여준다 — 사람 확인이 꼭 필요하기 때문. 합의
-  // 건은 이미 최종 SRT에 제안문이 반영돼 있으므로(모델 검증을 통과했으니)
-  // 숨겨도 데이터 유실은 없다. 백엔드는 항상 전체를 그대로 저장하므로
-  // 재분석 없이 즉시 전환 가능.
-  const [displayMode, setDisplayMode] = useState(
-    () => localStorage.getItem("qc_display_mode") || "normal"
-  );
-  useEffect(() => {
-    localStorage.setItem("qc_display_mode", displayMode);
-  }, [displayMode]);
-  const visibleFindings = findings
-    ? displayMode === "normal"
-      ? findings.filter((f) => f.model !== "claude+gpt")
-      : findings
-    : findings;
 
   useEffect(() => {
     let cancelled = false;
@@ -1073,6 +1154,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           setPipelineWarnings(data.warnings ?? []);
           setVideoProxyUrl(data.video_proxy_url ?? null);
           setVideoOffsetSeconds(data.video_offset_seconds ?? 0);
+          setTitleName(data.title_name ?? null);
+          setEpisodeNo(data.episode_no ?? null);
+          setVersionDisplayName(data.display_name ?? null);
         }
       })
       .catch(() => {
@@ -1119,15 +1203,15 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     // 다시 누르면(구간 뒤쪽도 보고 싶다는 뜻) 이번엔 막지 않고 흘려보낸다.
     // 같은 finding 카드를 다시 누르면(previewTick 변경) 이 이펙트가 새로
     // 실행되어 처음(seekStart)부터 다시 멈추는 원래 동작으로 리셋된다.
-    let boundaryCleared = false;
+    boundaryClearedRef.current = false;
     function handleTimeUpdate() {
-      if (!boundaryCleared && video.currentTime >= seekEnd) {
+      if (!boundaryClearedRef.current && video.currentTime >= seekEnd) {
         video.pause();
       }
     }
     function handlePlay() {
       if (video.currentTime >= seekEnd) {
-        boundaryCleared = true;
+        boundaryClearedRef.current = true;
       }
     }
     video.currentTime = seekStart;
@@ -1429,35 +1513,85 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         .sort((a, b) => a.start - b.start)
     : [];
 
+  const totalFindingsCount = findings?.length ?? 0;
+  const processedFindingsCount = (findings ?? []).filter((f) => f.status !== "pending").length;
+
+  // pair 카드는 후보 두 개(a/b)의 status가 다를 수 있어 "이 카드가 이
+  // status를 갖고 있는가"를 후보 중 하나라도 해당하면 true로 본다 — 필터/
+  // 카운트 둘 다 이 기준을 공유한다.
+  const itemStatuses = (item) => (item.type === "single" ? [item.finding.status] : [item.a.status, item.b.status]);
+  const itemCategories = (item) => (item.type === "single" ? [item.finding.category] : [item.a.category, item.b.category]);
+  const displayItems = groupFindingsForDisplay(findings ?? []);
+  const statusCounts = { all: displayItems.length };
+  for (const status of Object.keys(STATUS_LABELS)) {
+    statusCounts[status] = displayItems.filter((it) => itemStatuses(it).includes(status)).length;
+  }
+  const filteredDisplayItems = displayItems.filter(
+    (it) =>
+      (statusFilter === "all" || itemStatuses(it).includes(statusFilter)) &&
+      (categoryFilter === "all" || itemCategories(it).includes(categoryFilter))
+  );
+
   return (
     <div className="min-h-screen bg-background">
-      <header className="border-b border-border bg-card px-6 py-4">
-        <div className="mx-auto flex max-w-screen-2xl flex-wrap items-end justify-between gap-4">
-          <div>
+      <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-card/90 px-6 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl items-center gap-4">
+          <div className="flex shrink-0 items-center gap-3">
+            <QQLogo className="h-5 w-auto" />
             <button
               onClick={onBack}
-              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+              className="flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
             >
-              &larr; 목록으로
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden="true">
+                <path
+                  fillRule="evenodd"
+                  d="M17 10a.75.75 0 0 1-.75.75H5.612l4.158 3.96a.75.75 0 1 1-1.04 1.08l-5.5-5.25a.75.75 0 0 1 0-1.08l5.5-5.25a.75.75 0 1 1 1.04 1.08L5.612 9.25H16.25A.75.75 0 0 1 17 10Z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              목록으로
             </button>
           </div>
-          <div className="flex w-full max-w-xs items-center gap-2">
-            <label htmlFor="reviewer-name" className="shrink-0 text-sm font-medium text-foreground">
-              검수자 이름
+
+          <div className="h-6 w-px shrink-0 bg-border" />
+
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
+            {titleName && <span className="truncate font-medium text-foreground">{titleName}</span>}
+            {episodeNo != null && (
+              <>
+                <span className="shrink-0 text-muted-foreground">·</span>
+                <span className="shrink-0 text-muted-foreground">{episodeNo}화</span>
+              </>
+            )}
+            {versionDisplayName && (
+              <>
+                <span className="shrink-0 text-muted-foreground">·</span>
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                  {versionDisplayName}
+                </span>
+              </>
+            )}
+          </div>
+
+          <div className="h-6 w-px shrink-0 bg-border" />
+
+          <div className="flex shrink-0 items-center gap-2">
+            <label htmlFor="reviewer-name" className="text-sm font-medium text-foreground">
+              검수자
             </label>
             <input
               id="reviewer-name"
               value={reviewerName}
               onChange={(e) => setReviewerName(e.target.value)}
               placeholder="이름을 입력하세요"
-              className={inputClass}
+              className="w-32 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
           </div>
         </div>
       </header>
 
       {pipelineWarnings.length > 0 && (
-        <div className="mx-auto max-w-screen-2xl px-6 pt-4">
+        <div className="mx-auto max-w-6xl px-6 pt-4">
           <div className="flex gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
             <svg
               aria-hidden="true"
@@ -1484,11 +1618,14 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       )}
 
       {/* 본문을 좌측 영상 미리보기 / 우측 Findings·내보내기 본문으로 분리한다.
-          좁은 화면에서는 세로로 쌓이며 미리보기가 먼저 나온다. */}
-      <main className="mx-auto max-w-screen-2xl px-6 py-8">
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-[420px_1fr]">
-          <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-            <h1 className="mb-2 text-xl font-semibold text-foreground">리뷰</h1>
+          모바일 폭(md 미만)에서만 세로로 쌓이고, 그 위에서는 좌측 열을
+          420px 고정이 아니라 화면 폭의 비율(30%)로 잡아 창을 줄이면 영상도
+          같이 비례해서 줄어들게 한다 — 고정폭이면 창이 좁아질수록 영상
+          열이 상대적으로 커 보이다가 md 미만에서 갑자기 전체 폭으로
+          튀어 화면을 다 차지하는 것처럼 보였다. */}
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(300px,38%)_1fr]">
+          <div className="space-y-3 md:sticky md:top-6 md:self-start">
             <VideoPreviewPanel
               videoProxyUrl={videoProxyUrl}
               videoRef={previewVideoRef}
@@ -1502,9 +1639,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               srtPendingId={srtPendingId}
               srtErrors={srtErrors}
               onSaveSrtEdit={handleSaveSrtEdit}
+              boundaryClearedRef={boundaryClearedRef}
             />
 
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
               <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
                 {isExporting && <Spinner />}
                 내보내기
@@ -1520,36 +1658,67 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           <div className="space-y-8">
             <section aria-labelledby="findings-heading">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 id="findings-heading" className="text-lg font-semibold text-foreground">
-                  Findings {visibleFindings ? `(${visibleFindings.length})` : ""}
-                </h2>
-                <div className="flex overflow-hidden rounded-md border border-border text-sm">
-                  <button
-                    type="button"
-                    onClick={() => setDisplayMode("hard")}
-                    aria-pressed={displayMode === "hard"}
-                    className={`px-3 py-1 transition-colors ${
-                      displayMode === "hard"
-                        ? "bg-foreground text-background"
-                        : "bg-card text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Hard
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDisplayMode("normal")}
-                    aria-pressed={displayMode === "normal"}
-                    className={`px-3 py-1 transition-colors ${
-                      displayMode === "normal"
-                        ? "bg-foreground text-background"
-                        : "bg-card text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Normal
-                  </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 id="findings-heading" className="text-lg font-semibold text-foreground">
+                    Findings {findings ? `(${findings.length})` : ""}
+                  </h2>
+                  {totalFindingsCount > 0 && (
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-40 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${Math.round((processedFindingsCount / totalFindingsCount) * 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {processedFindingsCount}/{totalFindingsCount} 처리됨
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
+
+              {findings && findings.length > 0 && (
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1 rounded-lg bg-muted p-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setStatusFilter("all")}
+                      className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                        statusFilter === "all"
+                          ? "bg-card text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      전체 {statusCounts.all}
+                    </button>
+                    {Object.entries(STATUS_LABELS).map(([status, label]) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => setStatusFilter(status)}
+                        className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                          statusFilter === status
+                            ? "bg-card text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {label} {statusCounts[status]}
+                      </button>
+                    ))}
+                  </div>
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    className="ml-auto rounded-md border border-input bg-background px-2.5 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="all">전체 카테고리</option>
+                    {Object.entries(CATEGORY_LABELS).map(([category, label]) => (
+                      <option key={category} value={category}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {findings === null && !loadError && (
                 <p className="text-sm text-muted-foreground">불러오는 중...</p>
@@ -1559,13 +1728,16 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                   {loadError}
                 </p>
               )}
-              {visibleFindings && visibleFindings.length === 0 && (
+              {findings && findings.length === 0 && (
                 <p className="text-sm text-muted-foreground">표시할 finding이 없습니다.</p>
               )}
+              {findings && findings.length > 0 && filteredDisplayItems.length === 0 && (
+                <p className="text-sm text-muted-foreground">이 필터에 해당하는 finding이 없습니다.</p>
+              )}
 
-              {visibleFindings && visibleFindings.length > 0 && (
+              {findings && findings.length > 0 && (
                 <ul className="space-y-4">
-                  {groupFindingsForDisplay(visibleFindings).map((item) => {
+                  {filteredDisplayItems.map((item) => {
                     if (item.type === "pair") {
                       const { a, b } = item;
                       return (
@@ -1575,7 +1747,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                           b={b}
                           segment={segmentsById[a.segment_id]}
                           isPreviewing={previewSegment?.id === a.segment_id}
-                          dimmed={Boolean(previewSegment) && previewSegment.id !== a.segment_id}
                           onPreview={previewFindingSegment}
                           reviewerName={reviewerName}
                           pendingActions={pendingActions}
@@ -1626,7 +1797,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                         finding={f}
                         segment={segmentsById[f.segment_id]}
                         isPreviewing={previewSegment?.id === f.segment_id}
-                        dimmed={Boolean(previewSegment) && previewSegment.id !== f.segment_id}
                         onPreview={previewFindingSegment}
                         reviewerName={reviewerName}
                         pending={pendingActions[f.id] ?? null}
@@ -1671,7 +1841,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               )}
             </section>
 
-            {displayMode === "hard" && halfPairSegments.length > 0 && (() => {
+            {halfPairSegments.length > 0 && (() => {
               const koreanOnlySegments = halfPairSegments.filter((s) => !s.target_text?.trim());
               const targetOnlySegments = halfPairSegments.filter((s) => Boolean(s.target_text?.trim()));
 
@@ -1695,7 +1865,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                   >
                     {hasTarget && seg.excluded && (
                       <div className="mb-2 flex justify-end">
-                        <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                        <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                           제외됨
                         </span>
                       </div>
@@ -1728,13 +1898,11 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               }
 
               return (
-                <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
-                  <div className="mb-4">
-                    <h2 className="text-lg font-semibold text-card-foreground">
-                      확인 필요 (짝 없는 줄) {halfPairSegments.length}건
-                    </h2>
-                  </div>
-                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                <details className="rounded-lg border border-border bg-card p-6 shadow-sm">
+                  <summary className="cursor-pointer text-lg font-semibold text-card-foreground">
+                    확인 필요 (짝 없는 줄) {halfPairSegments.length}건
+                  </summary>
+                  <div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
                     <div>
                       <h3 className="mb-2 text-sm font-semibold text-foreground">
                         한국어만 있음 ({koreanOnlySegments.length}) - 최종 자막에 영향 없음
@@ -1748,7 +1916,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                       <ul className="space-y-3">{targetOnlySegments.map(renderHalfPairItem)}</ul>
                     </div>
                   </div>
-                </section>
+                </details>
               );
             })()}
           </div>

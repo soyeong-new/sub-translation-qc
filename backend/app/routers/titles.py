@@ -27,7 +27,8 @@ class TitleIn(BaseModel):
 
 
 class TitleUpdateIn(BaseModel):
-    type: str
+    name: str | None = None
+    type: str | None = None
 
 
 class EpisodeIn(BaseModel):
@@ -71,14 +72,19 @@ async def create_title(payload: TitleIn):
 
 @router.patch("/titles/{title_id}")
 async def update_title(title_id: str, payload: TitleUpdateIn):
-    """등록할 때 유형(영화/드라마)을 잘못 골랐을 때 고치는 용도 — 예를 들어
-    영화로 등록해서 "회차 추가" 버튼이 안 보이던 걸 드라마로 바꾸면 바로
-    보이게 된다."""
+    """제목을 잘못 입력했거나 유형(영화/드라마)을 잘못 골랐을 때 고치는 용도
+    — 예를 들어 영화로 등록해서 "회차 추가" 버튼이 안 보이던 걸 드라마로
+    바꾸면 바로 보이게 된다."""
+    if payload.name is not None and not payload.name.strip():
+        raise HTTPException(400, "제목은 비워둘 수 없습니다")
     async with async_session() as session:
         title = await session.get(Title, title_id)
         if title is None or title.deleted_at is not None:
             raise HTTPException(404, "title not found")
-        title.type = payload.type
+        if payload.name is not None:
+            title.name = payload.name.strip()
+        if payload.type is not None:
+            title.type = payload.type
         await session.commit()
         return {"id": title.id, "name": title.name, "type": title.type}
 

@@ -115,9 +115,14 @@ export default {
           "0%": { transform: "translateX(-60%)" },
           "100%": { transform: "translateX(160%)" },
         },
+        "fade-slide-in": {
+          "0%": { opacity: "0", transform: "translateY(-4px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         "qq-shine": "qq-shine 4s ease-in-out infinite",
+        "fade-slide-in": "fade-slide-in 0.15s ease-out",
       },
     },
   },

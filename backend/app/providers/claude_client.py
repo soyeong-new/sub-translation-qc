@@ -5,7 +5,7 @@ import re
 from typing import List, Optional
 from anthropic import AsyncAnthropic
 from app.providers.base import (
-    contains_hangul, CATEGORY_ENUM, VERIFICATION_PRIORITY_PARAGRAPH,
+    contains_hangul, CATEGORY_ENUM, build_verification_priority_paragraph,
     build_batch_scope_intro, BATCH_SKIP_CLEAN_LINE,
     build_requery_scope_intro, REQUERY_SKIP_CLEAN_LINE,
     build_verification_checklist, build_json_instruction, build_json_instruction_requery,
@@ -94,9 +94,8 @@ _BACK_TRANSLATE_OUTPUT_SCHEMA = {
             "id": {"type": "string"},
             "korean_text": {"type": "string"},
             "original_korean_text": {"type": "string"},
-            "is_improvement": {"type": "boolean"},
         },
-        "required": ["id", "korean_text", "original_korean_text", "is_improvement"],
+        "required": ["id", "korean_text", "original_korean_text"],
         "additionalProperties": False,
     },
 }
@@ -112,10 +111,14 @@ _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
     'id (문자열, 입력의 "id"와 반드시 일치), '
     "korean_text (문자열, text의 자연스러운 한국어 역번역), "
     "original_korean_text (문자열, original_text의 자연스러운 한국어 역번역 "
-    "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게), "
-    "is_improvement (불리언, text가 original_text보다 reference_korean의 "
-    "의미·톤을 더 잘 살리는 자연스러운 표현이면 true, 동등하거나 "
-    "original_text가 더 낫다고 판단되면 false). "
+    "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게). "
+    "반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
+)
+
+_JUDGE_IMPROVEMENT_SCHEMA_INSTRUCTION = (
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "is_improvement (불리언). "
     "반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
 )
 
@@ -207,10 +210,10 @@ class ClaudeClient:
             skip_clean_line = BATCH_SKIP_CLEAN_LINE
 
         system = (
-            f"너는 한국어-{language_label} 자막의 전문 번역 검수자다. "
+            f"너는 한국어-{language_label} 미디어(영화·드라마) 자막 전문 번역 검수자다. "
             f"korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text({language_label} 번역문)를 검증하라. "
             + scope_intro +
-            VERIFICATION_PRIORITY_PARAGRAPH +
+            build_verification_priority_paragraph(glossary_block) +
             build_verification_checklist(language_label, skip_clean_line, glossary_block) +
             f"⚠️ [자막 형태 및 글자수 절대 제약 - HARD CONSTRAINT]\n"
             f"- 모든 교정문(corrected_text)은 반드시 다음 제약을 엄격히 지켜서 작성하라: {format_constraint}\n"
@@ -300,20 +303,34 @@ class ClaudeClient:
         system = (
             f"다음은 한국어 원문(reference_korean), 교정 전 {language_label} 원본"
             f"(original_text), 교정 후 {language_label} 제안문(text) 목록이다. "
-            "각 항목마다 두 가지를 하라.\n"
-            "1. text와 original_text를 각각 자연스러운 한국어로 역번역하라"
+            "각 항목마다 다음을 하라.\n"
+            "text와 original_text를 각각 자연스러운 한국어로 역번역하라"
             f"(korean_text, original_korean_text) — {language_label}를 모르는 검수자가 "
             "교정 전/후 의미를 나란히 비교하기 위한 참고용이므로, 의미뿐 "
             "아니라 톤·뉘앙스(간결함, 거침, 급함, 존중, 여유로움 등)도 함께 "
             "전달하라. 원문이 짧고 직설적이면 역번역도 짧고 직설적으로, "
             "원문에 존댓말·격식이 있으면 그 격식도 살려서 옮겨라 — 단순히 "
-            "의미만 통하는 매끄러운 한국어 문장으로 다듬지 마라.\n"
-            + build_improvement_judgment_criteria(language_label)
+            "의미만 통하는 매끄러운 한국어 문장으로 다듬지 마라. 중의적이거나 "
+            "문맥 없이는 뜻이 불분명한 단어·표현은 reference_korean과 배열의 "
+            "다른 항목들(앞뒤 세그먼트)을 참고해 실제로 어떤 의미로 쓰였는지 "
+            "판별한 뒤 역번역하라.\n"
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
         return await self._call_array(system, user, model=self._light_model,
                                        output_schema=_BACK_TRANSLATE_OUTPUT_SCHEMA)
+
+    async def judge_improvement(self, texts: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 한국어 원문(reference_korean), 교정 전 {language_label} 원본"
+            f"(original_text), 교정 후 {language_label} 제안문(text) 목록이다. "
+            "각 항목마다 아래 기준으로 판단하라.\n"
+            + build_improvement_judgment_criteria(language_label)
+            + _JUDGE_IMPROVEMENT_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(texts, ensure_ascii=False)
+        return await self._call_array(system, user, model=self._light_model)
 
     async def check_equivalence(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)

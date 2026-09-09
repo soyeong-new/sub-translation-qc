@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Episode, TargetVersion, Segment
+from app.models import Episode, TargetVersion, Segment, Title
 from app.core.uploads import MEDIA_ROOT
 from app.repositories import (
     delete_target_version_results, upsert_character_gender_facts, normalize_character_name,
@@ -16,6 +16,7 @@ from app.repositories import (
 from app.background import analyze_and_save, _run_phase2_and_save
 from app.providers.base import get_provider
 from app.core.pipeline import gender_groups_all_resolved
+from app.language_profiles.loader import list_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,8 @@ async def get_target_version(target_version_id: str):
         if tv is None:
             raise HTTPException(404, "target version not found")
         episode = await session.get(Episode, tv.episode_id)
+        title = await session.get(Title, episode.title_id) if episode else None
+        display_names = {(p["language"], p["variant"]): p["display_name"] for p in list_profiles()}
         video_proxy_url = None
         if tv.video_proxy_path:
             try:
@@ -81,7 +84,10 @@ async def get_target_version(target_version_id: str):
         return {"id": tv.id, "status": tv.status, "error_message": tv.error_message,
                 "video_proxy_url": video_proxy_url, "warnings": tv.warnings or [],
                 "video_offset_seconds": tv.video_offset_seconds or 0.0,
-                "title_id": episode.title_id if episode else None}
+                "title_id": episode.title_id if episode else None,
+                "title_name": title.name if title else None,
+                "episode_no": episode.episode_no if episode else None,
+                "display_name": display_names.get((tv.target_language, tv.variant), tv.target_language)}
 
 
 async def _start_analysis(target_version_id: str, target_srt_path: str, request: Request) -> dict:

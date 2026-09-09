@@ -127,8 +127,8 @@ async def _run_stt_and_proxy(provider: ModelProvider, video_path: str) -> tuple[
     return korean_raw, video_proxy_path
 
 
-_VIDEO_SYNC_ANCHOR_CUES = 10
-_VIDEO_SYNC_CLIP_MARGIN_SECONDS = 90.0
+_VIDEO_SYNC_ANCHOR_CUES = 30
+_VIDEO_SYNC_CLIP_MARGIN_SECONDS = 180.0
 
 
 def _median_offset_from_stt_matches(matched_words: list, raw_cues: list,
@@ -754,16 +754,18 @@ async def _back_translate_proposals(
     agreed: list, claude_only: list, gpt_only: list, target_version_id: str,
     pairs: list,
 ) -> tuple[dict, dict, set, list]:
-    """제안된 문구를 반대쪽 모델이 한국어로 역번역하고(감사/참고용), 동시에
-    그 제안이 교정 전 원문보다 실제로 나아졌는지도 같은 호출에서 판단시킨다
-    — 자기가 쓴 문구를 자기가 평가하면 스스로의 오류를 매끄럽게 얼버무려
-    가릴 위험이 있어(같은 모델의 왕복 번역/판단은 오류를 숨기는 경향) 항상
-    교차 검증한다. claude_only는 GPT가, (agreed + gpt_only는 전부 GPT
-    문구이므로) Claude가 판단한다. 원문(original_text)도 같이 역번역시켜
-    리뷰어가 "교정 전엔 뭐였는지"를 제안문 역번역과 나란히 비교할 수 있게
-    한다(design §리뷰어가 스페인어를 몰라 원문의 뉘앙스가 더 나은 경우를
-    놓치는 문제). 반환값은 (segment_id -> 제안문 한국어 역번역,
-    segment_id -> 원문 한국어 역번역, 개선 아님으로 판정된
+    """제안된 문구가 교정 전 원문보다 실제로 나아졌는지를 반대쪽 모델이 먼저
+    판단하고(judge_improvement), 개선으로 인정된 문구만 한국어로
+    역번역한다(back_translate, 감사/참고용) — 개선 아님으로 판정되면
+    어차피 폐기되어 역번역이 필요 없으므로, 판정을 먼저 해서 역번역
+    호출량을 줄인다. 자기가 쓴 문구를 자기가 평가하면 스스로의 오류를
+    매끄럽게 얼버무려 가릴 위험이 있어(같은 모델의 판단은 오류를 숨기는
+    경향) 항상 교차 검증한다. claude_only는 GPT가, (agreed + gpt_only는
+    전부 GPT 문구이므로) Claude가 판단한다. 원문(original_text)도 같이
+    역번역시켜 리뷰어가 "교정 전엔 뭐였는지"를 제안문 역번역과 나란히
+    비교할 수 있게 한다(design §리뷰어가 스페인어를 몰라 원문의 뉘앙스가
+    더 나은 경우를 놓치는 문제). 반환값은 (segment_id -> 제안문 한국어
+    역번역, segment_id -> 원문 한국어 역번역, 개선 아님으로 판정된
     (segment_id, source) 집합, warnings)."""
     warnings: list = []
     original_text_by_id = {p.id: p.target.text for p in pairs if p.target}
@@ -786,12 +788,38 @@ async def _back_translate_proposals(
     claude_authored_texts = _to_payload(claude_only)
     gpt_authored_texts = _to_payload(agreed + gpt_only)
 
+    claude_authored_judged, gpt_authored_judged = await asyncio.gather(
+        _back_translate_all(
+            claude_authored_texts, profile, provider.judge_improvement_with_gpt,
+            "Claude 제안 개선 여부 판정", target_version_id, warnings),
+        _back_translate_all(
+            gpt_authored_texts, profile, provider.judge_improvement_with_claude,
+            "GPT 제안 개선 여부 판정", target_version_id, warnings),
+    )
+    # 판정 호출이 실패하면(_safe_call이 빈 리스트로 대체) is_improvement 키가
+    # 아예 없다 — 이때는 "폐기"보다 "일단 보존"이 안전하므로 기본값 True로
+    # 둔다(모르면 걸러내지 않는다).
+    not_improved = {
+        (r["id"], "claude_authored") for r in claude_authored_judged
+        if not r.get("is_improvement", True)
+    } | {
+        (r["id"], "gpt_authored") for r in gpt_authored_judged
+        if not r.get("is_improvement", True)
+    }
+
+    claude_authored_survivors = [
+        t for t in claude_authored_texts if (t["id"], "claude_authored") not in not_improved
+    ]
+    gpt_authored_survivors = [
+        t for t in gpt_authored_texts if (t["id"], "gpt_authored") not in not_improved
+    ]
+
     claude_authored_backtranslated, gpt_authored_backtranslated = await asyncio.gather(
         _back_translate_all(
-            claude_authored_texts, profile, provider.back_translate_with_gpt,
+            claude_authored_survivors, profile, provider.back_translate_with_gpt,
             "Claude 제안 역번역", target_version_id, warnings),
         _back_translate_all(
-            gpt_authored_texts, profile, provider.back_translate_with_claude,
+            gpt_authored_survivors, profile, provider.back_translate_with_claude,
             "GPT 제안 역번역", target_version_id, warnings),
     )
     # 키를 segment_id만으로 두면, 의견이 갈린(disputed) 세그먼트는 Claude
@@ -808,16 +836,6 @@ async def _back_translate_proposals(
     } | {
         (r["id"], "gpt_authored"): r["original_korean_text"]
         for r in gpt_authored_backtranslated if r.get("original_korean_text")
-    }
-    # 판정 호출이 실패하면(_safe_call이 빈 리스트로 대체) is_improvement 키가
-    # 아예 없다 — 이때는 "폐기"보다 "일단 보존"이 안전하므로 기본값 True로
-    # 둔다(모르면 걸러내지 않는다).
-    not_improved = {
-        (r["id"], "claude_authored") for r in claude_authored_backtranslated
-        if not r.get("is_improvement", True)
-    } | {
-        (r["id"], "gpt_authored") for r in gpt_authored_backtranslated
-        if not r.get("is_improvement", True)
     }
     return backtranslation_by_id, original_backtranslation_by_id, not_improved, warnings
 

@@ -52,6 +52,12 @@ class LiveModelProvider(ModelProvider):
     async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.back_translate(texts, profile)
 
+    async def judge_improvement_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
+        return await self._claude.judge_improvement(texts, profile)
+
+    async def judge_improvement_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.judge_improvement(texts, profile)
+
     async def check_equivalence_with_claude(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._claude.check_equivalence(items, profile)
 

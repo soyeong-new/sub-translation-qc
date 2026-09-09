@@ -19,13 +19,19 @@ def contains_hangul(text: str) -> bool:
 CATEGORY_ENUM = ["sensitivity", "mistranslation", "nuance_tone",
                   "unnatural_style", "locale_convention", "glossary"]
 
-VERIFICATION_PRIORITY_PARAGRAPH = (
-    "⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: "
-    "오역/심의 정확성 > 씬 내 반복 표현 일관성 > 자연스러움. "
-    "위 우선순위를 지키는 한 원문의 어순·문장 구조를 그대로 따를 의무는 없다 — "
-    "같은 내용을 전달하면 문장을 자유롭게 재구성해 가장 자연스러운 표현으로 의역하라. "
-    "사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
-)
+def build_verification_priority_paragraph(glossary_block: str = "") -> str:
+    """[우선순위] 문단. glossary_block이 있으면(체크리스트에 고유명사 표기
+    일관성 항목이 추가되는 경우) 그 항목을 우선순위 서열에도 끼워 넣는다."""
+    order = "오역/오타/심의 정확성"
+    if glossary_block:
+        order += " > 고유명사 표기 일관성"
+    order += " > 자연스러움 > 씬 내 반복 표현 일관성"
+    return (
+        f"⚠️ [우선순위] 아래 규칙들이 서로 충돌하면 이 순서를 따르라: {order}. "
+        "위 우선순위를 지키는 한 원문의 어순·문장 구조를 그대로 따를 의무는 없다 — "
+        "같은 내용을 전달하면 문장을 자유롭게 재구성해 가장 자연스러운 표현으로 의역하라. "
+        "사실이 아닌 부연 설명·수식어는 간결하게 줄여도 된다.\n\n"
+    )
 
 def build_batch_scope_intro(glossary_block: str = "") -> str:
     step_count = 6 if glossary_block else 5
@@ -71,10 +77,14 @@ def build_verification_checklist(language_label: str, skip_clean_line: str,
         '   - 주의: 같은 성씨를 쓰는 다른 인물 등 문맥상 다른 대상을 가리키는 게 분명하면 교정하지 마라.\n'
         '   - [작품 용어집]의 한국어 용어는 대표형이다. 축약형·호격형(예: 김현 → 현, 현아)도 같은 대상으로 보고 같은 스펠링을 쓰되, 문장에서 실제로 부르는 형태(성+이름 전체 / 이름만)는 원문을 따라라.\n'
     ) if glossary_block else ""
+    glossary_exception_line = (
+        "   - 예외: [작품 용어집]에 이미 등록된 고유명사는 그 표기를 정답으로 간주하라 — "
+        "네가 기대하는 표기(예: 표준 로마자 표기)와 다르다는 이유로 오역으로 보지 마라.\n"
+    ) if glossary_block else ""
     return (
         "⚠️ [검수 범위 및 교정 원칙]\n"
         "1. 반드시 교정해야 하는 대상:\n"
-        "   - 오역 및 핵심 의미 누락/와전 (category: \"mistranslation\")\n"
+        "   - 오타 및 오역 (category: \"mistranslation\")\n"
         "   - 방송/미디어 심의 위반 비속어 (category: \"sensitivity\")\n"
         "   - 한국어 구조를 그대로 따라가 현지인이 읽기에 어색한 직역투 (category: \"unnatural_style\")\n"
         "   - 현지 문화권 관습, 관용구, 단위 표기 오류 (category: \"locale_convention\")\n"
@@ -90,9 +100,11 @@ def build_verification_checklist(language_label: str, skip_clean_line: str,
         "1. 방송/미디어 심의 비속어 검수 (category: \"sensitivity\"):\n"
         "   - 기준: 영상 방영 및 미디어 심의(Broadcasting Rating)상 제재나 경고 대상이 될 수 있는 심한 비속어, 성적·인격모독적 표현이 포함되어 있는가?\n"
         "   - 교정 지침: 대사의 거친 뉘앙스는 유지하되, 방송 심의 기준에 적합한 수위가 약한 비속어나 자연스러운 순화 표현으로 교정(`corrected_text`)하라.\n"
-        "2. 오역 및 핵심 의미 누락 (category: \"mistranslation\"):\n"
-        "   - 기준: korean_text의 실제 의미와 target_text의 번역 의미가 다르게 와전되었거나, 문장의 핵심 의미가 생략되었는가? 또는 원문의 구체적 사실(인물·장소·숫자·행동)이 생략·변경·추가되었는가? 단, 사실이 아닌 부연 설명·수식어를 줄인 것은 여기 해당하지 않는다.\n"
-        "   - 교정 지침: 원문의 뜻을 왜곡 없이 정확하게 전달하도록 교정하라.\n"
+        "2. 오타 및 오역 (category: \"mistranslation\"):\n"
+        "   - 기준: target_text에 명백한 오타·철자 오류가 있는가? 또는 korean_text와 다른 인물·장소·숫자·행동을 가리키게 되었거나, korean_text에 없던 사실이 새로 생기거나, 장면을 이해하는 데 필요한 사실이 사라졌는가?\n"
+        "   - 교정 지침: 오타는 바로잡고, 의미는 원문과 다르지 않도록 정확하게 전달하라. 어순을 바꾸거나 문장 구조를 재배치하거나, 자막 길이에 맞춰 중복 표현·부연 수식어를 압축하는 것은 오역이 아니다.\n"
+        "   - 문맥 참고: 중의적이거나 문맥 없이는 뜻이 불분명한 단어·표현은, 같은 씬 안의 앞뒤 세그먼트(배열의 다른 항목들)를 참고해 실제로 어떤 의미로 쓰였는지 판별한 뒤 교정하라.\n"
+        + glossary_exception_line +
         "3. 어색한 어조 및 직역투 (category: \"unnatural_style\" 또는 \"nuance_tone\"):\n"
         f"   - 기준: 문법은 맞지만 한국어 어순/표현을 그대로 따라간 직역투라 {language_label}로서 어색한가? 또는 한국어 원문의 감정·톤이 명확히 다르게 전달되었는가?\n"
         f"   - 교정 지침: 원문의 감정·톤을 정확히 살리면서 {language_label}권 현지인이 실제로 사용하는 자연스러운 구어체로 교정하라. 자막은 화면과 함께 순간적으로 읽는 매체이니 뜻이 통하는 선에서 최대한 간결하게 써라 — 화면으로 이미 전달되는 정보나 불필요한 부연 설명은 생략하라. 같은 씬 안에서 한국어 원문의 단어/표현이 반복되면, 문법적으로 다르게 써야 할 이유가 없는 한 같은 번역으로 통일하라.\n"
@@ -139,7 +151,7 @@ def build_findings_schema_instruction(lead_in: str) -> str:
         'segment_id (문자열, 입력 pair의 "id"와 반드시 일치), '
         'category (문자열, 반드시 다음 중 하나: '
         '"sensitivity"(사전에 없어 애매한 비속어), '
-        '"mistranslation"(의미가 잘못 옮겨졌거나 함축된 의미가 빠진 경우), '
+        '"mistranslation"(오타이거나 의미가 다르게 옮겨진 경우), '
         '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
         '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
         '"locale_convention"(그 문화권 관습·로컬라이제이션에 안 맞는 표현), '
@@ -181,11 +193,14 @@ def build_glossary_block(entries: List[dict]) -> str:
 
 
 def build_improvement_judgment_criteria(language_label: str) -> str:
-    """back_translate의 is_improvement 판정 문단. "정보 보존"이라는 뭉뚱그린
+    """judge_improvement의 is_improvement 판정 문단. "정보 보존"이라는 뭉뚱그린
     기준 대신, 판정 난이도를 감안해 두 개의 닫힌 목록(false 사유 / false
-    사유 아님)으로 쓴다(경량 모델이 수행하므로 열린 질문보다 부담이 적다)."""
+    사유 아님)으로 쓴다(경량 모델이 수행하므로 열린 질문보다 부담이 적다).
+    역번역(back_translate)과 분리된 별도 호출에서 쓴다 — 교정문을 만든
+    모델이 같은 호출 안에서 자기 교정을 스스로 채점하면 오류를 얼버무리는
+    경향이 있어(자기 채점 편향), 반대쪽 모델이 사후에 단독으로 판정한다."""
     return (
-        "2. text가 original_text보다 reference_korean의 의미·톤을 더 잘 "
+        "1. text가 original_text보다 reference_korean의 의미·톤을 더 잘 "
         f"살리는 자연스러운 {language_label} 표현인지 판단하라"
         "(is_improvement). 의미 왜곡 없이 이미 자연스러운데 단순히 어휘 "
         "취향만 다르다면 개선으로 보지 마라 — 동등하면 false.\n"
@@ -260,21 +275,35 @@ class ModelProvider(ABC):
 
     @abstractmethod
     async def back_translate_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
-        """Claude로 대상언어 텍스트를 한국어로 역번역하고(감사/참고용), 동시에
-        text가 original_text보다 실제로 나아졌는지도 판단한다. GPT가 만든
-        텍스트만 여기로 들어온다 — 자기가 만든 텍스트를 자기가 판단하면
-        스스로의 오류를 매끄럽게 얼버무려 가릴 위험이 있어(같은 모델의 왕복
-        번역/판단은 오류를 숨기는 경향), 항상 반대쪽 모델이 판단한다. 입력은
-        [{"id": str, "reference_korean": str(한국어 원문),
-        "original_text": str(교정 전), "text": str(교정 후)}], 반환값은
-        [{"id": str, "korean_text": str(text의 역번역),
-        "original_korean_text": str(original_text의 역번역),
-        "is_improvement": bool}]."""
+        """Claude로 대상언어 텍스트를 한국어로 역번역한다(감사/참고용) — 순수
+        번역 전용이며, 개선 여부 판정은 judge_improvement_with_*가 별도로
+        맡는다(역번역 프롬프트에 판정까지 같이 시키면 두 작업이 서로의
+        품질을 갉아먹는다는 게 실측 확인됨). GPT가 만든 텍스트만 여기로
+        들어온다. 입력은 [{"id": str, "reference_korean": str(한국어 원문,
+        문맥 참고용), "original_text": str(교정 전), "text": str(교정 후)}],
+        반환값은 [{"id": str, "korean_text": str(text의 역번역),
+        "original_korean_text": str(original_text의 역번역)}]."""
         ...
 
     @abstractmethod
     async def back_translate_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
         """back_translate_with_claude와 대칭. Claude가 만든 텍스트만 여기로
+        들어온다."""
+        ...
+
+    @abstractmethod
+    async def judge_improvement_with_claude(self, texts: List[dict], profile: dict) -> List[dict]:
+        """Claude로 text가 original_text보다 실제로 나아졌는지 판단한다.
+        GPT가 만든 텍스트만 여기로 들어온다 — 자기가 만든 텍스트를 자기가
+        판단하면 스스로의 오류를 매끄럽게 얼버무려 가릴 위험이 있어(자기
+        채점 편향), 항상 반대쪽 모델이 판단한다. 입력은 [{"id": str,
+        "reference_korean": str(한국어 원문), "original_text": str(교정 전),
+        "text": str(교정 후)}], 반환값은 [{"id": str, "is_improvement": bool}]."""
+        ...
+
+    @abstractmethod
+    async def judge_improvement_with_gpt(self, texts: List[dict], profile: dict) -> List[dict]:
+        """judge_improvement_with_claude와 대칭. Claude가 만든 텍스트만 여기로
         들어온다."""
         ...
 
