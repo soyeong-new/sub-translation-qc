@@ -411,7 +411,7 @@ function FindingCard({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="rounded-md border border-border bg-muted/60 p-3">
           <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
-          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.original_text}</p>
+          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.original_text}</p>
           {originalBackTranslation && (
             <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
               번역: {originalBackTranslation}
@@ -423,7 +423,7 @@ function FindingCard({
             <p className="text-xs font-medium uppercase tracking-wide text-primary">제안</p>
             <CharCount text={finding.suggested_text} />
           </div>
-          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
+          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
             <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
               번역: {proposalBackTranslation || backTranslation}
@@ -441,7 +441,7 @@ function FindingCard({
             저장된 최종 텍스트
             {finding.status === "approved" && " (글자수 제약으로 자동 축약됨)"}
           </p>
-          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.final_text}</p>
+          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.final_text}</p>
         </div>
       )}
 
@@ -579,7 +579,7 @@ function PairedFindingCard({
             <p className="text-xs font-medium uppercase tracking-wide text-primary">제안</p>
             <CharCount text={finding.suggested_text} />
           </div>
-          <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{finding.suggested_text}</p>
+          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
             <p className="mt-1.5 whitespace-pre-wrap text-xs text-muted-foreground">
               번역: {proposalBackTranslation || backTranslation}
@@ -791,7 +791,7 @@ function PairedFindingCard({
             원본 유지
           </button>
         </div>
-        <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{a.original_text}</p>
+        <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{a.original_text}</p>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr]">
@@ -977,8 +977,8 @@ function SrtSyncPanel({
               ) : (
                 displayText && (
                   <p
-                    className={`text-xs text-foreground ${
-                      distance === 0 ? "whitespace-pre-wrap font-medium" : "truncate"
+                    className={`whitespace-pre-wrap text-xs text-foreground ${
+                      distance === 0 ? "font-medium" : ""
                     }`}
                   >
                     {displayText}
@@ -1624,7 +1624,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           열이 상대적으로 커 보이다가 md 미만에서 갑자기 전체 폭으로
           튀어 화면을 다 차지하는 것처럼 보였다. */}
       <main className="mx-auto max-w-6xl px-6 py-8">
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(300px,38%)_1fr]">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(280px,30%)_1fr]">
           <div className="space-y-3 md:sticky md:top-6 md:self-start">
             <VideoPreviewPanel
               videoProxyUrl={videoProxyUrl}
