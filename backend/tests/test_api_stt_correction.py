@@ -138,7 +138,7 @@ async def test_correct_stt_updates_existing_finding_in_place_instead_of_duplicat
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
 
-    async def fake_reverify(segment, provider, knowledge, profile, current_text=None):
+    async def fake_reverify(segment, provider, knowledge, profile, current_text=None, glossary_entries=None):
         return {"category": "mistranslation", "description": "재검증 설명",
                 "corrected_text": "Ya revisé todo."}
 
@@ -242,14 +242,14 @@ async def test_correct_stt_reverifies_against_existing_pending_suggestion_not_ra
 @pytest.mark.asyncio
 async def test_correct_stt_reapplies_already_confirmed_gender_to_new_suggestion(monkeypatch):
     """회귀: 1차 검수 때 이미 확정된 성별(resolved_gender_raw)이 STT
-    재검증이 새로 만든 제안문구에도 반영돼야 한다 — 안 그러면 "cansado/a"
-    같은 미확정 표기가 그대로 새어나간다."""
+    재검증이 새로 만든 제안문구에도 apply_gender를 통해 반영돼야 한다 —
+    안 그러면 확정된 성별과 무관한 표기가 그대로 새어나간다."""
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
 
-    async def fake_reverify(segment, provider, knowledge, profile, current_text=None):
+    async def fake_reverify(segment, provider, knowledge, profile, current_text=None, glossary_entries=None):
         return {"category": "mistranslation", "description": "테스트",
-                "corrected_text": "Te ves cansado/a."}
+                "corrected_text": "Te ves cansada."}
 
     monkeypatch.setattr(findings_router, "reverify_segment_after_stt_correction", fake_reverify)
 
@@ -273,7 +273,7 @@ async def test_correct_stt_reapplies_already_confirmed_gender_to_new_suggestion(
         assert r.status_code == 200
         body = r.json()
         assert body["new_finding"] is not None
-        assert body["new_finding"]["suggested_text"] == "Te ves cansado."
+        assert body["new_finding"]["suggested_text"] == "[male] Te ves cansada."
 
     async with async_session() as session:
         rows = await session.execute(
@@ -281,7 +281,7 @@ async def test_correct_stt_reapplies_already_confirmed_gender_to_new_suggestion(
         )
         findings = list(rows.scalars().all())
         assert len(findings) == 1
-        assert findings[0].suggested_text == "Te ves cansado."
+        assert findings[0].suggested_text == "[male] Te ves cansada."
 
         seg = await session.get(Segment, seg_id)
         # 원래 확정돼 있던 성별로 커버되는 경우라 새로 확인이 필요해지면 안 된다.
@@ -297,7 +297,7 @@ async def test_correct_stt_flags_new_gender_ambiguity_when_not_covered_by_prior_
     monkeypatch.setenv("QC_PROVIDER", "mock")
     monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
 
-    async def fake_reverify(segment, provider, knowledge, profile, current_text=None):
+    async def fake_reverify(segment, provider, knowledge, profile, current_text=None, glossary_entries=None):
         return {"category": "mistranslation", "description": "테스트",
                 "corrected_text": "Estoy cansado."}
 

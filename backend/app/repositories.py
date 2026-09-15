@@ -58,12 +58,10 @@ async def _save_format_violations(session: AsyncSession, target_version_id: str,
         base_id = _ns(target_version_id, f"finding_{v.segment_id}_formatting_{v.rule}")
         final_id = f"{base_id}_2" if base_id in existing_ids else base_id
         existing_ids.add(final_id)
-        # 자동보정된 위반(온점 4개 이상)은 판단 여지가 없는 기계적 규칙이라
-        # 파이프라인이 이미 텍스트에 적용해 놓은 상태다. 검수자가 결정할 것이
-        # 남아 있지 않으므로 대기열에 쌓아 두지 않고 바로 approved로 확정한다.
-        # 반면 줄 길이 위반은 의미를 보존하며 문장을 줄이는 판단이 필요하므로
-        # (format_rules.check_line_length가 자동 수정을 하지 않는 이유와 동일)
-        # pending으로 남겨 검수자에게 넘긴다.
+        # 온점 4개 이상처럼 규칙이 스스로 고칠 수 있는(auto_fixed) 위반은
+        # 판단 여지가 없는 기계적 규칙이라 텍스트에 이미 반영됐으므로 finding도
+        # 자동 승인 상태로 저장한다 — 검수자 진행률 카운팅(ReviewView.jsx)에서는
+        # 이런 자동보정 finding을 실제 검수 대상에서 제외해 구분한다.
         suggested_text = v.fixed_text if v.auto_fixed else ""
         original_text = v.original_text or target_text_by_pair.get(v.segment_id, "")
         session.add(FindingRow(
@@ -317,8 +315,8 @@ async def get_glossary_prompt_entries(session: AsyncSession, title_id: str,
     등록 안 된 언어판은 뭐라고 부를지 모르므로 프롬프트에 넣을 수 없다).
     build_glossary_block이 바로 쓸 수 있는 평평한 dict 리스트로 반환한다."""
     rows = (await session.execute(
-        select(GlossaryEntry.korean_term, GlossaryEntry.category, GlossaryEntry.aliases,
-               GlossarySpelling.canonical)
+        select(GlossaryEntry.id, GlossaryEntry.korean_term, GlossaryEntry.category,
+               GlossaryEntry.aliases, GlossarySpelling.canonical)
         .join(GlossarySpelling, GlossarySpelling.entry_id == GlossaryEntry.id)
         .where(
             GlossaryEntry.title_id == title_id,
@@ -327,8 +325,9 @@ async def get_glossary_prompt_entries(session: AsyncSession, title_id: str,
         )
     )).all()
     return [
-        {"korean_term": korean_term, "category": category, "aliases": aliases, "canonical": canonical}
-        for korean_term, category, aliases, canonical in rows
+        {"entry_id": entry_id, "korean_term": korean_term, "category": category,
+         "aliases": aliases, "canonical": canonical}
+        for entry_id, korean_term, category, aliases, canonical in rows
     ]
 
 

@@ -324,12 +324,12 @@ async def test_verify_and_refine_falls_back_when_profile_empty():
 
 @pytest.mark.asyncio
 async def test_back_translate_returns_korean_text_per_id():
-    payload = {"results": [{"id": "p1", "korean_text": "안녕하세요"}]}
+    payload = {"results": {"p1": {"korean_text": "안녕하세요", "original_korean_text": "안녕"}}}
     client = _make_client_with_fake_sdk(json.dumps(payload))
     result = await client.back_translate(
         texts=[{"id": "p1", "text": "hola"}], profile={"language": "es", "variant": "LATAM"},
     )
-    assert result == payload["results"]
+    assert result == [{"id": "p1", **payload["results"]["p1"]}]
 
 
 @pytest.mark.asyncio
@@ -345,14 +345,15 @@ async def test_back_translate_uses_json_schema_response_format_with_required_fie
     화면에서 원문 역번역이 통째로 안 뜨는 사례가 있었다 — API가 스키마로
     필드 존재를 강제해야 한다(correct_primary/verify_and_refine과 동일한
     이유, 같은 방식)."""
-    client = _make_client_with_fake_sdk(json.dumps({"results": []}))
-    await client.back_translate(texts=[], profile={})
+    client = _make_client_with_fake_sdk(json.dumps({"results": {"p1": {}}}))
+    await client.back_translate(texts=[{"id": "p1", "text": "hola"}], profile={})
     call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
     assert call_kwargs["response_format"]["type"] == "json_schema"
-    item_schema = call_kwargs["response_format"]["json_schema"]["schema"][
-        "properties"]["results"]["items"]
-    assert set(item_schema["required"]) == {
-        "id", "korean_text", "original_korean_text"}
+    results_schema = call_kwargs["response_format"]["json_schema"]["schema"][
+        "properties"]["results"]
+    assert results_schema["required"] == ["p1"]
+    assert set(results_schema["properties"]["p1"]["required"]) == {
+        "korean_text", "original_korean_text"}
 
 
 @pytest.mark.asyncio
@@ -435,6 +436,31 @@ async def test_apply_formality_falls_back_to_default_instruction_when_profile_em
     await client.apply_formality(items=[], profile={})
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "tú" in sent_system
+
+
+@pytest.mark.asyncio
+async def test_apply_gender_sends_items_and_returns_results():
+    payload = {"results": [{"id": "p1", "corrected_text": "No eres la única."}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.apply_gender(
+        items=[{"id": "p1", "target_text": "No eres el único.", "gender": "female"}],
+        profile={"language": "es"})
+    assert result == payload["results"]
+    sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "No eres el único." in sent_user
+
+
+@pytest.mark.asyncio
+async def test_apply_gender_groups_sends_items_and_returns_results():
+    payload = {"results": [{"id": "p1", "corrected_text": "Él está cansada y ella está enojado."}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    result = await client.apply_gender_groups(
+        items=[{"id": "p1", "target_text": "Él está cansado y ella está enojado.",
+                 "groups": [{"words": ["cansado"], "referent": "인물1", "gender": "female"}]}],
+        profile={"language": "es"})
+    assert result == payload["results"]
+    sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert "cansado" in sent_user
 
 
 @pytest.mark.asyncio

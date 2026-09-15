@@ -15,9 +15,11 @@ import {
   resolveGender,
   resolveGenderGroup,
   excludeSegment,
+  getTitleGlossary,
 } from "../api.js";
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 import QQLogo from "../components/QQLogo.jsx";
+import GlossaryTable from "../components/GlossaryTable.jsx";
 
 // 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
 // 아니다(backend/app/core/requery.py의 requery_finding 참고) — 검수자가
@@ -1087,6 +1089,11 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [titleName, setTitleName] = useState(null);
   const [episodeNo, setEpisodeNo] = useState(null);
   const [versionDisplayName, setVersionDisplayName] = useState(null);
+  // 추가/변경 중인 용어를 보면서 작업할 수 있게 검수 화면에서도 용어집을
+  // 참고할 수 있게 한다 — 무거운 GET /titles 전체 대신 이 작품 것만 조회.
+  const [glossary, setGlossary] = useState(null);
+  const [showGlossary, setShowGlossary] = useState(false);
+  const [glossaryError, setGlossaryError] = useState(null);
   // segment.start/end는 대상언어 SRT 시계다 — 영상을 잘라 올려 SRT와 영상
   // 파일 시계가 어긋나 있으면(detect_global_offset이 감지) seek 시 이 값을
   // 빼서 영상 파일 자체의 시계로 변환해야 한다.
@@ -1166,6 +1173,17 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       cancelled = true;
     };
   }, [targetVersionId]);
+
+  function refreshGlossary() {
+    if (!titleId) return;
+    getTitleGlossary(titleId)
+      .then((data) => setGlossary(data))
+      .catch(() => {
+        // 참고용 패널이라 실패해도 화면 전체를 막지 않는다.
+      });
+  }
+
+  useEffect(refreshGlossary, [titleId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1513,15 +1531,30 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         .sort((a, b) => a.start - b.start)
     : [];
 
-  const totalFindingsCount = findings?.length ?? 0;
-  const processedFindingsCount = (findings ?? []).filter((f) => f.status !== "pending").length;
-
   // pair 카드는 후보 두 개(a/b)의 status가 다를 수 있어 "이 카드가 이
   // status를 갖고 있는가"를 후보 중 하나라도 해당하면 true로 본다 — 필터/
   // 카운트 둘 다 이 기준을 공유한다.
   const itemStatuses = (item) => (item.type === "single" ? [item.finding.status] : [item.a.status, item.b.status]);
   const itemCategories = (item) => (item.type === "single" ? [item.finding.category] : [item.a.category, item.b.category]);
   const displayItems = groupFindingsForDisplay(findings ?? []);
+  // 온점/줄 길이 자동보정처럼 판단 여지 없는 규칙은 사람 승인 없이 자동
+  // 반영·자동 승인된다(reviewed_at이 안 채워짐 — review-action 엔드포인트만
+  // 이 값을 채운다, export.py의 _final_text_by_segment와 같은 신호). 진행률
+  // 카운팅은 실제 검수 대상만 세야 하므로 이런 자동보정 finding은 제외한다 —
+  // 다만 findings 목록/탭에는 그대로 남아 감사할 수 있어야 한다(그래서
+  // displayItems/statusCounts/filteredDisplayItems는 건드리지 않는다).
+  const isAutoResolved = (f) => f.status !== "pending" && !f.reviewed_at;
+  const reviewRequiredItems = displayItems.filter(
+    (it) => it.type !== "single" || !isAutoResolved(it.finding)
+  );
+  // 헤더/진행률도 탭과 같은 카드 단위(displayItems)를 써야 한다 — findings.length는
+  // Claude/GPT 의견 불일치 쌍을 카드 1개로 합치기 전 raw row 개수라 탭 합계와
+  // 어긋난다("Findings (56)"인데 탭 합은 52 같은 불일치, 사용자 재현).
+  const totalFindingsCount = reviewRequiredItems.length;
+  const processedFindingsCount = reviewRequiredItems.filter((it) => !itemStatuses(it).includes("pending")).length;
+  const glossarySpellingColumns = Array.from(
+    new Set((glossary ?? []).flatMap((e) => Object.keys(e.spellings ?? {})))
+  );
   const statusCounts = { all: displayItems.length };
   for (const status of Object.keys(STATUS_LABELS)) {
     statusCounts[status] = displayItems.filter((it) => itemStatuses(it).includes(status)).length;
@@ -1573,6 +1606,23 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
             )}
           </div>
 
+          {totalFindingsCount > 0 && (
+            <>
+              <div className="h-6 w-px shrink-0 bg-border" />
+              <div className="flex shrink-0 items-center gap-2">
+                <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${Math.round((processedFindingsCount / totalFindingsCount) * 100)}%` }}
+                  />
+                </div>
+                <span className="whitespace-nowrap text-xs text-muted-foreground">
+                  {processedFindingsCount}/{totalFindingsCount} 처리됨
+                </span>
+              </div>
+            </>
+          )}
+
           <div className="h-6 w-px shrink-0 bg-border" />
 
           <div className="flex shrink-0 items-center gap-2">
@@ -1615,6 +1665,58 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 파인딩 작업 중 스크롤을 내려도 계속 접근할 수 있게, 본문 흐름에
+          끼워넣는 대신 화면 오른쪽에 고정된 탭 버튼 + 슬라이드 패널로 만든다
+          (본문 위에 끼워넣으면 파인딩을 보려고 스크롤하면 같이 밀려 사라짐). */}
+      {glossary && (
+        <>
+          {!showGlossary && (
+            <button
+              type="button"
+              onClick={() => setShowGlossary(true)}
+              className="fixed right-0 top-1/2 z-30 -translate-y-1/2 rounded-l-md border border-r-0 border-border bg-card px-2 py-3 text-xs font-semibold text-foreground shadow-md transition-colors hover:bg-accent"
+              style={{ writingMode: "vertical-rl" }}
+            >
+              용어집
+            </button>
+          )}
+
+          <div
+            className={`fixed right-0 top-16 z-40 h-[calc(100%-4rem)] w-full max-w-sm transform border-l border-border bg-card shadow-xl transition-transform duration-200 ${
+              showGlossary ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <span className="text-sm font-semibold text-foreground">
+                용어집 <span className="font-normal text-muted-foreground">· {glossary.length}개</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowGlossary(false)}
+                aria-label="용어집 닫기"
+                className="text-muted-foreground transition-colors hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            {glossaryError && (
+              <p role="status" aria-live="polite" className="border-b border-border px-4 py-2 text-xs text-destructive">
+                {glossaryError}
+              </p>
+            )}
+            <div className="h-[calc(100%-49px)] overflow-y-auto">
+              <GlossaryTable
+                titleId={titleId}
+                entries={glossary}
+                columns={glossarySpellingColumns}
+                onChanged={refreshGlossary}
+                onError={setGlossaryError}
+              />
+            </div>
+          </div>
+        </>
       )}
 
       {/* 본문을 좌측 영상 미리보기 / 우측 Findings·내보내기 본문으로 분리한다.
@@ -1660,21 +1762,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-3">
                   <h2 id="findings-heading" className="text-lg font-semibold text-foreground">
-                    Findings {findings ? `(${findings.length})` : ""}
+                    Findings {findings ? `(${displayItems.length})` : ""}
                   </h2>
-                  {totalFindingsCount > 0 && (
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-40 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary"
-                          style={{ width: `${Math.round((processedFindingsCount / totalFindingsCount) * 100)}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {processedFindingsCount}/{totalFindingsCount} 처리됨
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
 

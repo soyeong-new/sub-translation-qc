@@ -100,36 +100,50 @@ async def test_requery_raises_when_provider_returns_no_results():
 
 
 @pytest.mark.asyncio
-async def test_apply_resolved_gender_to_text_handles_legacy_groups_without_candidate_indices():
-    """회귀: 이 브랜치 이전에 저장된 resolved_gender_groups_raw 행은
-    candidate_indices 키가 없다(words/target_word_lemmas/gender만 있음).
-    이런 옛 행을 만나면 KeyError로 죽는 대신, 인덱스 없는 그룹은 안전하게
-    "아무 단어에도 적용 안 함"으로 처리해 원문을 그대로 돌려줘야 한다."""
+async def test_requery_reverts_canonical_regression_when_glossary_entries_given():
+    """재질문도 1차 AI 검증(pipeline._make_dual_verification_finding)과 같은
+    문제를 겪는다 — LLM이 등록된 고유명사 표기를 미등록 표기로 바꿔버릴 수
+    있다. finding.original_text에 이미 정확한 표기가 있었다면 재질문
+    결과도 그 표기로 되돌려야 한다(실사용 재현: 강옥/강오크 → Kang Hulk가
+    재질문에서도 Kang Ok로 되돌아가지 않던 문제)."""
+    provider = _StubProvider()
+    provider.correct_primary = AsyncMock(
+        return_value=[{"segment_id": "seg1", "category": "mistranslation",
+                        "corrected_text": "Oye, Kang Ok.", "description": "재질문 반영",
+                        "back_translation": None}])
+    finding = _finding("claude", suggested_text="Oye, Kang Ok.")
+    finding.original_text = "Oye, Kang Hulk."
     segment = _segment()
-    segment.resolved_gender_groups_raw = [
-        {"words": ["guapo"], "target_word_lemmas": ["guapo"], "gender": "male"},
-    ]
-    result = await apply_resolved_gender_to_text(
-        segment, "es una persona guapa", _StubProvider(), {"language": "es"})
-    assert result == "es una persona guapa"
+    segment.korean_text = "야, 강옥!"
+    glossary_entries = [{"entry_id": "e1", "korean_term": "강옥", "category": "person",
+                          "aliases": [], "canonical": "Kang Hulk"}]
+
+    result = await requery_finding(finding, segment, "표기 다시 확인해줘", provider,
+                                    knowledge="", profile={}, glossary_entries=glossary_entries)
+
+    assert result == ("Oye, Kang Hulk.", None)
 
 
 @pytest.mark.asyncio
-async def test_apply_resolved_gender_to_text_rolls_back_swap_flagged_as_grammatically_broken(monkeypatch):
-    """회귀(실사용 재현): STT 재검증/다시 질문하기 제안문구에 성별을 재반영하는
-    이 경로는 pipeline._apply_resolved_gender와 달리 verify_gender_swap
-    안전망을 안 거치고 있었다 — spaCy 구조 오탐("la caja"를 서술명사로
-    오분석해 "la cajo"로 깨뜨리는 경우)이 그대로 새어나갔다. 다른 경로와
-    동일하게 문법이 깨졌다고 판정되면 치환 전 텍스트로 롤백해야 한다."""
+async def test_apply_resolved_gender_to_text_applies_confirmed_group_gender():
+    """1차 검수 때 확정된 다인물 그룹 성별이 STT 재검증 등에서 나중에 생긴
+    텍스트에도 apply_gender_groups를 통해 반영돼야 한다."""
+    segment = _segment()
+    segment.resolved_gender_groups_raw = [
+        {"words": ["guapo"], "referent": "화자", "gender": "male"},
+    ]
+    result = await apply_resolved_gender_to_text(
+        segment, "es una persona guapa", MockProvider(), {"language": "es"})
+    assert result == "[male] es una persona guapa"
+
+
+@pytest.mark.asyncio
+async def test_apply_resolved_gender_to_text_applies_confirmed_single_gender():
+    """인물이 하나뿐이면(그룹 없이 단일값) apply_gender를 통해 반영돼야
+    한다."""
     segment = _segment()
     segment.resolved_gender_raw = "male"
-    provider = MockProvider()
-
-    async def _flag_error(items, profile):
-        return [{"id": i["id"], "has_error": True} for i in items]
-
-    monkeypatch.setattr(provider, "verify_gender_swap", _flag_error)
 
     result = await apply_resolved_gender_to_text(
-        segment, "El recibo está en la caja.", provider, {"language": "es"})
-    assert result == "El recibo está en la caja."
+        segment, "El recibo está en la caja.", MockProvider(), {"language": "es"})
+    assert result == "[male] El recibo está en la caja."

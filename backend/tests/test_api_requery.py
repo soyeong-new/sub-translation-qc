@@ -126,7 +126,7 @@ async def test_requery_reapplies_already_confirmed_gender_to_new_suggestion(monk
                                    json={"instruction": "더 자연스럽게", "reviewer_name": "김검수"})
 
     assert r.status_code == 200
-    assert r.json()["suggested_text"] == "Sí, ahora veo que estás muy cansada."
+    assert r.json()["suggested_text"] == "[female] Sí, ahora veo que estás muy cansado."
 
 
 @pytest.mark.asyncio

@@ -412,19 +412,33 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
-    async def verify_gender_swap(self, items: List[dict], profile: dict) -> List[dict]:
-        """확정된 성별을 파이썬이 문법 규칙으로 기계적으로 치환한 직후, 실제로
-        바뀐 문장만 좁게 검증한다(design §치환 직후 검증+롤백 안전망). spaCy
-        구조 규칙과 LLM is_person 판단을 다 거쳐도 못 거르는 미지의 오탐
-        (예: spaCy가 애초에 잘못 태깅한 단어를 성별 어미로 착각해 엉뚱하게
-        치환)이 남을 수 있다 — 이 콜은 그 마지막 방어선이다. S2(이중검증)
-        프롬프트는 "이미 반영된 성별 형태는 되돌리지 마라"고 명시적으로
-        지시받으므로, 이 검증은 반드시 S2 호출 전에 끝나야 한다. 의미·
-        자연스러움·어휘 선택은 판단 대상이 아니다 — 오직 "이 치환으로 문장이
-        문법적으로 깨졌는가(존재하지 않는 단어, 성별/수 불일치 등)"만 본다.
+    async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
+        """확정된 성별 하나를 문장 전체에 반영하는 전담 호출(apply_formality와
+        같은 패턴) — 예전에는 파이썬 문법 규칙으로 형용사/분사 어미만
+        기계적으로 치환했으나, 같은 명사구의 관사·한정사(el/la, un/una 등)는
+        건드리지 못해 "el única" 같은 문법 오류가 남았다(design §성별 치환은
+        LLM 재작성으로). 이 호출은 그 인물을 가리키는 모든 표현(관사·형용사·
+        과거분사·명사 등 문법적으로 성별에 맞춰 일치해야 하는 전부)을 문장
+        안에서 직접 찾아 gender에 맞게 고친다. 다른 단어·줄바꿈·구두점은
+        절대 바꾸지 않는다 — 이 결과가 이후 이중검증(S2)의 새 기준 텍스트가
+        된다.
 
-        입력은 [{"id": str, "text": str(치환 후 문장)}, ...], 반환값은
-        [{"id": str, "has_error": bool}, ...]."""
+        입력은 [{"id": str, "target_text": str, "gender": "male"|"female"}],
+        반환값은 [{"id": str, "corrected_text": str}] — 이미 일치하면
+        target_text 그대로 돌아온다."""
+        ...
+
+    @abstractmethod
+    async def apply_gender_groups(self, items: List[dict], profile: dict) -> List[dict]:
+        """apply_gender의 다인물 버전 — 한 문장에 인물이 둘 이상이면 각자
+        확정된 성별을 그 인물을 가리키는 단어에만 적용해야 하므로, 그룹마다
+        누구를(words/referent) 어떤 성별로 고칠지 같이 전달한다. 다른
+        그룹에 속한 단어는 절대 건드리지 않는다.
+
+        입력은 [{"id": str, "target_text": str, "groups": [
+            {"words": [str, ...], "referent": str|None,
+             "gender": "male"|"female"}, ...
+        ]}], 반환값은 [{"id": str, "corrected_text": str}]."""
         ...
 
 

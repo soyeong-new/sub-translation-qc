@@ -4,7 +4,7 @@ import re
 from typing import List, Optional
 from app.core.ingest import build_srt
 from app.core.format_rules import check_line_length
-from app.schemas import AlignedPair, SegmentText, ExportStats
+from app.schemas import AlignedPair, SegmentText, ExportStats, FormatViolation
 
 _FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
 
@@ -85,6 +85,35 @@ def safety_net_check(segments: List[dict], findings: List[dict]) -> list:
         for seg in segments if not seg.get("excluded")
     ]
     return check_line_length(pairs)
+
+
+def glossary_consistency_check(segments: List[dict], findings: List[dict],
+                                glossary_entries: List[dict]) -> list:
+    """export 직전 안전망 — 등록된 고유명사 표준 표기가 최종 텍스트에 실제로
+    남아 있는지 마지막으로 한 번 더 확인한다. 검수 시점 자동 보정
+    (findings.py review-action/pick)이 닿지 못한 경우(finding 자체가 없는
+    세그먼트, 거부돼 원본이 그대로 남은 세그먼트)를 잡기 위한 것 — 자동
+    수정은 하지 않고 참고용 경고만 만든다(non-blocking)."""
+    final_by_segment = _final_text_by_segment(findings)
+    violations = []
+    for seg in segments:
+        if seg.get("excluded"):
+            continue
+        korean_text = seg.get("korean_text", "")
+        text = final_by_segment.get(seg["id"], seg["text"])
+        if not korean_text or not text:
+            continue
+        for entry in glossary_entries:
+            canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
+            if not canonical or not korean_term:
+                continue
+            if korean_term in korean_text and canonical not in text:
+                violations.append(FormatViolation(
+                    segment_id=seg["id"], rule="glossary_mismatch",
+                    detail=f"'{korean_term}' 등록 표기 '{canonical}'가 최종 텍스트에 없음",
+                    original_text=text,
+                ))
+    return violations
 
 
 def compute_stats(findings: List[dict]) -> ExportStats:

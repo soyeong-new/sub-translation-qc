@@ -86,19 +86,27 @@ _BACK_TRANSLATION_FIELD_INSTRUCTION = (
     "반드시 포함하라. back_translation의 문장 자체도 예외 없이 한국어로 써라."
 )
 
-_BACK_TRANSLATE_OUTPUT_SCHEMA = {
-    "type": "array",
-    "items": {
+def _back_translate_schema(ids: List[str]) -> dict:
+    """id를 배열 항목이 아니라 스키마의 키로 박아 넣는다 — "id가 일치하는
+    항목을 배열에 담아라"는 프롬프트 지시만으로는 모델이 애매한 일부 id를
+    조용히 빼먹어도 JSON 파싱은 그대로 통과했다(실측: gpt 제안문 역번역
+    65% 누락). 입력 id 전부를 required로 강제하면 스키마 검증 자체가
+    실패해 API가 누락을 허용하지 않는다."""
+    item_schema = {
         "type": "object",
         "properties": {
-            "id": {"type": "string"},
             "korean_text": {"type": "string"},
             "original_korean_text": {"type": "string"},
         },
-        "required": ["id", "korean_text", "original_korean_text"],
+        "required": ["korean_text", "original_korean_text"],
         "additionalProperties": False,
-    },
-}
+    }
+    return {
+        "type": "object",
+        "properties": {seg_id: item_schema for seg_id in ids},
+        "required": list(ids),
+        "additionalProperties": False,
+    }
 
 _SHRINK_SCHEMA_INSTRUCTION = (
     "정확히 다음 키를 가진 JSON 객체 하나만 출력하라: "
@@ -107,12 +115,12 @@ _SHRINK_SCHEMA_INSTRUCTION = (
 )
 
 _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
-    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
-    'id (문자열, 입력의 "id"와 반드시 일치), '
-    "korean_text (문자열, text의 자연스러운 한국어 역번역), "
-    "original_korean_text (문자열, original_text의 자연스러운 한국어 역번역 "
-    "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게). "
-    "반드시 JSON 배열만 출력하라. 다른 설명을 붙이지 마라."
+    "반드시 입력 배열의 각 항목 id를 키로 하는 JSON 객체 하나만 출력하라 "
+    '(예: {"<id>": {"korean_text": ..., "original_korean_text": ...}, ...}). '
+    "korean_text는 text의 자연스러운 한국어 역번역, original_korean_text는 "
+    "original_text의 자연스러운 한국어 역번역이다 — 검수자가 교정 전 원문이 "
+    "원래 무슨 뜻이었는지 비교할 수 있게. 입력에 있는 id는 하나도 빠짐없이 "
+    "전부 키로 포함해야 한다. 다른 설명을 붙이지 마라."
 )
 
 _JUDGE_IMPROVEMENT_SCHEMA_INSTRUCTION = (
@@ -171,11 +179,15 @@ class ClaudeClient:
         except (json.JSONDecodeError, TypeError) as exc:
             raise ValueError(f"Claude 응답이 JSON 배열이 아님: {text[:200]}") from exc
 
-    async def _call_object(self, system: str, user: str, model: str = None) -> dict:
+    async def _call_object(self, system: str, user: str, model: str = None,
+                            max_tokens: int = 1024, output_schema: dict = None) -> dict:
         target_model = model or self._model
+        kwargs = {}
+        if output_schema is not None:
+            kwargs["output_config"] = {"format": {"type": "json_schema", "schema": output_schema}}
         response = await self._sdk_client.messages.create(
-            model=target_model, max_tokens=1024, system=system,
-            messages=[{"role": "user", "content": user}],
+            model=target_model, max_tokens=max_tokens, system=system,
+            messages=[{"role": "user", "content": user}], **kwargs,
         )
         text = self._extract_text(response)
         try:
@@ -301,24 +313,36 @@ class ClaudeClient:
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
         system = (
-            f"다음은 한국어 원문(reference_korean), 교정 전 {language_label} 원본"
-            f"(original_text), 교정 후 {language_label} 제안문(text) 목록이다. "
+            f"다음은 교정 전 {language_label} 원본(original_text), 교정 후 "
+            f"{language_label} 제안문(text) 목록이다. "
             "각 항목마다 다음을 하라.\n"
-            "text와 original_text를 각각 자연스러운 한국어로 역번역하라"
-            f"(korean_text, original_korean_text) — {language_label}를 모르는 검수자가 "
-            "교정 전/후 의미를 나란히 비교하기 위한 참고용이므로, 의미뿐 "
-            "아니라 톤·뉘앙스(간결함, 거침, 급함, 존중, 여유로움 등)도 함께 "
-            "전달하라. 원문이 짧고 직설적이면 역번역도 짧고 직설적으로, "
-            "원문에 존댓말·격식이 있으면 그 격식도 살려서 옮겨라 — 단순히 "
-            "의미만 통하는 매끄러운 한국어 문장으로 다듬지 마라. 중의적이거나 "
-            "문맥 없이는 뜻이 불분명한 단어·표현은 reference_korean과 배열의 "
-            "다른 항목들(앞뒤 세그먼트)을 참고해 실제로 어떤 의미로 쓰였는지 "
-            "판별한 뒤 역번역하라.\n"
+            "text와 original_text를 각각 있는 그대로 독립적으로 한국어로 "
+            "역번역하라(korean_text, original_korean_text) — "
+            f"{language_label}를 모르는 검수자가 교정 전/후 의미를 나란히 "
+            "비교하기 위한 참고용이다. 목표는 \"매끄러운 한국어 문장\"이 "
+            "아니라 \"원문과 같은 톤·강도·격식을 가진 한국어\"다 — 원문이 "
+            "짧고 거칠면 역번역도 짧고 거칠게, 존댓말·격식이 있으면 그 "
+            "격식 그대로, 원문이 애매하거나 어색하면 역번역도 그 애매함·"
+            "어색함을 지우지 말고 남겨라. 다음 두 예시로 기준을 잡아라.\n"
+            "- 원문이 짧고 직설적인 명령: \"Get out.\" → (o) \"나가.\" / "
+            "(x) \"나가주시겠어요?\"(원문에 없는 공손함을 추가함)\n"
+            "- 원문이 거칠고 감정적인 말투: \"I'm freaking exhausted.\" → "
+            "(o) \"아 진짜 뒤지겠다, 피곤해.\" / (x) \"많이 피곤하다.\"(거친 "
+            "어투·강도가 사라짐), (x) \"나는 미친듯이 기진맥진했다.\"(한국어로서 "
+            "부자연스러운 직역이라 검수자가 오역으로 오인할 수 있음)\n"
+            "text·original_text에 실제로 쓰인 단어와 표현만 근거로 삼아라 — "
+            "검수자가 원문의 오역 여부를 정확히 판단할 수 있어야 하므로, "
+            "원문에 없는 의미·뉘앙스를 "
+            "추측해서 채워넣거나 미화하지 마라. 중의적이거나 문맥 없이는 "
+            "뜻이 불분명한 단어·표현은 배열의 다른 항목들(앞뒤 세그먼트)을 "
+            "참고해 실제로 어떤 의미로 쓰였는지 판별한 뒤 역번역하라.\n"
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        return await self._call_array(system, user, model=self._light_model,
-                                       output_schema=_BACK_TRANSLATE_OUTPUT_SCHEMA)
+        ids = [t["id"] for t in texts]
+        result = await self._call_object(system, user, model=self._light_model,
+                                          max_tokens=8192, output_schema=_back_translate_schema(ids))
+        return [{"id": seg_id, **result[seg_id]} for seg_id in ids]
 
     async def judge_improvement(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)

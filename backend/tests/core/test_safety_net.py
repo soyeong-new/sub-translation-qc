@@ -1,43 +1,11 @@
 import pytest
 from app.core.safety_net import shrink_violating_lines, enforce_line_length
-from app.schemas import AlignedPair, SegmentText, FormatViolation, Finding
+from app.schemas import AlignedPair, SegmentText, FormatViolation
 from app.providers.mock import MockProvider
 
 
 def _pair(id_, text):
     return AlignedPair(id=id_, target=SegmentText(start=0.0, end=1.0, text=text))
-
-
-@pytest.mark.asyncio
-async def test_violation_merges_into_existing_approved_finding_instead_of_new_card(monkeypatch):
-    """회귀(사용자 재현): Claude+GPT가 합의해 자동 승인된 finding의 문구가
-    글자수 제약도 위반하면, 안전망이 새 카드를 또 만들면 안 된다 — 검수자
-    눈엔 "방금 승인한 문장이랑 거의 똑같은 문장"이 카드 두 개로 보인다.
-    기존 finding 하나를 그대로 갱신해서 카드가 하나만 남아야 한다."""
-    long_text = "가" * 60
-    pairs = [_pair("p1", long_text)]
-    violations = [FormatViolation(segment_id="p1", rule="line_length", detail="60자")]
-    # 프론트(splitDescription)가 "(원본 뜻 참고: ...)"를 문자열 끝에서
-    # 정규식으로 잘라내 별도로 보여준다 — 여기 뒤에 뭔가 덧붙이면 그 파싱이
-    # 깨진다(실제 사용자 재현 버그).
-    original_description = "오역 교정 (원본 뜻 참고: 늦게 도착하면 두 배를 받는다는 뜻이다.)"
-    existing = Finding(
-        id="finding_p1_claude+gpt_mistranslation", target_version_id="tv1", segment_id="p1",
-        category="mistranslation", description=original_description,
-        original_text="원본", suggested_text=long_text, confidence=1.0,
-        source="llm", model="claude+gpt", status="approved", final_text=long_text,
-    )
-
-    findings = await shrink_violating_lines(
-        pairs, violations, MockProvider(), "tv1", existing_findings=[existing])
-
-    assert findings == []  # 새 카드를 안 만듦
-    assert len(existing.suggested_text) <= 50
-    assert existing.final_text == existing.suggested_text
-    assert existing.status == "approved"  # 기존 카드 그대로
-    # description은 안 건드려서, "(원본 뜻 참고: ...)" 태그가 문자열 끝에
-    # 그대로 남아 프론트 파싱이 안 깨져야 한다.
-    assert existing.description == original_description
 
 
 @pytest.mark.asyncio
@@ -57,8 +25,8 @@ async def test_violation_shrinks_text_and_updates_pair_in_place():
     assert len(findings) == 1
     assert findings[0].model == "안전망"
     assert findings[0].status == "approved"
+    assert len(findings[0].suggested_text) <= 50
     assert pairs[0].target.text == findings[0].suggested_text
-    assert len(pairs[0].target.text) <= 50
 
 
 @pytest.mark.asyncio

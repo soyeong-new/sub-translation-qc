@@ -386,6 +386,35 @@ async def test_list_titles_includes_glossary():
 
 
 @pytest.mark.asyncio
+async def test_get_title_glossary_scoped_to_title():
+    from app.models import GlossaryEntry, GlossarySpelling
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_res = await client.post("/titles", json={"name": "T", "type": "series"})
+        title_id = title_res.json()["id"]
+        other_res = await client.post("/titles", json={"name": "Other", "type": "series"})
+        other_id = other_res.json()["id"]
+
+    async with async_session() as session:
+        entry = GlossaryEntry(title_id=title_id, korean_term="김현", category="person", aliases=[])
+        session.add(entry)
+        other_entry = GlossaryEntry(title_id=other_id, korean_term="박철", category="person", aliases=[])
+        session.add(other_entry)
+        await session.flush()
+        session.add(GlossarySpelling(entry_id=entry.id, language="es", variant="LATAM",
+                                      canonical="Kim Hyun"))
+        await session.commit()
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/titles/{title_id}/glossary")
+    assert r.status_code == 200
+    assert len(r.json()) == 1
+    assert r.json()[0]["korean_term"] == "김현"
+    assert r.json()[0]["spellings"] == {"es_LATAM": "Kim Hyun"}
+
+
+@pytest.mark.asyncio
 async def test_create_glossary_entry_and_patch_spelling():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

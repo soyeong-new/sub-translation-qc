@@ -130,19 +130,23 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             assert r.status_code == 200
             findings = r.json()
             by_category = {f["category"]: f for f in findings}
-            # Fix 4: 포맷 위반이 formatting finding으로 영속화된다.
+            formatting_findings = [f for f in findings if f["category"] == "formatting"]
+            # Fix 4: 포맷 위반이 formatting finding으로 영속화된다. 온점
+            # 자동보정은 판단 여지가 없는 기계적 규칙이라 phase1에서 이미
+            # 텍스트에 반영·자동 승인되므로, S4 최종 재체크는 이미 깨끗한
+            # 텍스트만 보게 되어 새 위반을 만들지 않는다 — finding 1건.
             assert "mistranslation" in by_category
-            assert "formatting" in by_category
-            # 자동보정된 온점 위반은 검수자 판단이 필요 없으므로 검수 액션 전에
-            # 이미 approved 상태여야 한다. mistranslation도 Claude/GPT 둘 다
-            # BAD_TRANSLATION 마커를 지적해 합의됐으므로 이미 approved다 —
-            # 스페인어를 모르는 검수자는 텍스트 품질을 판단할 수 없으므로,
-            # 합의된 교정은 사람 승인 없이 자동 적용된다(design §어떻게 사용).
-            assert by_category["formatting"]["status"] == "approved"
-            assert by_category["formatting"]["final_text"] == "BAD_TRANSLATION aquí..."
-            assert by_category["mistranslation"]["status"] == "approved"
+            assert len(formatting_findings) == 1
+            assert formatting_findings[0]["status"] == "approved"
+            assert formatting_findings[0]["final_text"] == "BAD_TRANSLATION aquí..."
+            # mistranslation은 Claude/GPT 둘 다 BAD_TRANSLATION 마커를 지적해
+            # 합의(model="claude+gpt")됐지만, 스페인어를 모르는 검수자가 최종
+            # 판단해야 하므로 사람 승인 전에는 pending으로 남는다.
+            assert by_category["mistranslation"]["status"] == "pending"
 
-            # 6) 검수 액션 (재승인해도 idempotent하게 동작해야 한다)
+            # 6) 검수 액션 (사람이 실제로 승인해야 반영된다) — mistranslation을
+            # 승인하면 그 세그먼트 전체가 새 문구로 교체되므로, 같은 세그먼트를
+            # 가리키는 pending 상태의 formatting 제안들은 승인하지 않아도 된다.
             translation_finding = by_category["mistranslation"]
             r = await client.post(f"/findings/{translation_finding['id']}/review-action",
                                   json={"action": "approved", "reviewer_name": "검수자A"})
@@ -167,11 +171,10 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
     # Fix 3: 타임코드 순.
     assert srt.index("texto corregido") < srt.index("Primera línea corta")
 
-    # 통계는 실제 저장된 finding 기준이어야 한다. 2건 모두 반영됐다 —
-    # translation은 검수자가 승인했고, 자동보정된 formatting은 저장 시점에
-    # 이미 approved였다.
+    # 통계는 실제 저장된 finding 기준이어야 한다. mistranslation은 검수자가
+    # 승인했고, formatting은 phase1에서 이미 자동 승인됐다 — 둘 다 반영됨.
     assert body["stats"]["finding_count"] == len(findings) == 2
-    assert body["stats"]["reflection_rate"] == 1.0
+    assert body["stats"]["reflection_rate"] == pytest.approx(1.0)
 
     # Fix 6: export 이력이 남는다.
     async with async_session() as session:

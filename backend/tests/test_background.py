@@ -182,18 +182,14 @@ async def test_analyze_and_save_keeps_review_status_when_delete_original_video_r
 @pytest.mark.asyncio
 async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_segment(
         tmp_path, monkeypatch):
-    """회귀 테스트(critical): GPT 2차가 문장을 늘리며 이미 온점 자동보정을 거친
-    세그먼트에 새 온점(4개 이상)을 만들면, 최초 체크와 GPT 이후 최종 재체크가
-    같은 segment_id에 대해 "ellipsis" FormatViolation을 하나씩 만든다.
-    repositories.py가 이 (segment_id, rule) 조합을 구분하지 못했을 때는
-    두 번째 저장에서 findings_pkey UNIQUE 제약을 위반해 save_pipeline_result가
-    IntegrityError를 던졌고, analyze_and_save의 except Exception이 그걸 잡아
-    전체 target_version을 failed로 처리했다 — STT + Claude/GPT 두 LLM 패스
-    비용이 이미 다 든 뒤에 결과 전체를 날리는 버그였다. run_pipeline의 in-memory
-    반환값만 보는 test_pipeline.py의 assertion은 이 버그를 잡지 못한다 —
-    실제로 save_pipeline_result를 거쳐야 재현된다. 이 테스트는 background.
-    analyze_and_save를 실제로 실행해 DB까지 거친 뒤 status가 "review"로
-    끝나는지 (즉, IntegrityError 없이 두 finding이 모두 저장됐는지) 확인한다."""
+    """회귀(사용자 재현): 원문의 온점 위반은 판단 여지가 없는 기계적 규칙이라
+    phase1에서 즉시 자동보정된다. GPT 2차가 문장을 늘려 만든 새 온점
+    ("espera......")은 번역 판단(true_agreed)이 사람 승인 전까지 pair.target.text
+    에 반영되지 않으므로(design §자동수정으로 나오지 않아야 함) S4 최종
+    재체크는 이미 깨끗한 텍스트만 보게 되어 새 위반을 만들지 않는다 —
+    formatting finding이 정확히 1건만 저장돼야 한다. 이 테스트는 analyze_and_save
+    가 STT + Claude/GPT 두 LLM 패스를 거쳐 DB 저장까지 예외 없이 끝나는지
+    (status가 "review"로 끝나는지)도 함께 확인한다."""
     from app.providers.mock import MockProvider
 
     monkeypatch.setenv("QC_PROVIDER", "mock")
@@ -225,20 +221,13 @@ async def test_analyze_and_save_persists_when_gpt_reintroduces_ellipsis_on_same_
         assert tv.status == "review"
         assert tv.error_message is None
 
-        # 회귀(important, 후속 리뷰): 두 finding의 original_text가 파이프라인
-        # 최종 상태 하나로 뭉개지지 않고 각 체크포인트 고유의 "고치기 전" 텍스트를
-        # 유지해야 한다. 최초 체크포인트는 Claude/GPT 이전 원문("BAD_TRANSLATION
-        # aquí...."가 온점 자동보정된 "BAD_TRANSLATION aquí..."), 두 번째(S4
-        # 최종 재체크)는 GPT가 늘어뜨린 뒤("espera......") 값이어야 하며 서로
-        # 달라야 한다. 최종 pair 텍스트("espera...") 하나로 재구성됐다면 이
-        # 검증이 실패한다.
         rows = (await session.execute(
             select(FindingRow).where(FindingRow.target_version_id == tv_id,
                                       FindingRow.category == "formatting")
         )).scalars().all()
-        assert len(rows) == 2
-        original_texts = {r.original_text for r in rows}
-        assert original_texts == {"BAD_TRANSLATION aquí....", "espera......"}
+        assert len(rows) == 1
+        assert rows[0].original_text == "BAD_TRANSLATION aquí...."
+        assert rows[0].status == "approved"
 
 
 @pytest.mark.asyncio
@@ -529,9 +518,12 @@ async def test_run_phase2_and_save_injects_and_persists_glossary(monkeypatch):
 
     await _run_phase2_and_save(tv_id, SpyProvider())
 
-    assert captured["glossary_entries"] == [
-        {"korean_term": "설악산", "category": "place", "aliases": [],
-         "canonical": "Mount Seorak (existing)"}]
+    assert len(captured["glossary_entries"]) == 1
+    entry = captured["glossary_entries"][0]
+    assert entry["korean_term"] == "설악산"
+    assert entry["category"] == "place"
+    assert entry["aliases"] == []
+    assert entry["canonical"] == "Mount Seorak (existing)"
 
     async with async_session() as session:
         entries = await get_glossary_prompt_entries(session, title_id, "es", "LATAM")

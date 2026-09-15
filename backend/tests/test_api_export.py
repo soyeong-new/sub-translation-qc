@@ -3,7 +3,10 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db import engine, async_session
 from sqlalchemy import select
-from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, ExportRow
+from app.models import (
+    Base, Title, Episode, TargetVersion, Segment, FindingRow, ExportRow,
+    GlossaryEntry, GlossarySpelling,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +133,37 @@ async def test_export_format_warnings_empty_when_clean():
         assert r.status_code == 200
         body = r.json()
         assert body["format_warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_export_flags_glossary_mismatch_for_finding_less_segment():
+    """회귀(사용자 보고) 안전망: finding 자체가 없어(검수 시점 훅이 닿지
+    않은) 등록된 고유명사 표준 표기가 안 지켜진 세그먼트도 export
+    시점에 참고용 경고로 걸려야 한다(non-blocking)."""
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        entry = GlossaryEntry(title_id=title.id, korean_term="강오크",
+                               category="person", aliases=[])
+        session.add(entry); await session.flush()
+        session.add(GlossarySpelling(entry_id=entry.id, language="es", variant="LATAM",
+                                      canonical="Kang-ok"))
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=5.0,
+                      korean_text="야, 강오크.", target_text="Oye, Gang-ok.")
+        session.add(seg); await session.flush()
+        await session.commit()
+        tv_id, seg_id = tv.id, seg.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200  # non-blocking
+        body = r.json()
+        glossary_warnings = [w for w in body["format_warnings"] if w["rule"] == "glossary_mismatch"]
+        assert len(glossary_warnings) == 1
+        assert glossary_warnings[0]["segment_id"] == seg_id
 
 
 @pytest.mark.asyncio

@@ -313,12 +313,12 @@ async def test_correct_primary_does_not_mention_a_second_pass_reviewer():
 
 @pytest.mark.asyncio
 async def test_back_translate_returns_korean_text_per_id():
-    payload = [{"id": "p1", "korean_text": "안녕하세요"}]
+    payload = {"p1": {"korean_text": "안녕하세요", "original_korean_text": "안녕"}}
     client = _make_client_with_fake_sdk(json.dumps(payload))
     result = await client.back_translate(
         texts=[{"id": "p1", "text": "hola"}], profile={"language": "es", "variant": "LATAM"},
     )
-    assert result == payload
+    assert result == [{"id": "p1", **payload["p1"]}]
 
 
 @pytest.mark.asyncio
@@ -334,13 +334,14 @@ async def test_back_translate_uses_output_schema_with_required_fields():
     화면에서 원문 역번역이 통째로 안 뜨는 사례가 있었다 — output_config.format
     으로 API가 필드 존재를 강제해야 한다(correct_primary와 동일한 이유,
     같은 방식)."""
-    client = _make_client_with_fake_sdk(json.dumps([]))
-    await client.back_translate(texts=[], profile={})
+    client = _make_client_with_fake_sdk(json.dumps({"p1": {}}))
+    await client.back_translate(texts=[{"id": "p1", "text": "hola"}], profile={})
     call_kwargs = client._sdk_client.messages.create.call_args.kwargs
     schema = call_kwargs["output_config"]["format"]["schema"]
-    assert schema["type"] == "array"
-    assert set(schema["items"]["required"]) == {
-        "id", "korean_text", "original_korean_text"}
+    assert schema["type"] == "object"
+    assert schema["required"] == ["p1"]
+    assert set(schema["properties"]["p1"]["required"]) == {
+        "korean_text", "original_korean_text"}
 
 
 @pytest.mark.asyncio
@@ -360,7 +361,7 @@ async def test_correct_primary_uses_target_language_from_profile_not_spanish():
 
 @pytest.mark.asyncio
 async def test_back_translate_uses_target_language_from_profile_not_spanish():
-    client = _make_client_with_fake_sdk(json.dumps([]))
+    client = _make_client_with_fake_sdk(json.dumps({}))
     await client.back_translate(
         texts=[], profile={"language": "pt", "variant": "BR"},
     )

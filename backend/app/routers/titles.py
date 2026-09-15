@@ -212,6 +212,29 @@ async def update_character_gender(fact_id: str, payload: CharacterGenderUpdateIn
         return {"id": fact.id, "character_name": fact.character_name, "gender": fact.gender}
 
 
+@router.get("/titles/{title_id}/glossary")
+async def get_title_glossary(title_id: str):
+    """검수 작업 화면에서 전체 작품 목록(GET /titles)을 안 불러오고도
+    해당 작품 용어집만 가볍게 조회하기 위함."""
+    async with async_session() as session:
+        entry_rows = (await session.execute(
+            select(GlossaryEntry).where(GlossaryEntry.title_id == title_id)
+            .order_by(GlossaryEntry.korean_term)
+        )).scalars().all()
+        spelling_rows = (await session.execute(
+            select(GlossarySpelling).where(
+                GlossarySpelling.entry_id.in_([e.id for e in entry_rows]))
+        )).scalars().all()
+        spellings_by_entry: dict = {}
+        for s in spelling_rows:
+            spellings_by_entry.setdefault(s.entry_id, {})[f"{s.language}_{s.variant}"] = s.canonical
+        return [
+            {"id": e.id, "korean_term": e.korean_term, "category": e.category,
+             "aliases": e.aliases, "spellings": spellings_by_entry.get(e.id, {})}
+            for e in entry_rows
+        ]
+
+
 @router.post("/titles/{title_id}/glossary")
 async def create_glossary_entry_route(title_id: str, payload: GlossaryEntryIn):
     async with async_session() as session:

@@ -179,13 +179,12 @@ async def test_save_pipeline_result_persists_format_violations_as_findings():
         ellipsis_row = by_rule["연속 온점 4개 이상 감지"]
         line_length_row = by_rule["1줄, 최대 줄 길이 60자"]
 
-        # 자동보정된 온점 위반은 이미 텍스트에 적용된 기계적 규칙이라 검수자가
-        # 결정할 것이 없다 → 바로 approved로 확정된다.
+        # 온점 자동보정 규칙은 판단 여지가 없는 기계적 규칙이라 자동 승인된다.
         assert ellipsis_row.suggested_text == "texto..."
         assert ellipsis_row.status == "approved"
         assert ellipsis_row.final_text == "texto..."
 
-        # 줄 길이 위반은 의미 보존이 필요한 판단이라 검수자에게 남긴다.
+        # 줄 길이 위반은 의미 보존이 필요한 판단이라 마찬가지로 검수자에게 남긴다.
         assert line_length_row.suggested_text == ""
         assert line_length_row.original_text == "texto....."
         assert line_length_row.status == "pending"

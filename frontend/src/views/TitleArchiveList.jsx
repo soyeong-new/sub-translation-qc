@@ -8,9 +8,10 @@ import {
   listTitles, deleteTitle, deleteTargetVersion, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
   listLanguageProfiles, uploadSrt, uploadSrtKo, uploadVideo, createTitle, createEpisode,
   createTargetVersion, runAnalysis, updateTitleType, updateTitleName, updateCharacterGender,
-  postGlossaryEntry, patchGlossaryEntry, deleteGlossaryEntry,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
+import Disclosure from "../components/Disclosure.jsx";
+import GlossaryTable from "../components/GlossaryTable.jsx";
 
 const SRT_EXTENSIONS = [".srt"];
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"];
@@ -118,10 +119,6 @@ const addLangBtnClass =
   "inline-flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-input px-3 py-1.5 text-xs " +
   "font-medium text-muted-foreground transition-all hover:bg-accent hover:text-foreground active:scale-95 " +
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
-const deleteBtnClass =
-  "inline-flex h-6 w-6 items-center justify-center text-muted-foreground leading-none " +
-  "transition-all hover:text-destructive active:scale-90 focus-visible:outline-none focus-visible:ring-2 " +
-  "focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
 const inputClass =
   "block w-full rounded-lg border border-input bg-background px-2.5 py-1.5 text-xs text-foreground " +
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
@@ -146,43 +143,6 @@ function Field({ id, label, children }) {
         {label}
       </label>
       {children}
-    </div>
-  );
-}
-
-// 브라우저 기본 <details>는 open/close를 순간적으로 처리해 transition이
-// 안 먹어서, open 상태를 직접 관리하고 grid-template-rows를 0fr<->1fr로
-// 움직이는 방식으로 부드럽게 펼쳐지게 한다.
-function Disclosure({ summary, children }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between gap-1.5 border-b border-border bg-muted px-4 py-3 text-left text-xs font-semibold text-foreground"
-      >
-        <span>{summary}</span>
-        <svg
-          viewBox="0 0 20 20"
-          fill="currentColor"
-          className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}
-        >
-          <path
-            fillRule="evenodd"
-            d="M6 4a1 1 0 0 1 1.7-.7l5 5a1 1 0 0 1 0 1.4l-5 5A1 1 0 0 1 6 14V4Z"
-            clipRule="evenodd"
-          />
-        </svg>
-      </button>
-      <div
-        className={`grid transition-[grid-template-rows] duration-200 ease-out ${
-          open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-        }`}
-      >
-        <div className="overflow-hidden">{children}</div>
-      </div>
     </div>
   );
 }
@@ -654,40 +614,6 @@ function NewTitleForm({ languageProfiles, isMountedRef, onCreated, onCancel }) {
   );
 }
 
-// 용어집 표기 셀 — 클릭하면 입력창으로 바뀌고, blur 시 값이 바뀌었을 때만
-// PATCH를 보낸다(불필요한 요청 방지).
-function GlossarySpellingCell({ entry, columnKey, onSaved, onError }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(entry.spellings[columnKey] || "");
-
-  if (!editing) {
-    return (
-      <span className="block cursor-pointer text-foreground" onClick={() => setEditing(true)}>
-        {entry.spellings[columnKey] || <span className="text-muted-foreground">—</span>}
-      </span>
-    );
-  }
-  return (
-    <input
-      className="w-full rounded border border-input bg-background px-1 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      autoFocus
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={async () => {
-        setEditing(false);
-        if (value !== (entry.spellings[columnKey] || "")) {
-          try {
-            await patchGlossaryEntry(entry.id, { spellings: { [columnKey]: value } });
-            onSaved();
-          } catch (err) {
-            onError(err.message ?? "표기 저장 중 오류가 발생했습니다.");
-          }
-        }
-      }}
-    />
-  );
-}
-
 export default function TitleArchiveList({ onOpen }) {
   const [titles, setTitles] = useState(null); // null = 로딩 중
   const [filterType, setFilterType] = useState("all"); // "all" | "movie" | "series"
@@ -710,14 +636,10 @@ export default function TitleArchiveList({ onOpen }) {
   const [selection, setSelectionState] = useState(loadSelection);
   const [confirmState, setConfirmState] = useState(null); // { message, onConfirm } | null
   const [editingName, setEditingName] = useState(false);
-  const [newGlossaryTerm, setNewGlossaryTerm] = useState("");
-  const [newGlossaryError, setNewGlossaryError] = useState(null);
 
   function setSelection(value) {
     setSelectionState(value);
     setEditingName(false);
-    setNewGlossaryTerm("");
-    setNewGlossaryError(null);
     if (value) localStorage.setItem(SELECTED_STORAGE_KEY, value);
     else localStorage.removeItem(SELECTED_STORAGE_KEY);
   }
@@ -849,33 +771,6 @@ export default function TitleArchiveList({ onOpen }) {
       setError(err.message ?? "캐릭터 성별 변경 중 오류가 발생했습니다.");
     } finally {
       if (isMountedRef.current) setBusyId(null);
-    }
-  }
-
-  async function submitNewGlossaryEntry(titleId) {
-    const koreanTerm = newGlossaryTerm.trim();
-    if (!koreanTerm) return;
-    setNewGlossaryError(null);
-    try {
-      await postGlossaryEntry(titleId, { korean_term: koreanTerm, category: "person", aliases: [] });
-      setNewGlossaryTerm("");
-      refresh();
-    } catch (err) {
-      setNewGlossaryError(err.message ?? "용어 추가 중 오류가 발생했습니다.");
-    }
-  }
-
-  function onGlossaryChanged() {
-    refresh();
-  }
-
-  async function onDeleteGlossaryEntry(entryId) {
-    if (!window.confirm("이 용어를 삭제할까요?")) return;
-    try {
-      await deleteGlossaryEntry(entryId);
-      refresh();
-    } catch (err) {
-      setError(err.message ?? "용어 삭제 중 오류가 발생했습니다.");
     }
   }
 
@@ -1178,65 +1073,14 @@ export default function TitleArchiveList({ onOpen }) {
                     </>
                   }
                 >
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-xs">
-                      <thead>
-                        <tr className="border-b border-border bg-card text-foreground">
-                          <th className="px-4 py-2 text-left font-bold">한국어 용어</th>
-                          {glossaryLanguageColumns(title).map((col) => (
-                            <th key={col} className="px-4 py-2 text-left font-bold">
-                              {col}
-                            </th>
-                          ))}
-                          <th className="w-8"></th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border/40">
-                        {[...title.glossary].sort((a, b) => a.korean_term.localeCompare(b.korean_term, "ko")).map((entry) => (
-                          <tr key={entry.id} className="hover:bg-accent/40">
-                            <td className="px-4 py-2 text-foreground">{entry.korean_term}</td>
-                            {glossaryLanguageColumns(title).map((col) => (
-                              <td key={col} className="px-4 py-2">
-                                <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onGlossaryChanged} onError={setError} />
-                              </td>
-                            ))}
-                            <td className="px-4 py-2">
-                              <button
-                                type="button"
-                                aria-label={`${entry.korean_term} 삭제`}
-                                onClick={() => onDeleteGlossaryEntry(entry.id)}
-                                className={deleteBtnClass}
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                        <tr>
-                          <td className="px-4 py-2" colSpan={glossaryLanguageColumns(title).length + 2}>
-                            <input
-                              type="text"
-                              value={newGlossaryTerm}
-                              onChange={(e) => {
-                                setNewGlossaryTerm(e.target.value);
-                                setNewGlossaryError(null);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") submitNewGlossaryEntry(title.id);
-                              }}
-                              placeholder="+ 새 용어 입력 후 Enter"
-                              className="w-full bg-transparent text-foreground placeholder:text-muted-foreground focus-visible:outline-none"
-                            />
-                            {newGlossaryError && (
-                              <p role="status" aria-live="polite" className="mt-1 text-xs text-destructive">
-                                {newGlossaryError}
-                              </p>
-                            )}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                  <GlossaryTable
+                    key={title.id}
+                    titleId={title.id}
+                    entries={title.glossary}
+                    columns={glossaryLanguageColumns(title)}
+                    onChanged={refresh}
+                    onError={setError}
+                  />
                 </Disclosure>
               </div>
 

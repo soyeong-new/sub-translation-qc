@@ -130,8 +130,10 @@ def fix_ellipsis(text: str) -> Tuple[str, bool]:
 
 
 def check_ellipsis(pairs: List[AlignedPair]) -> List[FormatViolation]:
-    """온점 4개 이상은 판단 여지가 없는 기계적 위반이라 바로 자동 보정하고,
-    fixed_text에 보정된 결과를 담아 반환한다 (검수자 확인 불필요, design §5-1)."""
+    """온점 4개 이상 위반을 감지하고 fixed_text에 보정안을 담아 반환한다 —
+    텍스트 자체는 호출자(pipeline)가 바로 반영한다. 판단 여지가 없는 기계적
+    규칙이라 사람 승인 없이 자동 적용되지만, 검수자 진행률 카운팅
+    (ReviewView.jsx)에서는 이 자동보정 finding을 실제 검수 대상에서 제외한다."""
     violations = []
     for pair in pairs:
         if pair.target is None:

@@ -1,8 +1,12 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy import select
 from app.main import app
 from app.db import engine, async_session
-from app.models import Base, FindingRow, Title, Episode, TargetVersion, Segment
+from app.models import (
+    Base, FindingRow, Title, Episode, TargetVersion, Segment,
+    GlossaryEntry, GlossarySpelling,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -291,3 +295,80 @@ async def test_pick_with_custom_text_over_line_length_is_rejected_and_not_saved(
         gpt_f = await session.get(FindingRow, gpt_id)
         assert claude_f.status == "pending"
         assert gpt_f.status == "pending"  # 짝도 아직 거부되면 안 됨(저장 자체가 안 됐음)
+
+
+async def _make_finding_row_with_glossary(finding_id: str, *, korean_text: str,
+                                           original_text: str, suggested_text: str,
+                                           korean_term: str, canonical: str) -> None:
+    """review-action/pick의 용어집 강제 훅을 테스트하기 위한 세팅 —
+    korean_text에 등록 용어가 있고, 이미 확정된 canonical이 있는 상태를
+    만든다."""
+    async with async_session() as session:
+        title = Title(name="T", type="movie")
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv)
+        await session.flush()
+        segment = Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=5.0,
+                           korean_text=korean_text)
+        session.add(segment)
+        entry = GlossaryEntry(title_id=title.id, korean_term=korean_term,
+                               category="person", aliases=[])
+        session.add(entry)
+        await session.flush()
+        session.add(GlossarySpelling(entry_id=entry.id, language="es", variant="LATAM",
+                                      canonical=canonical))
+        f = FindingRow(id=finding_id, target_version_id=tv.id, segment_id="p1",
+                       category="mistranslation", description="근거",
+                       original_text=original_text, suggested_text=suggested_text,
+                       confidence=0.9)
+        session.add(f)
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_approving_finding_enforces_registered_glossary_canonical(monkeypatch):
+    """회귀(사용자 보고): "강오크"가 용어집에 등록돼 있어도 AI가 다시
+    번역하면서 다른 철자("Gang-ok")를 낼 수 있다 — 승인 시점에 표준 표기로
+    강제해야 한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    await _make_finding_row_with_glossary(
+        "f1", korean_text="야, 강오크.", original_text="Oye, Kang Hulk.",
+        suggested_text="Oye, Gang-ok.", korean_term="강오크", canonical="Kang-ok")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/findings/f1/review-action",
+            json={"action": "approved", "reviewer_name": "김검수"},
+        )
+    assert r.status_code == 200
+    assert r.json()["final_text"] == "Oye, Kang-ok."
+
+
+@pytest.mark.asyncio
+async def test_modifying_finding_self_heals_glossary_canonical():
+    """검수자가 직접 다른 표기로 고치면, 강제로 되돌리지 않고 그 표기를 새
+    표준 표기로 승격한다 — 최초 등록이 틀렸어도 검수 한 번으로 고쳐진다."""
+    await _make_finding_row_with_glossary(
+        "f1", korean_text="야, 강오크.", original_text="Oye, Kang Hulk.",
+        suggested_text="Oye, Gang-ok.", korean_term="강오크", canonical="Kang-ok")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/findings/f1/review-action",
+            json={"action": "modified", "reviewer_name": "김검수",
+                  "final_text": "Oye, Kang Orc!"},
+        )
+    assert r.status_code == 200
+
+    async with async_session() as session:
+        spelling = (await session.execute(
+            select(GlossarySpelling).where(GlossarySpelling.language == "es")
+        )).scalar_one()
+        assert spelling.canonical == "Orc"

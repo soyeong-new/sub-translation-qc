@@ -29,12 +29,13 @@ _VERIFY_SCHEMA_INSTRUCTION = build_findings_schema_instruction(
     "findings 배열의 각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: ")
 
 _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
-    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
-    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
-    'id (문자열, 입력의 "id"와 반드시 일치), '
+    '반드시 {"results": {"<id>": {...}, ...}} 형태의 JSON 객체만 출력하라 — '
+    "results의 키는 입력 배열 각 항목의 id이고, 값은 정확히 다음 키를 가진 "
+    "JSON 객체여야 한다: "
     "korean_text (문자열, text의 자연스러운 한국어 역번역), "
     "original_korean_text (문자열, original_text의 자연스러운 한국어 역번역 "
-    "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게)."
+    "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게). "
+    "입력에 있는 id는 하나도 빠짐없이 전부 results의 키로 포함해야 한다."
 )
 
 _JUDGE_IMPROVEMENT_SCHEMA_INSTRUCTION = (
@@ -69,11 +70,12 @@ _FORMALITY_SCHEMA_INSTRUCTION = (
     "원문 그대로)."
 )
 
-_GENDER_SWAP_SCHEMA_INSTRUCTION = (
+_GENDER_APPLY_SCHEMA_INSTRUCTION = (
     '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'id (문자열, 입력의 "id"와 반드시 일치), '
-    "has_error (불리언, 문법 오류가 있으면 true)."
+    "corrected_text (문자열, 성별만 반영한 전체 문장 — 이미 일치하면 "
+    "원문 그대로)."
 )
 
 _GLOSSARY_EXTRACTION_SCHEMA_INSTRUCTION = (
@@ -204,33 +206,41 @@ _BACK_TRANSLATION_FIELD_INSTRUCTION = (
     "반드시 포함하라. back_translation의 문장 자체도 예외 없이 한국어로 써라."
 )
 
-_BACK_TRANSLATE_SCHEMA = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "back_translate",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "results": {
-                    "type": "array",
-                    "items": {
+def _back_translate_schema(ids: List[str]) -> dict:
+    """id를 배열 항목이 아니라 스키마의 키로 박아 넣는다 — "id가 일치하는
+    항목을 배열에 담아라"는 프롬프트 지시만으로는 모델이 애매한 일부 id를
+    조용히 빼먹어도 JSON 파싱은 그대로 통과했다(실측: gpt 제안문 역번역
+    65% 누락). 입력 id 전부를 required로 강제하면 스키마 검증 자체가
+    실패해 API가 누락을 허용하지 않는다."""
+    item_schema = {
+        "type": "object",
+        "properties": {
+            "korean_text": {"type": "string"},
+            "original_korean_text": {"type": "string"},
+        },
+        "required": ["korean_text", "original_korean_text"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "back_translate",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "results": {
                         "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "korean_text": {"type": "string"},
-                            "original_korean_text": {"type": "string"},
-                        },
-                        "required": ["id", "korean_text", "original_korean_text"],
+                        "properties": {seg_id: item_schema for seg_id in ids},
+                        "required": list(ids),
                         "additionalProperties": False,
                     },
                 },
+                "required": ["results"],
+                "additionalProperties": False,
             },
-            "required": ["results"],
-            "additionalProperties": False,
         },
-    },
-}
+    }
 
 _GENDER_RESOLUTION_SCHEMA = {
     "type": "json_schema",
@@ -284,6 +294,14 @@ _GENDER_RESOLUTION_SYSTEM_PREFIX = (
     "(context_before/context_after, 한국어+대상언어 쌍 최대 2개, 시간순)다. "
     "문장 자체에 단서가 없으면 context를 참고하되, context에 문자 그대로 "
     "없는 이름·사실을 지어내지 마라 — 없으면 없는 대로 둔다.\n\n"
+    "먼저 각 후보 단어가 문법적으로 누구를 가리키는지(어느 인물의 성별에 "
+    "일치해야 하는지) 판단하라 — 이 판단이 아래 group_id/referent 판단의 "
+    "기초가 된다. 특히 \"주어 + 계사(be동사류) + 소유격 한정사(내/네/그의 "
+    "등) + 명사\" 구조(\"mi amiga\"류)에서, 그 명사는 소유격이 가리키는 "
+    "사람이 아니라 문장의 주어에 문법적으로 일치해야 한다(예: \"Ella es mi "
+    "amiga\"에서 amiga는 mi가 가리키는 화자가 아니라 주어 Ella에 일치). "
+    "소유격 한정사가 붙어 있다는 이유만으로 그 소유격이 가리키는 사람 얘기로 "
+    "성급히 판단하지 마라.\n\n"
     "각 후보 단어마다 아래 5개 필드를 판단하라. words 배열은 candidate_words와 "
     "정확히 같은 개수·순서여야 하고, 각 원소의 index는 candidate_words에서의 "
     "위치(0부터)와 일치해야 한다.\n\n"
@@ -354,7 +372,7 @@ class GptClient:
 
     async def _call(self, system: str, user: str, key: str = "findings", label: str = "",
                      model_override: str = None, seed: int = None,
-                     response_format: dict = None) -> List[dict]:
+                     response_format: dict = None, expect_dict: bool = False):
         # ponytail: gpt-5.6 계열은 temperature 커스텀 값을 거부한다(400
         # unsupported_value) — 기본값(1)만 허용, Claude와 달리 여기선 조절 불가.
         # 대신 seed로 재실행 시 결과 변동을 줄인다(완벽한 결정성 보장은 아님).
@@ -375,8 +393,9 @@ class GptClient:
         try:
             parsed = json.loads(text)
             items = parsed[key]
-            if not isinstance(items, list):
-                raise TypeError(f"{key}가 리스트가 아님")
+            expected_type = dict if expect_dict else list
+            if not isinstance(items, expected_type):
+                raise TypeError(f"{key}가 {'객체' if expect_dict else '리스트'}가 아님")
             return items
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             preview = text[:200] if text else "<empty>"
@@ -476,24 +495,37 @@ class GptClient:
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
         system = (
-            f"다음은 한국어 원문(reference_korean), 교정 전 {language_label} 원본"
-            f"(original_text), 교정 후 {language_label} 제안문(text) 목록이다. "
+            f"다음은 교정 전 {language_label} 원본(original_text), 교정 후 "
+            f"{language_label} 제안문(text) 목록이다. "
             "각 항목마다 다음을 하라.\n"
-            "text와 original_text를 각각 자연스러운 한국어로 역번역하라"
-            "(korean_text, original_korean_text) — 대상언어를 모르는 검수자가 "
-            "교정 전/후 의미를 나란히 비교하기 위한 참고용이므로, 의미뿐 "
-            "아니라 톤·뉘앙스(간결함, 거침, 급함, 존중, 여유로움 등)도 함께 "
-            "전달하라. 원문이 짧고 직설적이면 역번역도 짧고 직설적으로, "
-            "원문에 존댓말·격식이 있으면 그 격식도 살려서 옮겨라 — 단순히 "
-            "의미만 통하는 매끄러운 한국어 문장으로 다듬지 마라. 중의적이거나 "
-            "문맥 없이는 뜻이 불분명한 단어·표현은 reference_korean과 배열의 "
-            "다른 항목들(앞뒤 세그먼트)을 참고해 실제로 어떤 의미로 쓰였는지 "
-            "판별한 뒤 역번역하라.\n"
+            "text와 original_text를 각각 있는 그대로 독립적으로 한국어로 "
+            "역번역하라(korean_text, original_korean_text) — "
+            "대상언어를 모르는 검수자가 교정 전/후 의미를 나란히 비교하기 "
+            "위한 참고용이다. 목표는 \"매끄러운 한국어 문장\"이 아니라 "
+            "\"원문과 같은 톤·강도·격식을 가진 한국어\"다 — 원문이 짧고 "
+            "거칠면 역번역도 짧고 거칠게, 존댓말·격식이 있으면 그 격식 "
+            "그대로, 원문이 애매하거나 어색하면 역번역도 그 애매함·어색함을 "
+            "지우지 말고 남겨라. 다음 두 예시로 기준을 잡아라.\n"
+            "- 원문이 짧고 직설적인 명령: \"Get out.\" → (o) \"나가.\" / "
+            "(x) \"나가주시겠어요?\"(원문에 없는 공손함을 추가함)\n"
+            "- 원문이 거칠고 감정적인 말투: \"I'm freaking exhausted.\" → "
+            "(o) \"아 진짜 뒤지겠다, 피곤해.\" / (x) \"많이 피곤하다.\"(거친 "
+            "어투·강도가 사라짐), (x) \"나는 미친듯이 기진맥진했다.\"(한국어로서 "
+            "부자연스러운 직역이라 검수자가 오역으로 오인할 수 있음)\n"
+            "text·original_text에 실제로 쓰인 단어와 표현만 근거로 삼아라 — "
+            "검수자가 원문의 오역 여부를 정확히 판단할 수 "
+            "있어야 하므로, 원문에 없는 의미·뉘앙스를 추측해서 채워넣거나 "
+            "미화하지 마라. 중의적이거나 문맥 없이는 뜻이 불분명한 "
+            "단어·표현은 배열의 다른 항목들(앞뒤 세그먼트)을 참고해 실제로 "
+            "어떤 의미로 쓰였는지 판별한 뒤 역번역하라.\n"
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="역번역",
-                                 model_override=self._light_model, response_format=_BACK_TRANSLATE_SCHEMA)
+        ids = [t["id"] for t in texts]
+        result = await self._call(system, user, key="results", label="역번역",
+                                   model_override=self._light_model,
+                                   response_format=_back_translate_schema(ids), expect_dict=True)
+        return [{"id": seg_id, **result[seg_id]} for seg_id in ids]
 
     async def judge_improvement(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -561,19 +593,35 @@ class GptClient:
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="격식 반영", model_override=self._light_model)
 
-    async def verify_gender_swap(self, items: List[dict], profile: dict) -> List[dict]:
+    async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
         system = (
-            f"다음은 {language_label} 문장(text) 목록이다. 이 문장들은 확정된 "
-            "성별에 맞춰 형용사/분사/명사 어미를 문법 규칙으로 기계적으로 "
-            "치환한 직후의 결과다. 각 문장에 그 치환 때문에 생긴 문법 오류"
-            "(존재하지 않는 단어, 성별/수 불일치, 어간이 깨진 어형 등)가 "
-            "있는지만 판단하라(has_error). 의미가 어색하거나 다른 어휘를 "
-            "썼으면 더 나았겠다는 취향 판단은 하지 마라 — 오직 문법적으로 "
-            "깨졌는지만 본다.\n" + _GENDER_SWAP_SCHEMA_INSTRUCTION
+            f"다음은 {language_label} 문장(target_text) 목록과 각 문장에서 "
+            "화자가 가리키는 인물의 확정된 성별(gender)이다. 그 인물을 "
+            "가리키는 표현 전체(관사·형용사·과거분사·명사 등 문법적으로 "
+            "성별에 맞춰 같이 일치해야 하는 모든 단어)를 gender에 맞게 "
+            "필요한 만큼만 고쳐라. 이미 gender와 일치하면 그대로 둬라. "
+            "어휘 선택, 의미, 줄바꿈, 구두점 등 성별 일치와 무관한 건 "
+            "절대 바꾸지 마라 — 오직 성별 일치만 조정하는 게 유일한 "
+            "임무다.\n" + _GENDER_APPLY_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)
-        return await self._call(system, user, key="results", label="성별 치환 검증",
+        return await self._call(system, user, key="results", label="성별 반영",
+                                 model_override=self._light_model, seed=_SEED)
+
+    async def apply_gender_groups(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 {language_label} 문장(target_text) 목록과 각 문장에 등장하는 "
+            "인물별 그룹(groups)이다. 각 그룹은 그 인물을 가리키는 단어(words)와 "
+            "확정된 성별(gender)을 담고 있다. 그룹마다, 그 인물을 가리키는 "
+            "표현 전체(관사·형용사·과거분사·명사 등 문법적으로 같이 일치해야 "
+            "하는 모든 단어)를 해당 gender에 맞게 필요한 만큼만 고쳐라. 다른 "
+            "그룹에 속한 단어나 인물과 무관한 단어는 절대 건드리지 마라. 이미 "
+            "gender와 일치하면 그대로 둬라.\n" + _GENDER_APPLY_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="성별 그룹 반영",
                                  model_override=self._light_model, seed=_SEED)
 
     async def split_scenes(self, pairs: List[dict], profile: dict) -> List[dict]:

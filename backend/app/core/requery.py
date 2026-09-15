@@ -1,19 +1,17 @@
 """검수자가 '다시 질문하기'로 재요청한 finding 하나, 또는 STT 교정 직후 그
 세그먼트 하나만 재분석하는 모듈."""
 
-import asyncio
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import FindingRow, Segment
 from app.providers.base import ModelProvider
 from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES
 from app.core.safety_net import enforce_line_length
-from app.core.grammar_necessity import (
-    check_grammar_necessity, resolve_gender_in_texts, resolve_gender_groups_in_texts,
-)
+from app.core.glossary_guard import revert_canonical_regression
+from app.core.grammar_necessity import check_grammar_necessity
 from app.core.pipeline import (
     _normalize_gender_for_ai, gender_groups_all_resolved, _build_gender_groups_from_llm,
-    _verify_gender_swap_and_rollback,
+    _gender_groups_for_ai,
 )
 from app.repositories import get_pending_findings_for_segment
 
@@ -30,7 +28,8 @@ class RequeryNoResultError(ValueError):
 
 async def requery_finding(finding: FindingRow, segment: Segment, instruction: str,
                            provider: ModelProvider, knowledge: str,
-                           profile: dict) -> tuple[str, Optional[str]]:
+                           profile: dict, glossary_entries: Optional[list] = None,
+                           ) -> tuple[str, Optional[str]]:
     """finding을 만든 모델에게 단일 재검증을 맡긴다(claude는 correct_primary,
     gpt/claude+gpt는 verify_and_refine) — 검수자가 이미 지시사항으로 방향을
     정한 상태라, 원래의 이중 독립검증(합의 필요)만큼 신중할 필요가 없다.
@@ -49,10 +48,12 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
     if finding.model == "claude":
         results = await provider.correct_primary(
             item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
+            glossary_entries=glossary_entries,
         )
     elif finding.model in ("gpt", "claude+gpt"):
         results = await provider.verify_and_refine(
             item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
+            glossary_entries=glossary_entries,
         )
     elif finding.model == "안전망":
         shrunk = await provider.shrink_line(
@@ -71,12 +72,17 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
     # 다시 질문 결과는 검수자가 승인하기 전까지 다른 안전망을 안 거치므로,
     # 여기서 바로 강제한다(사용자 재현: 다시 질문 결과가 50자를 넘겨서 그대로 보임).
     text, _ = await enforce_line_length(results[0]["corrected_text"], provider)
+    # pipeline._make_dual_verification_finding과 같은 이유로, 재질문 결과도
+    # 등록된 고유명사 표기를 미등록 표기로 퇴행시켰으면 되돌린다(실사용
+    # 재현 — 재질문이 1차 검증과 같은 오류를 반복함).
+    text = revert_canonical_regression(
+        segment.korean_text, finding.original_text, text, glossary_entries or [])
     return text, results[0].get("back_translation")
 
 
 async def reverify_segment_after_stt_correction(
     segment: Segment, provider: ModelProvider, knowledge: str, profile: dict,
-    current_text: Optional[str] = None,
+    current_text: Optional[str] = None, glossary_entries: Optional[list] = None,
 ) -> Optional[dict]:
     """STT 원문이 수정된 직후, 그 줄의 번역이 새 원문 기준으로도 여전히
     맞는지 GPT 하나로만 가볍게 재검증한다 — "다시 질문하기"와 같은 원칙으로
@@ -94,12 +100,21 @@ async def reverify_segment_after_stt_correction(
     text_to_check = current_text if current_text is not None else segment.target_text
     results = await provider.verify_and_refine(
         [{"id": segment.id, "korean_text": segment.korean_text, "target_text": text_to_check}],
-        profile, [], knowledge, _FORMAT_CONSTRAINT,
+        profile, [], knowledge, _FORMAT_CONSTRAINT, glossary_entries=glossary_entries,
     )
     if not results:
         return None
     correction = results[0]
     correction["corrected_text"], _ = await enforce_line_length(correction["corrected_text"], provider)
+    # requery_finding과 동일하게, STT 재검증도 등록된 고유명사 표기를
+    # 퇴행시켰으면 되돌린다.
+    patched = revert_canonical_regression(
+        segment.korean_text, text_to_check, correction["corrected_text"], glossary_entries or [])
+    if patched != correction["corrected_text"]:
+        correction["corrected_text"] = patched
+        correction["description"] = (
+            f"{correction['description']} (참고: 고유명사 표기가 용어집 등록 표기와 달라 자동으로 맞췄습니다"
+            " — 위 설명 중 표기 관련 내용은 무시하세요)")
     return correction
 
 
@@ -108,32 +123,24 @@ async def apply_resolved_gender_to_text(
 ) -> str:
     """1차 검수 때 이미 확정된 성별을 나중에 생긴 새 텍스트(STT 재검증
     제안문구 등)에도 반영한다. pipeline._apply_resolved_gender와 같은
-    우선순위(그룹이 전부 답변됐으면 그룹, 아니면 단일값)를 따르지만
-    pairs 리스트가 아니라 문자열 하나를 받는다 — 파이프라인이 끝난
-    뒤에도(리뷰 화면에서) 재사용하기 위해서다. pipeline._apply_resolved_gender와
-    동일하게 치환 직후 _verify_gender_swap_and_rollback을 거친다 — 안 거치면
-    spaCy 구조 오탐(예: "la caja"를 서술명사로 오분석해 "la cajo"로 깨뜨리는
-    경우)이 이 경로에서만 안전망 없이 그대로 새어나간다(실사용 재현)."""
-    language = profile.get("language")
+    우선순위(그룹이 전부 답변됐으면 그룹, 아니면 단일값)와 같은 전담 LLM
+    호출(apply_gender/apply_gender_groups)을 쓰지만 pairs 리스트가 아니라
+    문자열 하나를 받는다 — 파이프라인이 끝난 뒤에도(리뷰 화면에서) 재사용
+    하기 위해서다."""
     groups = segment.resolved_gender_groups_raw
     if groups and gender_groups_all_resolved(groups):
-        fixed = await asyncio.to_thread(
-            resolve_gender_groups_in_texts,
-            [{"id": segment.id, "text": text,
-              "groups": [{"candidate_indices": g.get("candidate_indices") or [], "gender": g["gender"]} for g in groups]}],
-            language)
+        gender_groups = _gender_groups_for_ai(groups)
+        if not gender_groups:
+            return text
+        results = await provider.apply_gender_groups(
+            [{"id": segment.id, "target_text": text, "groups": gender_groups}], profile)
     else:
         gender = _normalize_gender_for_ai(segment.resolved_gender_raw)
         if not gender:
             return text
-        fixed = await asyncio.to_thread(
-            resolve_gender_in_texts, [{"id": segment.id, "text": text, "gender": gender}], language)
-    fixed_text = fixed[segment.id]
-    if fixed_text == text:
-        return fixed_text
-    verified = await _verify_gender_swap_and_rollback(
-        {segment.id: (text, fixed_text)}, provider, profile)
-    return verified[segment.id]
+        results = await provider.apply_gender(
+            [{"id": segment.id, "target_text": text, "gender": gender}], profile)
+    return results[0]["corrected_text"] if results else text
 
 
 async def flag_new_gender_ambiguity(
@@ -195,9 +202,9 @@ async def flag_new_gender_ambiguity(
 
 async def gloss_new_gender_words(segment: Segment, provider: ModelProvider, profile: dict) -> None:
     """flag_new_gender_ambiguity가 새로 추가한 그룹은 뜻풀이(word_meanings)가
-    없다 — 메인 파이프라인의 _gloss_gender_words(pipeline.py)와 같은 이유로
-    (대상언어를 모르는 검수자가 "이 단어가 사람 얘기인지조차" 판단 못 하는
-    문제) STT 재검증 경로에서 새로 생긴 그룹에도 똑같이 뜻풀이를 채운다.
+    없다 — 메인 파이프라인의 _run_grammar_necessity_check(pipeline.py)와
+    같은 이유로(대상언어를 모르는 검수자가 "이 단어가 사람 얘기인지조차"
+    판단 못 하는 문제) STT 재검증 경로에서 새로 생긴 그룹에도 똑같이 뜻풀이를 채운다.
     이미 word_meanings가 있는 그룹(재검증을 여러 번 거친 경우)은 다시
     안 부른다."""
     groups = segment.resolved_gender_groups_raw or []

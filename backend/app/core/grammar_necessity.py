@@ -120,9 +120,7 @@ def _strip_html_tags(text: str) -> str:
     등)를 spaCy에 넣기 전에 제거한다 — 안 지우면 "<"가 별도 토큰으로
     떨어져 나가고 남은 "i>내용</i" 파편이 형용사로 오태깅되며 성별 형태소가
     잘못 붙는 사례가 실측으로 확인됐다(design §2026-08 성별판정 정확도
-    개선, 대시 접두사 버그와 같은 종류). candidate_words 추출용으로만 쓴다
-    — resolve_gender_in_texts류는 원본 오프셋으로 치환하므로 여기서 지우면
-    안 된다."""
+    개선, 대시 접두사 버그와 같은 종류)."""
     return _HTML_TAG_RE.sub("", text)
 
 
@@ -186,6 +184,16 @@ def _is_gendered_token(tok) -> bool:
     if tok.pos_ == "ADJ":
         return True
     if tok.pos_ == "VERB" and tok.morph.get("VerbForm") == ["Part"]:
+        # haber 완료형("había vuelto")의 분사는 문법상 성별 불변이다 —
+        # ser/estar 수동태("fue abierta")와 똑같이 dep_=aux 자식을 갖고
+        # spaCy가 표면형 때문에 Gender 형태소까지 붙이지만(실측 확인),
+        # 지배하는 조동사가 haber뿐이면 절대 성별에 따라 바뀌면 안 된다.
+        # 단, "han sido invitados"(완료수동태)처럼 haber와 ser가 같이
+        # 오면 실제로 사람에게 성별이 일치하는 진짜 수동태이니 그대로
+        # 후보로 남긴다 — haber "단독"일 때만 제외한다.
+        aux_lemmas = {child.lemma_ for child in tok.children if child.dep_ == "aux"}
+        if aux_lemmas == {"haber"}:
+            return False
         return True
     if tok.pos_ != "NOUN":
         return False
@@ -261,201 +269,6 @@ def _detect_korean_gender(korean_text: str, is_plural_candidate: bool = False) -
     return None
 
 
-_GENDER_TO_MORPH = {"male": "Masc", "female": "Fem"}
-
-
-def _inflect_gender_word(word: str, target_gender: str, language: str) -> str:
-    """형용사/분사 어미를 규칙 기반으로 다른 성별로 바꾼다. 언어별로 갈라
-    처리한다 — 스페인어/포르투갈어와 프랑스어는 굴절 규칙 자체가 다르다."""
-    if not word:
-        return word
-    if language == "fr":
-        return _inflect_gender_word_fr(word, target_gender)
-    return _inflect_gender_word_es_pt(word, target_gender)
-
-
-def _inflect_gender_word_es_pt(word: str, target_gender: str) -> str:
-    """스페인어/포르투갈어 형용사/분사 어미 변환.
-    ponytail: -o/-a, -or/-ora 같은 흔한 규칙형만 처리한다 — 원래 성별
-    무관한 형용사(feliz, inteligente, optimista 등)는 이 패턴에 안 걸려
-    그대로 반환되니 안전하다. 커버리지가 부족해지면 스페인어 굴절
-    라이브러리로 승급."""
-    lower = word.lower()
-    upper = word[-1].isupper()
-    if target_gender == "female":
-        if lower.endswith("or"):
-            return word + ("A" if upper else "a")
-        if lower.endswith("o"):
-            return word[:-1] + ("A" if upper else "a")
-    elif target_gender == "male":
-        if lower.endswith("ora"):
-            return word[:-1]
-        if lower.endswith("a") and not lower.endswith("ista"):
-            return word[:-1] + ("O" if upper else "o")
-    return word
-
-
-# 규칙으로 못 묶는 완전 불규칙/모호한 쌍 — -eur로 끝나는 단어는 여성형이
-# -euse(chanteur/chanteuse)로 가는 것도, -trice(acteur/actrice)로 가는
-# 것도 있어서 표면형만으로 못 가른다. 반대로 -euse에서 남성형으로 되돌릴
-# 때도 "-eur euse"(chanteuse→chanteur)인지 "-eux euse"(heureuse→heureux
-# 는 실제론 이 패턴)인지 -euse 하나로는 구분 불가능 — 그래서 -eur 어미는
-# 접미사 규칙에 아예 안 넣고, 대화에 자주 나올 법한 단어만 예외로 등록한다
-# (design 논의 참고). 목록에 없는 -eur 단어는 안전하게 그대로 둔다.
-_FRENCH_GENDER_EXCEPTIONS = {
-    "blanc": "blanche", "public": "publique", "turc": "turque",
-    "grec": "grecque", "sec": "sèche",
-    "complet": "complète", "secret": "secrète", "discret": "discrète",
-    "concret": "concrète", "inquiet": "inquiète",
-    "beau": "belle", "nouveau": "nouvelle", "doux": "douce",
-    "faux": "fausse", "fou": "folle", "meilleur": "meilleure",
-    "acteur": "actrice", "directeur": "directrice",
-    "chanteur": "chanteuse", "danseur": "danseuse", "menteur": "menteuse",
-    "vendeur": "vendeuse", "joueur": "joueuse", "coiffeur": "coiffeuse",
-    "trompeur": "trompeuse", "rêveur": "rêveuse", "moqueur": "moqueuse",
-    "voleur": "voleuse", "tricheur": "tricheuse",
-}
-_FRENCH_GENDER_EXCEPTIONS_REV = {v: k for k, v in _FRENCH_GENDER_EXCEPTIONS.items()}
-
-# (남성 어미, 여성 어미) 순서쌍. -eur는 위에서 이미 예외로 처리하니 여기엔
-# 없다.
-_FRENCH_SUFFIX_RULES = (
-    ("eux", "euse"),
-    ("if", "ive"),
-    ("on", "onne"),
-    ("en", "enne"),
-    ("el", "elle"),
-    ("et", "ette"),
-    ("er", "ère"),
-)
-
-
-def _apply_fr_suffix(word: str, old_suffix: str, new_suffix: str) -> str:
-    stem = word[: len(word) - len(old_suffix)] if old_suffix else word
-    result = stem + new_suffix
-    return result.upper() if word.isupper() else result
-
-
-def _inflect_gender_word_fr(word: str, target_gender: str) -> str:
-    lower = word.lower()
-    if target_gender == "female":
-        if lower in _FRENCH_GENDER_EXCEPTIONS:
-            return _apply_fr_suffix(word, lower, _FRENCH_GENDER_EXCEPTIONS[lower])
-        for male_suf, female_suf in _FRENCH_SUFFIX_RULES:
-            if lower.endswith(male_suf):
-                return _apply_fr_suffix(word, male_suf, female_suf)
-        if not lower.endswith("e"):
-            return _apply_fr_suffix(word, "", "e")
-    elif target_gender == "male":
-        if lower in _FRENCH_GENDER_EXCEPTIONS_REV:
-            return _apply_fr_suffix(word, lower, _FRENCH_GENDER_EXCEPTIONS_REV[lower])
-        for male_suf, female_suf in _FRENCH_SUFFIX_RULES:
-            if lower.endswith(female_suf):
-                return _apply_fr_suffix(word, female_suf, male_suf)
-    return word
-
-
-def _apply_span_replacements(text: str, replacements: List[tuple]) -> str:
-    """(start, end, new_word) 스팬 리스트를 원본 오프셋 기준으로 치환한다.
-    text.replace(old, new)처럼 표면형 문자열로 찾아 바꾸면, 같은 단어가
-    문장에 두 번 나올 때(다른 인물 소속이라도) 전부 바뀌어버린다("Juan está
-    cansado, pero María no está cansado."에서 María 쪽만 고치려 해도 Juan
-    쪽까지 같이 바뀜) — 토큰 위치(tok.idx)로 정확히 그 자리만 바꾼다. 뒤에서
-    부터 치환해야 앞쪽에 아직 안 바꾼 오프셋이 밀리지 않는다."""
-    for start, end, new_word in sorted(replacements, key=lambda r: r[0], reverse=True):
-        text = text[:start] + new_word + text[end:]
-    return text
-
-
-_GENDER_SLASH_RE = re.compile(r"\b(\w+)/(\w{1,3})\b")
-
-
-def _collapse_gender_slashes(text: str, target_gender: str, language: str) -> str:
-    """번역문에 "cansado/a"처럼 두 성별 형태를 슬래시로 같이 적어둔 미확정
-    표기가 남아있으면, 목표 성별 하나로 접어서 지운다. spaCy 토큰화에
-    기대지 않는다 — 슬래시 뒤 짧은 접미사가 ADJ로 오태깅되며 이 표기를
-    놓치는 문제를 애초에 피해간다."""
-    def repl(match: "re.Match[str]") -> str:
-        return _inflect_gender_word(match.group(1), target_gender, language)
-    return _GENDER_SLASH_RE.sub(repl, text)
-
-
-def resolve_gender_in_texts(items: List[dict], language: str) -> dict:
-    """검수자가 확정한 성별을 AI에게 "반영해달라"고 부탁하는 대신 파이썬이
-    직접 문장에 반영한다 — 형용사 성별 어미는 결정론적 문법 규칙이라, AI가
-    다른 검증(오역/뉘앙스 등)에 집중하다 이 지시를 놓치는 문제를 원천적으로
-    없앤다. items: [{"id","text","gender"("male"/"female")}, ...]. 여러 건을
-    한 번에 처리한다(spaCy 모델 로딩·파이프라인 오버헤드를 한 번만 지불).
-    반환값은 {id: 수정된 text} — 이미 요청한 성별과 일치하는 문장은 그대로
-    돌아온다."""
-    nlp = _resolve_model(language)
-    # 슬래시 미확정 표기는 spaCy가 보기 전에 먼저 접어둔다 — "/"가 ADJ로
-    # 잘못 태깅되며 뒤 토큰 루프가 그 표기를 놓치는 문제를 피하고, 이후
-    # 토큰화도 접힌 문장 기준으로 정확히 이뤄지게 하기 위해서다.
-    texts = [
-        _collapse_gender_slashes(i["text"], i["gender"], language) if _GENDER_TO_MORPH.get(i["gender"]) else i["text"]
-        for i in items
-    ]
-    docs = nlp.pipe(texts)
-    results: dict = {}
-    for item, text, doc in zip(items, texts, docs):
-        target_morph = _GENDER_TO_MORPH.get(item["gender"])
-        replacements = []
-        if target_morph:
-            for tok in _candidate_tokens(doc):
-                if tok.morph.get("Gender")[0] == target_morph:
-                    continue
-                new_word = _inflect_gender_word(tok.text, item["gender"], language)
-                if new_word != tok.text:
-                    replacements.append((tok.idx, tok.idx + len(tok.text), new_word))
-        results[item["id"]] = _apply_span_replacements(text, replacements)
-    return results
-
-
-def resolve_gender_groups_in_texts(items: List[dict], language: str) -> dict:
-    """resolve_gender_in_texts의 다인물 버전 — 한 줄에 성별이 다른 인물이
-    둘 이상 있을 때, 인물(그룹)별로 확정된 성별을 그 인물에 속한 단어에만
-    적용한다(다른 인물의 단어는 건드리지 않는다). items:
-    [{"id","text","groups":[{"candidate_indices":[int,...], "gender":
-    "male"/"female"}, ...]}]. 반환값은 {id: 수정된 text}.
-
-    candidate_indices는 "이 텍스트를 spaCy로 다시 파싱했을 때 나오는 후보
-    토큰(성별 어미 있는 형용사/분사) 목록을 문장 속 등장 순서로 셌을 때 몇
-    번째인가"다 — 이 순서는 같은 텍스트라면 항상 결정론적으로 같다. 그룹핑
-    자체(어느 후보가 같은 인물인가)는 LLM(resolve_gender_from_context)이
-    판단해 넘겨준 것을 그대로 신뢰하고, 여기서는 그 인덱스로 정확히 그
-    토큰만 찾아 치환한다 — 의존구문을 다시 분석해 그룹을 재구성하지
-    않는다(design §그룹핑도 LLM이 직접, 재적용은 순서 매칭만). 존재하지
-    않는 인덱스(텍스트가 바뀌어 후보 수가 줄어든 경우 등)는 조용히
-    무시한다."""
-    nlp = _resolve_model(language)
-    texts = [i["text"] for i in items]
-    docs = nlp.pipe(texts)
-    results: dict = {}
-    for item, text, doc in zip(items, texts, docs):
-        candidates = _candidate_tokens(doc)
-        gender_by_index: dict = {}
-        for group in item["groups"]:
-            target_gender = group.get("gender")
-            if target_gender not in _GENDER_TO_MORPH:
-                continue
-            for idx in group["candidate_indices"]:
-                gender_by_index[idx] = target_gender
-        replacements = []
-        for idx, tok in enumerate(candidates):
-            target_gender = gender_by_index.get(idx)
-            if target_gender is None:
-                continue
-            target_morph = _GENDER_TO_MORPH[target_gender]
-            if tok.morph.get("Gender")[0] == target_morph:
-                continue
-            new_word = _inflect_gender_word(tok.text, target_gender, language)
-            if new_word != tok.text:
-                replacements.append((tok.idx, tok.idx + len(tok.text), new_word))
-        results[item["id"]] = _apply_span_replacements(text, replacements)
-    return results
-
-
 def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
     """입력 pairs([{"id","target_text","korean_text"}, ...])와 1:1 대응하는
     결과를 반환한다: {"id", "gender_check_needed", "formality_check_needed",
@@ -487,7 +300,14 @@ def check_grammar_necessity(pairs: List[dict], profile: dict) -> List[dict]:
         candidate_words = [tok.text for tok in candidates]
         candidate_word_lemmas = [tok.lemma_.lower() for tok in candidates]
         resolved_gender_from_korean = None
-        if len(candidates) == 1:
+        # NOUN 후보(술어 명사/호격 명사 휴리스틱, _is_gendered_token 참고)는
+        # 여기서 제외한다 — ADJ/분사와 달리 NOUN의 성별 어미는 그 사람의
+        # 성별과 무관하게 어휘 자체에 고정된 경우가 흔하다(castigo=벌,
+        # caja=상자처럼 사람과 전혀 무관한 명사도 구조적으로는 유일한
+        # 후보가 될 수 있음 — 실측 회귀: 한국어 단서만으로 확정→기계적
+        # 치환까지 가서 존재하지 않는 단어를 만들어냄). NOUN 후보는 항상
+        # LLM의 is_person 판단(resolve_gender_from_context)을 거치게 한다.
+        if len(candidates) == 1 and candidates[0].pos_ != "NOUN":
             is_plural = candidates[0].morph.get("Number") == ["Plur"]
             resolved_gender_from_korean = _detect_korean_gender(
                 p.get("korean_text", ""), is_plural_candidate=is_plural)

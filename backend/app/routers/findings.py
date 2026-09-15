@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
-from app.models import TargetVersion, FindingRow, Segment, SttCorrection
+from app.models import TargetVersion, FindingRow, Segment, SttCorrection, Episode
 from app.core.grammar_necessity import check_grammar_necessity
 from app.core.requery import (
     requery_finding, reverify_segment_after_stt_correction,
@@ -20,11 +20,13 @@ from app.core.requery import (
 )
 from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length
 from app.core.safety_net import enforce_line_length
+from app.core.glossary_guard import patch_missing_canonical, find_canonical_overrides
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
 from app.providers.base import get_provider
 from app.repositories import (
     get_findings as repo_get_findings, get_findings_for_segment,
+    get_glossary_prompt_entries, update_glossary_entry,
 )
 
 logger = logging.getLogger(__name__)
@@ -236,6 +238,31 @@ async def exclude_segment(segment_id: str, payload: ExcludeSegmentIn):
         return {"id": seg.id, "excluded": seg.excluded}
 
 
+async def _load_glossary_context(session, finding: FindingRow):
+    """finding이 속한 세그먼트의 한국어 원문과, 그 작품·언어판에 이미
+    등록된 용어집 항목(entry_id 포함)을 가져온다 — 검수 액션 시점에
+    고유명사 표기 일관성을 확인/보정하는 데 쓴다."""
+    segment = await session.get(Segment, finding.segment_id)
+    tv = await session.get(TargetVersion, finding.target_version_id)
+    episode = await session.get(Episode, tv.episode_id)
+    glossary_entries = await get_glossary_prompt_entries(
+        session, episode.title_id, tv.target_language, tv.variant)
+    return segment.korean_text, tv.target_language, tv.variant, glossary_entries
+
+
+async def _apply_glossary_override(session, finding: FindingRow, final_text: str) -> None:
+    """검수자가 직접 입력한 문구(modified)가 등록된 표준 표기와 다른
+    고유명사를 쓰면, 강제로 되돌리지 않고 검수자의 판단을 표준 표기로
+    승격한다(자가 치유) — 최초 등록이 틀렸어도 이후 검수 한 번이면
+    바로잡힌다."""
+    korean_text, target_language, variant, glossary_entries = (
+        await _load_glossary_context(session, finding))
+    for entry_id, new_canonical in find_canonical_overrides(
+            korean_text, finding.original_text, final_text, glossary_entries):
+        await update_glossary_entry(
+            session, entry_id, spellings={f"{target_language}_{variant}": new_canonical})
+
+
 @router.post("/findings/{finding_id}/review-action")
 async def review_action(finding_id: str, payload: ReviewActionIn):
     async with async_session() as session:
@@ -251,12 +278,18 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
         finding.reviewed_at = datetime.now(timezone.utc)
         if payload.action == "modified":
             finding.final_text = payload.final_text
+            await _apply_glossary_override(session, finding, payload.final_text)
         elif payload.action == "approved":
             # AI 제안은 검수자의 문구가 아니라서, 제약을 넘으면 자동으로
             # 줄인다(승인 시점까지는 S4 안전망을 안 거치는 pending 제안이라
             # 여기서 처음 걸러진다). 줄당 글자수 제약(50자, 최대 2줄)을 검사한다.
+            # 등록된 고유명사 표준 표기가 AI 제안에서 빠졌으면(LLM 프롬프트
+            # 지시만으로는 안 지켜질 수 있음) 여기서 마지막으로 강제한다.
+            korean_text, _, _, glossary_entries = await _load_glossary_context(session, finding)
+            patched_text = patch_missing_canonical(
+                korean_text, finding.original_text, finding.suggested_text, glossary_entries)
             finding.final_text, _ = await enforce_line_length(
-                finding.suggested_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
+                patched_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
         await session.commit()
         return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
 
@@ -283,12 +316,17 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
         if payload.final_text:
             finding.status = "modified"
             finding.final_text = payload.final_text
+            await _apply_glossary_override(session, finding, payload.final_text)
         else:
             finding.status = "approved"
             # 그대로 채택한 AI 제안은 줄당 글자수 제약(50자, 최대 2줄)을
-            # 넘으면 자동으로 줄인다.
+            # 넘으면 자동으로 줄인다. 등록된 고유명사 표준 표기가 빠졌으면
+            # review-action과 동일하게 여기서도 마지막으로 강제한다.
+            korean_text, _, _, glossary_entries = await _load_glossary_context(session, finding)
+            patched_text = patch_missing_canonical(
+                korean_text, finding.original_text, finding.suggested_text, glossary_entries)
             finding.final_text, _ = await enforce_line_length(
-                finding.suggested_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
+                patched_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
         finding.reviewer_name = payload.reviewer_name
         finding.reviewed_at = now
 
@@ -365,10 +403,12 @@ async def requery(finding_id: str, payload: RequeryIn):
 
         provider = get_provider()
         knowledge = load_knowledge()
+        _, _, _, glossary_entries = await _load_glossary_context(session, finding)
 
         try:
             new_suggested_text, back_translation = await requery_finding(
-                finding, segment, payload.instruction, provider, knowledge, profile)
+                finding, segment, payload.instruction, provider, knowledge, profile,
+                glossary_entries=glossary_entries)
         except (RequeryNotSupportedError, RequeryNoResultError) as exc:
             raise HTTPException(400, str(exc))
 
@@ -421,8 +461,12 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
         # 고쳐도 기존 제안 카드가 그대로였음).
         existing = await get_findings_for_segment(session, segment_id)
         current_text = existing[0].suggested_text if len(existing) == 1 else None
+        episode = await session.get(Episode, tv.episode_id)
+        glossary_entries = await get_glossary_prompt_entries(
+            session, episode.title_id, tv.target_language, tv.variant)
         correction = await reverify_segment_after_stt_correction(
-            seg, provider, knowledge, profile, current_text=current_text)
+            seg, provider, knowledge, profile, current_text=current_text,
+            glossary_entries=glossary_entries)
 
         if correction:
             # GPT가 새로 만든 제안문구는 1차 검수 때 이미 확정된 성별을

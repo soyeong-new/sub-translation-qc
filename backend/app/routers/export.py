@@ -4,7 +4,11 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 from app.db import async_session
 from app.models import TargetVersion, FindingRow, Segment, ExportRow, Episode, Title
-from app.core.export import assemble_final_srt, compute_stats, safety_net_check, build_export_filename
+from app.core.export import (
+    assemble_final_srt, compute_stats, safety_net_check, build_export_filename,
+    glossary_consistency_check,
+)
+from app.repositories import get_glossary_prompt_entries
 
 router = APIRouter()
 
@@ -27,9 +31,12 @@ async def export_target_version(target_version_id: str):
         finding_rows = (await session.execute(
             select(FindingRow).where(FindingRow.target_version_id == target_version_id)
         )).scalars().all()
+        glossary_entries = await get_glossary_prompt_entries(
+            session, episode.title_id, tv.target_language, tv.variant)
 
     segments = [
-        {"id": s.id, "start": s.start, "end": s.end, "text": s.target_text, "excluded": s.excluded}
+        {"id": s.id, "start": s.start, "end": s.end, "text": s.target_text,
+         "korean_text": s.korean_text, "excluded": s.excluded}
         for s in seg_rows
     ]
     # reviewed_at도 함께 넘긴다: 같은 세그먼트에 자동보정과 검수자 판단이 동시에
@@ -43,6 +50,7 @@ async def export_target_version(target_version_id: str):
     # 대상으로 줄 길이를 마지막으로 한 번 더 검사한다. 위반이 있어도 export
     # 자체는 막지 않고 참고용 경고로만 응답에 포함한다 (non-blocking).
     warnings = safety_net_check(segments, findings)
+    warnings += glossary_consistency_check(segments, findings, glossary_entries)
 
     # export 이력/감사 기록 (exports 테이블). 응답으로 내려준 통계와 정확히 같은
     # 값을 남긴다. 영상 프록시는 여기서 지우지 않는다 — export 후에도 계속

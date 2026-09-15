@@ -253,6 +253,8 @@ export const listTitles = () => request("/titles");
 
 export const getStorageUsage = () => request("/storage");
 
+export const getTitleGlossary = (titleId) => request(`/titles/${titleId}/glossary`);
+
 export const postGlossaryEntry = (titleId, data) =>
   request(`/titles/${titleId}/glossary`, { method: "POST", body: JSON.stringify(data) });
 

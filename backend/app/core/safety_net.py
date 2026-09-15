@@ -50,41 +50,21 @@ def _dedupe_by_segment(violations: List[FormatViolation]) -> List[FormatViolatio
 async def shrink_violating_lines(pairs: List[AlignedPair],
                                   violations: List[FormatViolation],
                                   provider: ModelProvider,
-                                  target_version_id: str,
-                                  existing_findings: List[Finding] = None) -> List[Finding]:
+                                  target_version_id: str) -> List[Finding]:
     """위반이 없으면 LLM을 전혀 호출하지 않는다. 위반된 세그먼트마다
-    enforce_line_length로 줄이고, 그 결과를 pair.target.text에 즉시 반영한다
-    — 이후 결과 저장/export가 이 최종 텍스트를 그대로 쓴다. rewrap_line만으로
-    해결됐는지(규칙 기반) LLM까지 갔는지에 따라 finding의 source/model이
-    갈린다(검수자가 "왜 바뀌었는지" 구분할 수 있게).
+    enforce_line_length로 축약해 pair.target.text에 바로 반영하고 자동
+    승인한다 — 판단 여지가 없는 기계적 규칙이라 사람 승인을 기다리지 않지만,
+    검수자 진행률 카운팅(ReviewView.jsx)에서는 사람이 손댄 적 없는 이 finding을
+    제외해 실제 검수 대상과 섞이지 않게 한다. rewrap_line만으로 해결됐는지
+    (규칙 기반) LLM까지 갔는지에 따라 finding의 source/model이 갈린다(검수자가
+    "왜 바뀌는지" 구분할 수 있게).
 
     최대 글자수는 정적 줄당 글자수 제약(MAX_LINE_CHARS)을 사용한다.
-    읽기 속도는 화면에 실제로 입혀서 확인하므로 여기서는 고려하지 않는다.
-
-    existing_findings에 같은 세그먼트를 가리키는 자동 승인된(status
-    "approved") S2 finding이 정확히 하나 있으면, 새 finding을 또 만들지
-    않고 그 finding의 suggested_text/final_text를 이 축약 결과로 갱신한다
-    — 안 그러면 검수자 눈에 "방금 승인한 문장과 거의 똑같은 문장"이 카드
-    두 개로 보인다(같은 결정을 두 번 보여주는 꼴). 그 외의 경우(기존
-    finding이 없거나, 아직 검수자 결정을 기다리는 pending인 경우 —
-    pending일 때는 pair.target.text가 아직 그 제안을 반영하지 않은
-    상태라 여기서 만드는 축약이 그 제안과 무관하다)는 지금처럼 새
-    finding을 만든다."""
+    읽기 속도는 화면에 실제로 입혀서 확인하므로 여기서는 고려하지 않는다."""
     violations = _dedupe_by_segment(violations)
     if not violations:
         return []
     pair_by_id = {p.id: p for p in pairs}
-
-    mergeable_by_segment: dict = {}
-    for f in (existing_findings or []):
-        if f.status == "approved":
-            mergeable_by_segment.setdefault(f.segment_id, []).append(f)
-    # 세그먼트당 자동 승인된 finding이 정확히 하나일 때만 병합 대상으로
-    # 삼는다 — 둘 이상이면 어느 쪽에 반영해야 할지 애매해서 새로 만드는
-    # 기존 방식이 더 안전하다.
-    mergeable_by_segment = {
-        seg_id: fs[0] for seg_id, fs in mergeable_by_segment.items() if len(fs) == 1
-    }
 
     findings = []
     for v in violations:
@@ -101,19 +81,8 @@ async def shrink_violating_lines(pairs: List[AlignedPair],
         else:
             shrunk_text, _ = await enforce_line_length(original_text, provider, max_chars, MAX_LINES)
             note = f"자막 제약 위반 자동 축약: {v.detail}"
+
         pair.target.text = shrunk_text
-
-        existing = mergeable_by_segment.get(v.segment_id)
-        if existing is not None and shrunk_text != original_text:
-            # 실제로 텍스트가 변경된 경우만 업데이트. description은 안 건드린다
-            # — 프론트(splitDescription)가 "(한국어 역번역 참고: ...)" 같은 태그를
-            # 문자열 끝(정규식 $)에서 잘라내는 방식이라, 여기서 뒤에 뭘 덧붙이면
-            # 그 파싱이 전부 깨져서 역번역이 안 보이게 된다("제안" 박스의 글자수
-            # 표시만으로 축약됐다는 건 알 수 있으니 충분하다).
-            existing.suggested_text = shrunk_text
-            existing.final_text = shrunk_text
-            continue
-
         findings.append(Finding(
             id=f"finding_{v.segment_id}_safety_net_formatting",
             target_version_id=target_version_id, segment_id=v.segment_id,
