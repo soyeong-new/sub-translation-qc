@@ -77,7 +77,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
       <table className="w-full border-collapse text-xs">
         <thead>
           <tr className="border-b border-border bg-card text-foreground">
-            <th className="px-4 py-2 text-left font-bold">한국어 용어</th>
+            <th className="sticky left-0 z-10 bg-card px-4 py-2 text-left font-bold">한국어 용어</th>
             {columns.map((col) => (
               <th key={col} className="px-4 py-2 text-left font-bold">
                 {col}
@@ -88,8 +88,10 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
         </thead>
         <tbody className="divide-y divide-border/40">
           {[...entries].sort((a, b) => a.korean_term.localeCompare(b.korean_term, "ko")).map((entry) => (
-            <tr key={entry.id} className="hover:bg-accent/40">
-              <td className="px-4 py-2 text-foreground">{entry.korean_term}</td>
+            <tr key={entry.id} className="group hover:bg-accent/40">
+              <td className="sticky left-0 z-10 bg-card px-4 py-2 text-foreground group-hover:bg-accent/40">
+                {entry.korean_term}
+              </td>
               {columns.map((col) => (
                 <td key={col} className="px-4 py-2">
                   <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onChanged} onError={onError} />
