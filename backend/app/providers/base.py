@@ -429,6 +429,22 @@ class ModelProvider(ABC):
         ...
 
     @abstractmethod
+    async def check_glossary_reflection(self, items: List[dict], profile: dict) -> List[dict]:
+        """export 직전 안전망(glossary_consistency_check) 2차 판정 — 문자열
+        매칭(canonical이 최종 텍스트에 그대로 없음)만으로는 진짜 오타/누락과
+        대명사로 정당하게 대체된 경우를 구분 못 한다(design 논의: "다르다"는
+        알아도 "왜 다른지"는 모름). 이 후보들만 LLM에 넘겨 실제 위반인지
+        판단한다.
+
+        입력은 [{"id": str, "korean_text": str, "text": str,
+        "korean_term": str, "canonical": str}, ...] — text는 최종 대상언어
+        텍스트, canonical은 등록된 표준 표기(문자열 매칭으로 이미 text 안에
+        없는 것으로 확인됨). 반환값은 [{"id": str, "violation": bool}, ...]
+        — violation=false면 대명사 대체·자연스러운 생략 등 정당한 경우이니
+        경고를 내지 마라, true면 진짜 오타/누락이니 경고를 유지하라."""
+        ...
+
+    @abstractmethod
     async def apply_gender_groups(self, items: List[dict], profile: dict) -> List[dict]:
         """apply_gender의 다인물 버전 — 한 문장에 인물이 둘 이상이면 각자
         확정된 성별을 그 인물을 가리키는 단어에만 적용해야 하므로, 그룹마다

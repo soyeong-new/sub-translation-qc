@@ -63,6 +63,15 @@ _GLOSS_SCHEMA_INSTRUCTION = (
     "그대로 반복하지 말고 반드시 한글로 뜻을 옮길 것)."
 )
 
+_GLOSSARY_REFLECTION_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+    'id (문자열, 입력의 "id"와 반드시 일치), '
+    "violation (불리언, 등록 표기가 반영되지 않은 게 오타·누락 등 진짜 "
+    "문제면 true, 대명사로 자연스럽게 대체됐거나 문맥상 생략해도 자연스러운 "
+    "정당한 경우면 false)."
+)
+
 _FORMALITY_SCHEMA_INSTRUCTION = (
     '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
@@ -551,6 +560,21 @@ class GptClient:
         )
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="동등성 확인",
+                                 model_override=self._light_model, seed=_SEED)
+
+    async def check_glossary_reflection(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        system = (
+            f"다음은 한국어 원문(korean_text), 최종 {language_label} 텍스트"
+            "(text), 등록된 한국어 용어(korean_term)와 그 표준 표기"
+            "(canonical) 목록이다. canonical 표기가 text에 문자 그대로는 "
+            "없다는 게 이미 확인됐다 — 각 항목마다 그게 진짜 문제(오타, "
+            "누락, 다른 표기 사용)인지, 아니면 대명사로 자연스럽게 대체됐거나 "
+            "문맥상 생략해도 뜻이 통하는 정당한 경우인지 판단하라.\n"
+            + _GLOSSARY_REFLECTION_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(system, user, key="results", label="용어집 반영 확인",
                                  model_override=self._light_model, seed=_SEED)
 
     async def gloss_words(self, items: List[dict], profile: dict) -> List[dict]:

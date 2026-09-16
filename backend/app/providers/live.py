@@ -79,6 +79,9 @@ class LiveModelProvider(ModelProvider):
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.resolve_gender_from_context(items, profile)
 
+    async def check_glossary_reflection(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.check_glossary_reflection(items, profile)
+
     async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.apply_gender(items, profile)
 

@@ -1,10 +1,14 @@
 """검수 결과를 반영해 최종 SRT를 조립하고 반영율 통계를 계산하는 모듈."""
 
+import logging
 import re
 from typing import List, Optional
 from app.core.ingest import build_srt
 from app.core.format_rules import check_line_length
+from app.providers.base import ModelProvider
 from app.schemas import AlignedPair, SegmentText, ExportStats, FormatViolation
+
+logger = logging.getLogger(__name__)
 
 _FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|]')
 
@@ -87,15 +91,13 @@ def safety_net_check(segments: List[dict], findings: List[dict]) -> list:
     return check_line_length(pairs)
 
 
-def glossary_consistency_check(segments: List[dict], findings: List[dict],
-                                glossary_entries: List[dict]) -> list:
-    """export 직전 안전망 — 등록된 고유명사 표준 표기가 최종 텍스트에 실제로
-    남아 있는지 마지막으로 한 번 더 확인한다. 검수 시점 자동 보정
-    (findings.py review-action/pick)이 닿지 못한 경우(finding 자체가 없는
-    세그먼트, 거부돼 원본이 그대로 남은 세그먼트)를 잡기 위한 것 — 자동
-    수정은 하지 않고 참고용 경고만 만든다(non-blocking)."""
+def _find_glossary_candidates(segments: List[dict], findings: List[dict],
+                               glossary_entries: List[dict]) -> list:
+    """1차 필터 — 문자열 매칭으로 값싸게 후보만 추린다. 대명사로 자연스럽게
+    대체되거나 생략된 정당한 경우까지 전부 걸리므로(과탐), 이 후보만 LLM
+    2차 판정(check_glossary_reflection)에 넘겨 진짜 위반만 남긴다."""
     final_by_segment = _final_text_by_segment(findings)
-    violations = []
+    candidates = []
     for seg in segments:
         if seg.get("excluded"):
             continue
@@ -108,12 +110,45 @@ def glossary_consistency_check(segments: List[dict], findings: List[dict],
             if not canonical or not korean_term:
                 continue
             if korean_term in korean_text and canonical not in text:
-                violations.append(FormatViolation(
-                    segment_id=seg["id"], rule="glossary_mismatch",
-                    detail=f"'{korean_term}' 등록 표기 '{canonical}'가 최종 텍스트에 없음",
-                    original_text=text,
-                ))
-    return violations
+                candidates.append({
+                    "id": f"{seg['id']}:{entry.get('entry_id')}",
+                    "segment_id": seg["id"], "korean_term": korean_term,
+                    "canonical": canonical, "korean_text": korean_text, "text": text,
+                })
+    return candidates
+
+
+async def glossary_consistency_check(segments: List[dict], findings: List[dict],
+                                      glossary_entries: List[dict],
+                                      provider: ModelProvider, profile: dict) -> list:
+    """export 직전 안전망 — 등록된 고유명사 표준 표기가 최종 텍스트에 실제로
+    남아 있는지 마지막으로 한 번 더 확인한다. 검수 시점 자동 보정
+    (findings.py review-action/pick)이 닿지 못한 경우(finding 자체가 없는
+    세그먼트, 거부돼 원본이 그대로 남은 세그먼트)를 잡기 위한 것 — 자동
+    수정은 하지 않고 참고용 경고만 만든다(non-blocking).
+
+    2단계 판정: 문자열 매칭 후보 중 "대명사로 정당하게 대체된 경우"를 LLM이
+    걸러내고 진짜 오타/누락만 남긴다(design 논의 — 문자열 매칭만으로는
+    "다르다"만 알 뿐 "왜 다른지"는 모름). LLM 호출이 실패하거나 응답에서
+    id가 빠지면 위반으로 간주한다 — 과탐지 허용, 누락 금지."""
+    candidates = _find_glossary_candidates(segments, findings, glossary_entries)
+    if not candidates:
+        return []
+    try:
+        results = await provider.check_glossary_reflection(candidates, profile)
+        violation_by_id = {r["id"]: r["violation"] for r in results}
+    except Exception:
+        logger.exception("용어집 반영 확인(LLM) 실패, 후보 전부 경고로 처리")
+        violation_by_id = {}
+    return [
+        FormatViolation(
+            segment_id=c["segment_id"], rule="glossary_mismatch",
+            detail=f"'{c['korean_term']}' 등록 표기 '{c['canonical']}'가 최종 텍스트에 없음",
+            original_text=c["text"],
+        )
+        for c in candidates
+        if violation_by_id.get(c["id"], True)
+    ]
 
 
 def compute_stats(findings: List[dict]) -> ExportStats:

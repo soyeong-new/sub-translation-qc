@@ -8,6 +8,8 @@ from app.core.export import (
     assemble_final_srt, compute_stats, safety_net_check, build_export_filename,
     glossary_consistency_check,
 )
+from app.language_profiles.loader import load_profile
+from app.providers.base import get_provider
 from app.repositories import get_glossary_prompt_entries
 
 router = APIRouter()
@@ -50,7 +52,9 @@ async def export_target_version(target_version_id: str):
     # 대상으로 줄 길이를 마지막으로 한 번 더 검사한다. 위반이 있어도 export
     # 자체는 막지 않고 참고용 경고로만 응답에 포함한다 (non-blocking).
     warnings = safety_net_check(segments, findings)
-    warnings += glossary_consistency_check(segments, findings, glossary_entries)
+    profile = load_profile(tv.target_language, tv.variant)
+    warnings += await glossary_consistency_check(
+        segments, findings, glossary_entries, get_provider(), profile)
 
     # export 이력/감사 기록 (exports 테이블). 응답으로 내려준 통계와 정확히 같은
     # 값을 남긴다. 영상 프록시는 여기서 지우지 않는다 — export 후에도 계속

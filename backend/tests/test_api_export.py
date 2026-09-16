@@ -136,10 +136,12 @@ async def test_export_format_warnings_empty_when_clean():
 
 
 @pytest.mark.asyncio
-async def test_export_flags_glossary_mismatch_for_finding_less_segment():
+async def test_export_flags_glossary_mismatch_for_finding_less_segment(monkeypatch):
     """회귀(사용자 보고) 안전망: finding 자체가 없어(검수 시점 훅이 닿지
     않은) 등록된 고유명사 표준 표기가 안 지켜진 세그먼트도 export
-    시점에 참고용 경고로 걸려야 한다(non-blocking)."""
+    시점에 참고용 경고로 걸려야 한다(non-blocking). MockProvider의
+    2차 판정은 korean_text에 "대명사"가 없으면 위반으로 취급한다."""
+    monkeypatch.setenv("QC_PROVIDER", "mock")
     async with async_session() as session:
         title = Title(name="T", type="movie"); session.add(title); await session.flush()
         episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()

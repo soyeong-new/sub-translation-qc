@@ -1,6 +1,12 @@
 from datetime import datetime
 
-from app.core.export import assemble_final_srt, compute_stats, safety_net_check, build_export_filename
+import pytest
+
+from app.core.export import (
+    assemble_final_srt, compute_stats, safety_net_check, build_export_filename,
+    glossary_consistency_check,
+)
+from app.providers.mock import MockProvider
 
 
 def test_build_export_filename_without_episode():
@@ -132,3 +138,53 @@ def test_safety_net_check_skips_excluded_segments():
     segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "a" * 100, "excluded": True}]
     violations = safety_net_check(segments, [])
     assert violations == []
+
+
+# --- glossary_consistency_check: 2단계 판정(문자열 매칭 후보 → LLM 필터).
+# MockProvider.check_glossary_reflection은 korean_text에 "대명사"가 있으면
+# 정당한 대체로 보고 걸러낸다(violation=False).
+
+_GLOSSARY_ENTRIES = [{"entry_id": "e1", "korean_term": "강오크", "canonical": "Kang-ok"}]
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_skips_llm_call_when_no_candidates():
+    """후보가 없으면(문자열 매칭에서부터 걸리는 게 없으면) provider를
+    아예 부르지 않는다 — None을 넘겨도 에러가 나지 않아야 한다."""
+    violations = await glossary_consistency_check([], [], [], None, {})
+    assert violations == []
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_keeps_genuine_mismatch():
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "Oye, Gang-ok.",
+                 "korean_text": "야, 강오크."}]
+    violations = await glossary_consistency_check(
+        segments, [], _GLOSSARY_ENTRIES, MockProvider(), {})
+    assert len(violations) == 1
+    assert violations[0].rule == "glossary_mismatch"
+    assert violations[0].segment_id == "p1"
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_filters_out_legitimate_pronoun_substitution():
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "Oye, él.",
+                 "korean_text": "야, 강오크(대명사로 지칭됨)."}]
+    violations = await glossary_consistency_check(
+        segments, [], _GLOSSARY_ENTRIES, MockProvider(), {})
+    assert violations == []
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_falls_back_to_violation_when_llm_fails():
+    """LLM 판정이 실패해도 후보를 조용히 누락시키지 않는다 — 과탐지
+    허용, 누락 금지."""
+    class _FailingProvider(MockProvider):
+        async def check_glossary_reflection(self, items, profile):
+            raise RuntimeError("boom")
+
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "Oye, Gang-ok.",
+                 "korean_text": "야, 강오크."}]
+    violations = await glossary_consistency_check(
+        segments, [], _GLOSSARY_ENTRIES, _FailingProvider(), {})
+    assert len(violations) == 1
