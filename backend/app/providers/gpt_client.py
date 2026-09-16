@@ -59,7 +59,8 @@ _GLOSS_SCHEMA_INSTRUCTION = (
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'id (문자열, 입력의 "id"와 반드시 일치), '
     "meaning (문자열, 그 단어가 context 문장 안에서 무슨 뜻인지 간결한 "
-    "한국어로, 1~4단어 정도로)."
+    "한국어로만, 1~4단어 정도로. 원래 단어(word)나 다른 외국어 표기를 "
+    "그대로 반복하지 말고 반드시 한글로 뜻을 옮길 것)."
 )
 
 _FORMALITY_SCHEMA_INSTRUCTION = (

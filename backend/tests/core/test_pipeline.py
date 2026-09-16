@@ -1892,6 +1892,38 @@ async def test_run_grammar_necessity_check_glosses_words_via_parallel_call():
 
 
 @pytest.mark.asyncio
+async def test_run_grammar_necessity_check_retries_gloss_that_echoes_the_word():
+    """회귀: gloss_words가 한국어 뜻풀이 대신 원문 단어를 그대로 돌려주면
+    (LLM이 프롬프트 지시를 안 따른 경우), 그 단어만 한 번 더 물어봐서
+    정상적인 뜻풀이를 얻어야 한다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class EchoesOnceProvider(MockProvider):
+        def __init__(self):
+            self.gloss_call_count = 0
+
+        async def gloss_words(self, items, profile):
+            self.gloss_call_count += 1
+            if self.gloss_call_count == 1:
+                return [{"id": i["id"], "meaning": i["word"]} for i in items]
+            return [{"id": i["id"], "meaning": f"[뜻:{i['word']}]"} for i in items]
+
+    pairs = [AlignedPair(
+        id="p1", korean=SegmentText(start=0.0, end=1.0, text="그 인간이 피곤해해."),
+        target=SegmentText(start=0.0, end=1.0, text="Juan está cansado."),
+    )]
+    provider = EchoesOnceProvider()
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, provider, "tv1")
+    assert warnings == []
+    assert provider.gloss_call_count == 2
+    groups = resolutions[0]["resolved_gender_groups"]
+    assert groups[0]["word_meanings"] == {"cansado": "[뜻:cansado]"}
+
+
+@pytest.mark.asyncio
 async def test_run_grammar_necessity_check_gloss_failure_does_not_block_gender_resolution():
     """회귀: 뜻풀이(gloss_words) 호출이 실패해도 성별 그룹핑
     (resolve_gender_from_context)은 그대로 성공해야 한다 — 병렬화 이후에도

@@ -38,6 +38,41 @@ logger = logging.getLogger(__name__)
 STT_CHUNK_SECONDS = 600.0
 
 
+def _clean_gloss_meaning(meaning: Optional[str], word: str) -> Optional[str]:
+    """gloss_words가 한국어 뜻풀이 대신 원래 단어를 그대로 돌려주는 등
+    프롬프트 지시를 안 따른 응답을 걸러낸다."""
+    if not meaning:
+        return None
+    meaning = meaning.strip()
+    if not meaning or not contains_hangul(meaning):
+        return None
+    if meaning.casefold() == word.strip().casefold():
+        return None
+    return meaning
+
+
+async def _gloss_words_with_retry(provider: ModelProvider, items: list, profile: dict) -> dict:
+    """gloss_words를 부르고 _clean_gloss_meaning으로 검증한다 — 검증에 걸린
+    (원문 단어를 그대로 반복하는 등) 항목만 한 번 더 물어본다. 재시도까지
+    실패하면 그 항목은 빈 채로 남긴다 — 화면에서 단어 칩만 보이고 뜻풀이가
+    빠지는 경우를 완전히 없애진 못하지만(둘 다 안 지킬 수 있으니), 애초에
+    잘못된 뜻을 그대로 보여주는 것보단 안전하고, 최대한 줄어들게 한다."""
+    if not items:
+        return {}
+    word_by_id = {i["id"]: i["word"] for i in items}
+
+    async def _run(batch: list) -> dict:
+        results = await provider.gloss_words(batch, profile)
+        raw_by_id = {r["id"]: r.get("meaning") for r in results}
+        return {b["id"]: _clean_gloss_meaning(raw_by_id.get(b["id"]), word_by_id[b["id"]]) for b in batch}
+
+    cleaned = await _run(items)
+    failed_ids = [i for i, m in cleaned.items() if m is None]
+    if failed_ids:
+        cleaned.update(await _run([i for i in items if i["id"] in failed_ids]))
+    return {i: m for i, m in cleaned.items() if m}
+
+
 def _offset_segments(segments: list, offset_seconds: float) -> list:
     """STT 조각 결과의 타임코드(그 조각 파일 안에서 0초부터 시작하는 상대
     시각)를 에피소드 전체 기준 절대 시각으로 보정한다."""
@@ -348,7 +383,7 @@ async def _run_grammar_necessity_check(
 
             resolve_result, gloss_result = await asyncio.gather(
                 provider.resolve_gender_from_context(wire_items, profile),
-                provider.gloss_words(gloss_wire_items, profile),
+                _gloss_words_with_retry(provider, gloss_wire_items, profile),
                 return_exceptions=True,
             )
 
@@ -359,9 +394,8 @@ async def _run_grammar_necessity_check(
                     target_version_id)
                 warnings.append({"stage": "단어 뜻풀이", "message": str(gloss_result)})
             else:
-                meaning_by_idx = {r["id"]: r.get("meaning") for r in gloss_result}
                 for wire_index, key in enumerate(gloss_entries):
-                    meaning = meaning_by_idx.get(str(wire_index))
+                    meaning = gloss_result.get(str(wire_index))
                     if meaning:
                         meaning_by_key[key] = meaning
 

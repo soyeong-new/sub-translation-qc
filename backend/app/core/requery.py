@@ -11,7 +11,7 @@ from app.core.glossary_guard import revert_canonical_regression
 from app.core.grammar_necessity import check_grammar_necessity
 from app.core.pipeline import (
     _normalize_gender_for_ai, gender_groups_all_resolved, _build_gender_groups_from_llm,
-    _gender_groups_for_ai,
+    _gender_groups_for_ai, _gloss_words_with_retry,
 )
 from app.repositories import get_pending_findings_for_segment
 
@@ -218,8 +218,7 @@ async def gloss_new_gender_words(segment: Segment, provider: ModelProvider, prof
             entries.append((group_index, w))
     if not items:
         return
-    results = await provider.gloss_words(items, profile)
-    meaning_by_idx = {r["id"]: r.get("meaning") for r in results}
+    meaning_by_idx = await _gloss_words_with_retry(provider, items, profile)
     new_groups = [dict(g) for g in groups]
     for idx, (group_index, word) in enumerate(entries):
         meaning = meaning_by_idx.get(str(idx))
