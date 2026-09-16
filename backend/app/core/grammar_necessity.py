@@ -176,14 +176,46 @@ def _is_gendered_token(tok) -> bool:
     문장 위치에 따라 ROOT/conj/appos 등으로 태깅이 갈려도 동사의 목적어
     관계로는 안 걸린다(실측: "Você devia ter encontrado um homem bom,
     sua maluco!"의 "maluco"는 conj, head=homem) — obj류만 제외해도
-    호격 패턴은 그대로 다 잡히면서 "meu tipo"류 과탐지만 줄어든다."""
+    호격 패턴은 그대로 다 잡히면서 "meu tipo"류 과탐지만 줄어든다.
+
+    프랑스어는 조동사 자식의 dep_이 "aux" 단독이 아니라 "aux:tense"/
+    "aux:pass"처럼 하위타입으로 나온다(실측 확인, fr_core_news_lg) —
+    그래서 dep_ 정확 일치 대신 ":" 앞부분만 비교한다. 또한 프랑스어
+    avoir 완료형은 haber와 달리 무조건 불변이 아니라, 목적어가 동사보다
+    앞에 오면(대명사화된 COD, "Tu l'as vue") 그때만 성별이 일치하고
+    보통 어순("Il a mangé une pomme")에서는 안 바뀐다(COD 앞섬 규칙) —
+    그래서 haber처럼 통째로 제외하지 않고 목적어 위치를 확인한다.
+
+    프랑스어의 일부 여성형 분사(특히 이 COD 앞섬 구문의 "vue"/"prise"류 —
+    둘 다 동음이의 명사 la vue/une prise가 따로 있어서인지)는 spaCy가
+    pos_=NOUN으로 오태깅하는 사례가 실측에서 확인됐다 — 이러면 아래
+    pos_!=NOUN 필터에 걸려 후보에서 통째로 빠지고, candidate가 하나도
+    없으면 gender_check_needed 자체가 False가 되어 LLM 확인도 사람
+    검수도 없이 조용히 넘어가 버린다(pipeline.py의 게이팅 로직). 그래서
+    표면 pos_ 태그 대신 "aux 자식이 붙어 있다"는 구조적 신호를 분사
+    판별의 기준으로 쓴다 — 오태깅된 경우에도 이 자식 관계는 안정적으로
+    유지되는 게 실측으로 확인됨.
+
+    다만 pos_=NOUN으로 오태깅되면 그 여파로 주변 의존구조 전체가 같이
+    흐트러진다(실측: "La valise qu'il a prise est ici."에서 관계대명사
+    "qu'"가 정상적인 obj 대신 미분류 dep로 잘못 붙음) — 그래서 avoir의
+    목적어 전치 여부(COD 앞섬 규칙)는 pos_가 정상적으로 VERB로 잡힌
+    경우에만 신뢰하고, NOUN으로 오태깅된 경우는 정밀 판별을 포기하고
+    그냥 후보로 남긴다(과탐지가 미탐지보다 안전 — 뒤는 LLM이 사람인지
+    성별이 뭔지 그대로 판단). 이 경우도 사람인지/성별이 뭔지는 여기서
+    안 가리고(예: "vue"가 사람을 봤다는 뜻인지) 그대로 candidate로만
+    남겨 LLM에게 넘긴다."""
     if tok.text.startswith("-"):
         return False
     if not tok.morph.get("Gender"):
         return False
     if tok.pos_ == "ADJ":
         return True
-    if tok.pos_ == "VERB" and tok.morph.get("VerbForm") == ["Part"]:
+    aux_lemmas = {
+        child.lemma_ for child in tok.children
+        if child.dep_.split(":")[0] == "aux"
+    }
+    if tok.pos_ == "VERB" or aux_lemmas:
         # haber 완료형("había vuelto")의 분사는 문법상 성별 불변이다 —
         # ser/estar 수동태("fue abierta")와 똑같이 dep_=aux 자식을 갖고
         # spaCy가 표면형 때문에 Gender 형태소까지 붙이지만(실측 확인),
@@ -191,9 +223,15 @@ def _is_gendered_token(tok) -> bool:
         # 단, "han sido invitados"(완료수동태)처럼 haber와 ser가 같이
         # 오면 실제로 사람에게 성별이 일치하는 진짜 수동태이니 그대로
         # 후보로 남긴다 — haber "단독"일 때만 제외한다.
-        aux_lemmas = {child.lemma_ for child in tok.children if child.dep_ == "aux"}
         if aux_lemmas == {"haber"}:
             return False
+        if aux_lemmas == {"avoir"} and tok.pos_ == "VERB":
+            has_preposed_object = any(
+                child.dep_ in ("obj", "iobj") and child.i < tok.i
+                for child in tok.children
+            )
+            if not has_preposed_object:
+                return False
         return True
     if tok.pos_ != "NOUN":
         return False
