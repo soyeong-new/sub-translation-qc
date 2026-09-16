@@ -421,12 +421,15 @@ export default function FlaggedSegmentStepper({
                         문법상 남성복수로 표기한다(grammar_necessity.py의
                         _detect_korean_gender 참고) — 한국어 규칙으로 못 거른
                         애매한 경우만 여기까지 올라오므로, 매 카드마다 항상
-                        보이는 문구 대신 필요할 때만 확인하는 아이콘으로 둔다. */}
-                    <span
-                      title="여러 명을 함께 가리키는 혼성 집단이면 남성을 선택하세요."
-                      className="flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-muted-foreground/40 text-[10px] leading-none text-muted-foreground"
-                    >
+                        보이는 문구 대신 필요할 때만 확인하는 아이콘으로 둔다.
+                        네이티브 title 속성은 hover 지연이 크고 환경에 따라
+                        안 뜨는 경우가 있어(실사용 확인됨), CSS로 직접 그리는
+                        말풍선을 쓴다. */}
+                    <span className="group relative flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-muted-foreground/40 text-[10px] leading-none text-muted-foreground">
                       i
+                      <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1.5 hidden w-56 -translate-x-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-normal normal-case tracking-normal text-foreground shadow-md group-hover:block">
+                        여러 명을 함께 가리키는 혼성 집단이면 남성을 선택하세요.
+                      </span>
                     </span>
                     {genderResolved && <span className="text-xs text-muted-foreground">확인됨</span>}
                   </div>
