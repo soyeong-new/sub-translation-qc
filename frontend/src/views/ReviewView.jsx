@@ -546,6 +546,11 @@ function PairedFindingCard({
   genderPending, genderError, onResolveGender, onResolveGenderGroup,
 }) {
   const koreanText = segment?.korean_text;
+  // 원본 역번역은 a/b 둘 다 같은 original_text를 역번역한 것이라 값이
+  // 같다 — a에 없으면(역번역 실패 등) b라도 시도한다.
+  const originalBackTranslation =
+    splitDescription(a.description).originalBackTranslation ||
+    splitDescription(b.description).originalBackTranslation;
 
   function handleCardClick(e) {
     if (!segment || !onPreview) return;
@@ -794,6 +799,11 @@ function PairedFindingCard({
           </button>
         </div>
         <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{a.original_text}</p>
+        {originalBackTranslation && (
+          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+            번역: {originalBackTranslation}
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr]">
