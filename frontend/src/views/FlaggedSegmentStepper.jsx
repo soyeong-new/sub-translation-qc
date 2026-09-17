@@ -123,7 +123,7 @@ export function GenderQuestion({
           onClick={() => onSelect("not_applicable")}
           className={resolvedGender === "not_applicable" ? selectedBtnClass : binaryBtnClass}
         >
-          해당 없음(사람 아님)
+          사람 아님(해당 없음)
         </button>
       </div>
     </div>
@@ -428,7 +428,8 @@ export default function FlaggedSegmentStepper({
                     <span className="group relative flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-muted-foreground/40 text-[10px] leading-none text-muted-foreground">
                       i
                       <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1.5 hidden w-56 -translate-x-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-normal normal-case tracking-normal text-foreground shadow-md group-hover:block">
-                        여러 명을 함께 가리키는 혼성 집단이면 남성을 선택하세요.
+                        남녀가 섞인 무리를 가리키면 남성을, 사람이 아닌
+                        사물이나 상황을 가리키면 사람 아님을 선택하세요.
                       </span>
                     </span>
                     {genderResolved && <span className="text-xs text-muted-foreground">확인됨</span>}

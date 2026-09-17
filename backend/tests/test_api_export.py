@@ -198,9 +198,34 @@ async def test_export_format_warnings_checks_final_text_not_original():
 
 
 @pytest.mark.asyncio
-async def test_export_records_an_export_row():
-    """export 이력은 exports 테이블에 남아야 한다 (감사 기록). 저장된 통계는
-    응답의 stats와 정확히 일치해야 한다."""
+async def test_export_check_does_not_record_an_export_row():
+    """검사(GET /export)만으로는 exports 테이블에 감사 기록이 남으면 안 된다
+    — LLM까지 도는 검사 호출마다 기록되면 실제로 내보낸 횟수를 알 수 없다.
+    감사 기록은 /export/confirm(실제 다운로드 시점)에서만 남는다."""
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/export")
+        assert r.status_code == 200
+
+    async with async_session() as session:
+        rows = list((await session.execute(
+            select(ExportRow).where(ExportRow.target_version_id == tv_id)
+        )).scalars().all())
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_export_confirm_records_an_export_row():
+    """실제로 다운로드했을 때(export/confirm)만 exports 테이블에 감사 기록이
+    남아야 한다. 저장된 통계는 검사 응답의 stats와 정확히 일치해야 한다."""
     async with async_session() as session:
         title = Title(name="T", type="movie"); session.add(title); await session.flush()
         episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
@@ -227,6 +252,8 @@ async def test_export_records_an_export_row():
         r = await client.get(f"/target-versions/{tv_id}/export")
         assert r.status_code == 200
         stats = r.json()["stats"]
+        r = await client.post(f"/target-versions/{tv_id}/export/confirm")
+        assert r.status_code == 200
 
     async with async_session() as session:
         rows = list((await session.execute(
@@ -276,9 +303,7 @@ async def test_export_returns_filename_with_episode_when_present():
 
 @pytest.mark.asyncio
 async def test_export_returns_404_for_unknown_target_version():
-    """존재하지 않는 target_version_id로 export하면 404여야 한다. ExportRow에
-    target_versions를 참조하는 FK가 있어, 가드가 없으면 감사 행을 넣는 순간
-    IntegrityError가 그대로 터져 500이 된다."""
+    """존재하지 않는 target_version_id로 export하면 404여야 한다."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.get("/target-versions/does-not-exist/export")
@@ -286,7 +311,20 @@ async def test_export_returns_404_for_unknown_target_version():
     assert r.status_code == 404
     assert r.json()["detail"] == "target version not found"
 
-    # 실패한 export는 감사 행을 남기지 않는다.
+
+@pytest.mark.asyncio
+async def test_export_confirm_returns_404_for_unknown_target_version():
+    """존재하지 않는 target_version_id로 confirm하면 404여야 한다. ExportRow에
+    target_versions를 참조하는 FK가 있어, 가드가 없으면 감사 행을 넣는 순간
+    IntegrityError가 그대로 터져 500이 된다."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post("/target-versions/does-not-exist/export/confirm")
+
+    assert r.status_code == 404
+    assert r.json()["detail"] == "target version not found"
+
+    # 실패한 confirm은 감사 행을 남기지 않는다.
     async with async_session() as session:
         rows = list((await session.execute(select(ExportRow))).scalars().all())
     assert rows == []

@@ -14,7 +14,10 @@ function GlossarySpellingCell({ entry, columnKey, onSaved, onError }) {
 
   if (!editing) {
     return (
-      <span className="block cursor-pointer text-foreground" onClick={() => setEditing(true)}>
+      <span
+        className="-mx-1.5 -my-0.5 block cursor-pointer rounded px-1.5 py-0.5 text-foreground transition-colors hover:bg-accent/60"
+        onClick={() => setEditing(true)}
+      >
         {entry.spellings[columnKey] || <span className="text-muted-foreground">—</span>}
       </span>
     );
@@ -76,7 +79,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-xs">
         <thead>
-          <tr className="border-b border-border bg-card text-foreground">
+          <tr className="divide-x divide-border/30 border-b border-border bg-card text-foreground">
             <th className="sticky left-0 z-10 bg-card px-4 py-2 text-left font-bold">한국어 용어</th>
             {columns.map((col) => (
               <th key={col} className="px-4 py-2 text-left font-bold">
@@ -88,8 +91,8 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
         </thead>
         <tbody className="divide-y divide-border/40">
           {[...entries].sort((a, b) => a.korean_term.localeCompare(b.korean_term, "ko")).map((entry) => (
-            <tr key={entry.id} className="group hover:bg-accent/40">
-              <td className="sticky left-0 z-10 bg-card px-4 py-2 text-foreground group-hover:bg-accent/40">
+            <tr key={entry.id} className="group divide-x divide-border/30 even:bg-muted/30 hover:bg-accent/40">
+              <td className="sticky left-0 z-10 bg-card px-4 py-2 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
                 {entry.korean_term}
               </td>
               {columns.map((col) => (

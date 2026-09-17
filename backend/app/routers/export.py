@@ -15,27 +15,24 @@ from app.repositories import get_glossary_prompt_entries
 router = APIRouter()
 
 
-@router.get("/target-versions/{target_version_id}/export")
-async def export_target_version(target_version_id: str):
-    async with async_session() as session:
-        tv = await session.get(TargetVersion, target_version_id)
-        if tv is None:
-            raise HTTPException(404, "target version not found")
-        episode = await session.get(Episode, tv.episode_id)
-        title = await session.get(Title, episode.title_id)
-        # export는 저장 순서(index)가 아니라 타임코드 순으로 내보낸다 —
-        # alignment.align()이 짝을 못 찾은 대상언어 세그먼트를 목록 뒤에 붙이므로
-        # index 순서는 실제 재생 순서와 다를 수 있다.
-        seg_rows = (await session.execute(
-            select(Segment).where(Segment.target_version_id == target_version_id)
-            .order_by(Segment.start)
-        )).scalars().all()
-        finding_rows = (await session.execute(
-            select(FindingRow).where(FindingRow.target_version_id == target_version_id)
-        )).scalars().all()
-        glossary_entries = await get_glossary_prompt_entries(
-            session, episode.title_id, tv.target_language, tv.variant)
-
+async def _load_export_context(session, target_version_id: str):
+    """export 조립에 필요한 tv/episode/title/segments/findings를 한 번에 불러온다
+    — 전체 검사(GET export)와 재조립만 하는 reassemble이 둘 다 필요로 한다."""
+    tv = await session.get(TargetVersion, target_version_id)
+    if tv is None:
+        raise HTTPException(404, "target version not found")
+    episode = await session.get(Episode, tv.episode_id)
+    title = await session.get(Title, episode.title_id)
+    # export는 저장 순서(index)가 아니라 타임코드 순으로 내보낸다 —
+    # alignment.align()이 짝을 못 찾은 대상언어 세그먼트를 목록 뒤에 붙이므로
+    # index 순서는 실제 재생 순서와 다를 수 있다.
+    seg_rows = (await session.execute(
+        select(Segment).where(Segment.target_version_id == target_version_id)
+        .order_by(Segment.start)
+    )).scalars().all()
+    finding_rows = (await session.execute(
+        select(FindingRow).where(FindingRow.target_version_id == target_version_id)
+    )).scalars().all()
     segments = [
         {"id": s.id, "start": s.start, "end": s.end, "text": s.target_text,
          "korean_text": s.korean_text, "excluded": s.excluded}
@@ -46,6 +43,35 @@ async def export_target_version(target_version_id: str):
     findings = [{"segment_id": f.segment_id, "status": f.status,
                  "final_text": f.final_text, "reviewed_at": f.reviewed_at}
                 for f in finding_rows]
+    return tv, episode, title, segments, findings
+
+
+@router.get("/target-versions/{target_version_id}/export/reassemble")
+async def reassemble_export(target_version_id: str):
+    """검수자가 (LLM 검사 포함) export 팝업을 띄워둔 채로 findings/segments를
+    더 고쳤을 때, 그 수정만 최종 SRT에 반영해 다시 받아온다 — 용어집/포맷
+    경고는 재검사하지 않는다(비용 큰 LLM 호출 없이). 팝업에 뜬 경고 목록은
+    최초 검사 시점 그대로 남는다 — 검수자가 명시적으로 "최신 내용으로 반영"을
+    눌렀을 때만 이 엔드포인트를 탄다."""
+    async with async_session() as session:
+        tv, episode, title, segments, findings = await _load_export_context(
+            session, target_version_id)
+    return {
+        "srt": assemble_final_srt(segments, findings),
+        "filename": build_export_filename(
+            title.name, episode.episode_no, tv.target_language, tv.variant
+        ),
+    }
+
+
+@router.get("/target-versions/{target_version_id}/export")
+async def export_target_version(target_version_id: str):
+    async with async_session() as session:
+        tv, episode, title, segments, findings = await _load_export_context(
+            session, target_version_id)
+        glossary_entries = await get_glossary_prompt_entries(
+            session, episode.title_id, tv.target_language, tv.variant)
+
     srt = assemble_final_srt(segments, findings)
     stats = compute_stats(findings)
     # 안전망 (design §5-1의 3번 지점): assemble_final_srt와 동일한 최종 텍스트를
@@ -56,19 +82,6 @@ async def export_target_version(target_version_id: str):
     warnings += await glossary_consistency_check(
         segments, findings, glossary_entries, get_provider(), profile)
 
-    # export 이력/감사 기록 (exports 테이블). 응답으로 내려준 통계와 정확히 같은
-    # 값을 남긴다. 영상 프록시는 여기서 지우지 않는다 — export 후에도 계속
-    # 검토/재수정하는 흐름이 흔해서, 한 번 내보냈다고 미리보기가 영구히
-    # 사라지면 안 된다(원본 영상은 이미 삭제된 뒤라 복구 불가). 삭제는
-    # title을 실제로 지울 때만 한다(titles.py delete_title).
-    async with async_session() as session:
-        session.add(ExportRow(
-            target_version_id=target_version_id,
-            finding_count=stats.finding_count,
-            reflection_rate=stats.reflection_rate,
-        ))
-        await session.commit()
-
     return {
         "srt": srt,
         "stats": stats.model_dump(),
@@ -77,3 +90,32 @@ async def export_target_version(target_version_id: str):
             title.name, episode.episode_no, tv.target_language, tv.variant
         ),
     }
+
+
+@router.post("/target-versions/{target_version_id}/export/confirm")
+async def confirm_export(target_version_id: str):
+    """검사(export GET)와 별개로, 검수자가 실제로 파일을 다운로드했을 때만
+    호출한다 — export 이력/감사 기록(exports 테이블)은 검사 횟수가 아니라
+    실제 내보낸 횟수를 남겨야 하므로, LLM까지 도는 검사 호출에 얹지 않고
+    분리했다. 영상 프록시는 여기서 지우지 않는다 — export 후에도 계속
+    검토/재수정하는 흐름이 흔해서, 한 번 내보냈다고 미리보기가 영구히
+    사라지면 안 된다(원본 영상은 이미 삭제된 뒤라 복구 불가). 삭제는
+    title을 실제로 지울 때만 한다(titles.py delete_title)."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        finding_rows = (await session.execute(
+            select(FindingRow).where(FindingRow.target_version_id == target_version_id)
+        )).scalars().all()
+        findings = [{"segment_id": f.segment_id, "status": f.status,
+                     "final_text": f.final_text, "reviewed_at": f.reviewed_at}
+                    for f in finding_rows]
+        stats = compute_stats(findings)
+        session.add(ExportRow(
+            target_version_id=target_version_id,
+            finding_count=stats.finding_count,
+            reflection_rate=stats.reflection_rate,
+        ))
+        await session.commit()
+    return {"ok": True}

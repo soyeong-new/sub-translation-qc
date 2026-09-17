@@ -159,6 +159,11 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             assert r.status_code == 200
             body = r.json()
 
+            # 실제 다운로드 확정 — 검사(위 GET)와 분리된 별도 호출이라야 감사
+            # 기록이 남는다.
+            r = await client.post(f"/target-versions/{tv_id}/export/confirm")
+            assert r.status_code == 200
+
     srt = body["srt"]
     # Fix 3: 빈 target_text 세그먼트는 큐로 나가지 않는다 (3개 중 2개만).
     assert srt.count("-->") == 2

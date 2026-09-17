@@ -8,6 +8,8 @@ import {
   pickFinding,
   rejectFindingPair,
   exportTargetVersion,
+  reassembleExport,
+  confirmExport,
   listSegments,
   getTargetVersion,
   correctStt,
@@ -40,6 +42,25 @@ function formatSrtTimestamp(seconds) {
   const s = Math.floor((totalMs % 60000) / 1000);
   const ms = totalMs % 1000;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+// glossary_mismatch 경고의 matched_text(등록 표기 대신 실제로 쓰인 표기)를
+// 번역문 안에서 찾아 하이라이트한다 — 못 찾으면(빈 문자열, 또는 LLM 실패로
+// matched_text가 없는 경우) 그냥 원문 그대로 보여준다. 검수자가 대상언어를
+// 몰라도 뭐가 바뀐 건지 바로 알 수 있게, meaning이 있으면 하이라이트 바로
+// 옆에 한국어 뜻을 괄호로 붙인다.
+function highlightMatch(text, match, meaning) {
+  if (!match) return text;
+  const idx = text.indexOf(match);
+  if (idx === -1) return text;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="rounded bg-amber-200 px-0.5 text-foreground">{match}</mark>
+      {meaning && <span className="text-foreground">({meaning})</span>}
+      {text.slice(idx + match.length)}
+    </>
+  );
 }
 
 // 카테고리 라벨/색상: frontend/tailwind.config.js의 theme.extend.colors.finding.*
@@ -1123,11 +1144,24 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     setPreviewTick((t) => t + 1);
   }
 
+  // export 경고(포맷/용어집 불일치)는 findings 카드가 아니라서 스크롤
+  // 대상(data-segment-id 요소)이 없다 — SRT 미리보기만 그 구간으로 옮기고
+  // 아래 findings-카드 스크롤 이펙트는 건너뛴다.
+  const skipCardScrollRef = useRef(false);
+  function previewSegmentInSrtOnly(segment) {
+    skipCardScrollRef.current = true;
+    previewFindingSegment(segment);
+  }
+
   // finding을 클릭하거나(또는 왼쪽 SRT 줄을 클릭해) 미리보기가 바뀌면, 그
   // finding 카드가 화면 중앙에 오도록 스크롤한다 — 왼쪽 SRT 하이라이트와
   // 오른쪽 finding 카드가 항상 같이 맞춰져 보이게 하기 위함.
   useEffect(() => {
     if (!previewSegment?.id) return;
+    if (skipCardScrollRef.current) {
+      skipCardScrollRef.current = false;
+      return;
+    }
     document
       .querySelector(`[data-segment-id="${previewSegment.id}"]`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1476,32 +1510,64 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     URL.revokeObjectURL(url);
   }
 
+  // 검사(export GET, LLM 호출 포함)와 실제 다운로드를 분리한다 — 경고가 있어
+  // 취소했다가 재확인하려고 다시 누르면 그때마다 LLM을 또 타는 문제가 있었다.
+  // 검사 결과는 "checked" 상태에 남겨 패널로 계속 보여주고, 재검사(=LLM
+  // 재호출)는 사용자가 "내보내기"를 다시 눌렀을 때만 일어난다.
   async function handleExport() {
+    // 닫기(dismissed)로 감춘 이전 검사 결과가 있으면 LLM을 다시 타지 않고 그
+    // 결과를 그대로 다시 연다 — 그 사이 수정이 있었다면 팝업 안 "반영하기"로
+    // 반영한다(아래 handleReassemble), 재검사(LLM)로 하지 않는다.
+    if (exportStatus.kind === "dismissed") {
+      setExportStatus({ ...exportStatus, kind: "checked" });
+      return;
+    }
     setExportStatus({ kind: "loading" });
     try {
       const result = await exportTargetVersion(targetVersionId);
       const warnings = result.format_warnings ?? [];
-      if (warnings.length > 0) {
-        const detail = warnings
-          .map((w) => {
-            const seg = segments?.find((s) => s.id === w.segment_id);
-            const where = seg ? ` (${formatSrtTimestamp(seg.start)})` : "";
-            return `- [${w.rule}]${where} ${w.detail}`;
-          })
-          .join("\n");
-        const proceed = window.confirm(
-          `포맷 경고 ${warnings.length}건이 있습니다:\n${detail}\n\n그래도 내보내시겠습니까?`
-        );
-        if (!proceed) {
-          setExportStatus({ kind: "idle" });
-          return;
-        }
+      if (warnings.length === 0) {
+        downloadSrtFile(result.srt, result.filename);
+        await confirmExport(targetVersionId);
+        setExportStatus({ kind: "idle" });
+        return;
       }
-      downloadSrtFile(result.srt, result.filename);
-      setExportStatus({ kind: "idle" });
+      setExportStatus({
+        kind: "checked", result, warnings,
+        checkedFindings: findings, checkedSegments: segments,
+      });
     } catch (err) {
       setExportStatus({ kind: "error", message: err.message ?? "내보내기 중 오류가 발생했습니다." });
     }
+  }
+
+  // 검사에서 이미 받아둔 srt/filename을 그대로 쓴다 — 새 네트워크 호출 없이
+  // 다운로드만 하고, 실제로 내보낸 시점에만 감사 기록(exports 테이블)을 남긴다.
+  async function handleConfirmDownload() {
+    if (exportStatus.kind !== "checked") return;
+    downloadSrtFile(exportStatus.result.srt, exportStatus.result.filename);
+    await confirmExport(targetVersionId);
+    // idle로 초기화하면 캐시(검사 결과)가 사라져 다음 "내보내기" 클릭 때
+    // LLM을 다시 탄다 — 닫기와 동일하게 dismissed로 남겨 재사용한다.
+    setExportStatus((prev) => ({ ...prev, kind: "dismissed" }));
+  }
+
+  // 검사(위 handleExport) 이후 findings/segments가 바뀌었는지 — 참조 동일성으로
+  // 판단한다(approve/reject/edit은 항상 새 배열로 교체한다).
+  const exportOutOfDate =
+    exportStatus.kind === "checked" &&
+    (exportStatus.checkedFindings !== findings || exportStatus.checkedSegments !== segments);
+
+  // LLM 재검사 없이 SRT만 최신 findings/segments로 다시 조립한다 — 경고 목록은
+  // 최초 검사 시점 그대로 둔다.
+  async function handleReassemble() {
+    const result = await reassembleExport(targetVersionId);
+    setExportStatus((prev) => ({
+      ...prev,
+      result: { ...prev.result, srt: result.srt, filename: result.filename },
+      checkedFindings: findings,
+      checkedSegments: segments,
+    }));
   }
 
   const isExporting = exportStatus.kind === "loading";
@@ -1694,7 +1760,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           )}
 
           <div
-            className={`fixed right-0 top-16 z-40 h-[calc(100%-4rem)] w-full max-w-sm transform border-l border-border bg-card shadow-xl transition-transform duration-200 ${
+            className={`fixed right-0 top-16 z-40 h-[calc(100%-4rem)] w-full ${
+              glossarySpellingColumns.length > 2 ? "max-w-xl" : "max-w-sm"
+            } transform border-l border-border bg-card shadow-xl transition-transform duration-200 ${
               showGlossary ? "translate-x-0" : "translate-x-full"
             }`}
           >
@@ -1768,7 +1836,160 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           </div>
 
           <div className="space-y-8">
-            <section aria-labelledby="findings-heading">
+            {/* 본문 흐름에 끼워넣으면 등장/소실 때마다 아래 Findings가 밀렸다
+                (회귀: 사용자 재현 — "지저분해 보인다"). 흐름 밖(fixed)으로 빼서
+                화면 중앙에 띄운다 — 전체 화면 딤은 두지 않는다(영상/SRT/내보내기
+                조작을 막았던 문제 — 사용자 재현). 대신 Findings 섹션에만 스코프된
+                딤을 따로 둔다(아래 <section>). 바깥 래퍼는 pointer-events-none,
+                카드만 pointer-events-auto라 카드 밖 클릭은 아래 UI로 그대로
+                통과한다. */}
+            {exportStatus.kind === "checked" && (() => {
+              const formatWarnings = exportStatus.warnings.filter((w) => w.rule !== "glossary_mismatch");
+              const glossaryWarnings = exportStatus.warnings.filter((w) => w.rule === "glossary_mismatch");
+              return (
+                <div className="pointer-events-none fixed inset-0 z-40 flex items-center">
+                  {/* Findings 컬럼과 가로 위치를 맞추려고 페이지 그리드(mx-auto
+                      max-w-6xl px-6 + md:grid-cols-[minmax(280px,30%)_1fr])를
+                      그대로 복제한다 — 세로 스크롤과 무관하게 가로 정렬은
+                      뷰포트 폭에만 달려 있어 JS 없이도 항상 일치한다. */}
+                  <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-8 px-6 md:grid-cols-[minmax(280px,30%)_1fr]">
+                    <div />
+                    <div className="pointer-events-auto flex justify-center">
+                      <div className="max-h-[85vh] w-full max-w-md overflow-y-auto space-y-4 rounded-xl border border-border bg-card p-4 shadow-xl">
+
+                      {exportOutOfDate && (
+                        <div className="flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          <span>✎ 이후 수정된 내용이 있습니다</span>
+                          <button
+                            type="button"
+                            onClick={handleReassemble}
+                            className="shrink-0 rounded-md border border-amber-400 bg-white px-2 py-1 font-medium hover:bg-amber-100"
+                          >
+                            반영하기
+                          </button>
+                        </div>
+                      )}
+
+                      {formatWarnings.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-foreground">
+                            포맷 경고 {formatWarnings.length}건이 있습니다
+                          </p>
+                          <ul className="space-y-1 text-xs text-muted-foreground">
+                            {formatWarnings.map((w, i) => {
+                              const seg = segments?.find((s) => s.id === w.segment_id);
+                              const where = seg ? ` (${formatSrtTimestamp(seg.start)})` : "";
+                              if (!seg) {
+                                return (
+                                  <li key={i}>
+                                    - [{w.rule}]{where} {w.detail}
+                                  </li>
+                                );
+                              }
+                              return (
+                                <li key={i}>
+                                  <button
+                                    type="button"
+                                    onClick={() => previewSegmentInSrtOnly(seg)}
+                                    className="text-left underline decoration-dotted hover:text-foreground"
+                                  >
+                                    - [{w.rule}]{where} {w.detail}
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
+
+                      {glossaryWarnings.length > 0 && (
+                        <div className={`space-y-2 ${formatWarnings.length > 0 ? "border-t border-border pt-3" : ""}`}>
+                          <p className="text-sm font-medium text-foreground">
+                            용어집 표기 경고 {glossaryWarnings.length}건이 있습니다
+                          </p>
+                          <ul className="space-y-2">
+                            {glossaryWarnings.map((w, i) => {
+                              const seg = segments?.find((s) => s.id === w.segment_id);
+                              const where = seg ? formatSrtTimestamp(seg.start) : "";
+                              const hasMatch = Boolean(w.matched_text);
+                              const finalText = seg
+                                ? resolvedTargetTextBySegment[seg.id] ?? seg.target_text ?? ""
+                                : "";
+                              return (
+                                <li
+                                  key={i}
+                                  className={`rounded-lg border p-2 text-xs ${
+                                    hasMatch ? "border-amber-200 bg-amber-50" : "border-dashed border-border bg-muted/40"
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => seg && previewSegmentInSrtOnly(seg)}
+                                    disabled={!seg}
+                                    className="flex flex-wrap items-center gap-2 text-left disabled:cursor-default"
+                                  >
+                                    <span
+                                      className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${
+                                        hasMatch
+                                          ? "bg-amber-200 text-amber-900"
+                                          : "bg-muted text-muted-foreground"
+                                      }`}
+                                    >
+                                      {hasMatch ? "다른 표기로 대체됨" : w.text_gloss ? "표기 반영 안 됨" : "확인 불가"}
+                                    </span>
+                                    {where && <span className="text-muted-foreground">{where}</span>}
+                                    <span className="text-foreground/80">{w.detail}</span>
+                                  </button>
+                                  {seg && (
+                                    <p className="mt-1 pl-0.5 text-foreground/70">원문: {seg.korean_text}</p>
+                                  )}
+                                  {hasMatch ? (
+                                    <p className="pl-0.5 text-foreground/70">
+                                      번역: {highlightMatch(finalText, w.matched_text, w.matched_meaning)}
+                                    </p>
+                                  ) : w.text_gloss ? (
+                                    <p className="pl-0.5 text-foreground/70">
+                                      번역 요약: {w.text_gloss}
+                                    </p>
+                                  ) : (
+                                    <p className="pl-0.5 italic text-muted-foreground">
+                                      번역문에서 대응 표현을 찾지 못했습니다 — 대상언어를 모르면 이 화면만으로는
+                                      판단이 어려우니, 원문 맥락으로 필요성을 가늠하거나 대상언어 가능자에게
+                                      확인을 요청하세요.
+                                    </p>
+                                  )}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
+
+                      <div className="flex gap-2">
+                        <button onClick={handleConfirmDownload} className={primaryBtnClass}>
+                          다운로드
+                        </button>
+                        <button
+                          onClick={() => setExportStatus((prev) => ({ ...prev, kind: "dismissed" }))}
+                          className="rounded-md border border-input px-3 py-1.5 text-sm text-foreground hover:bg-muted"
+                        >
+                          닫기
+                        </button>
+                      </div>
+                    </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <section aria-labelledby="findings-heading" className="relative">
+              {exportStatus.kind === "checked" && (
+                <div
+                  className="absolute inset-0 z-10 rounded-xl bg-background/70 backdrop-blur-sm"
+                  aria-hidden="true"
+                />
+              )}
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-3">
                   <h2 id="findings-heading" className="text-lg font-semibold text-foreground">

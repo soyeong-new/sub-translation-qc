@@ -150,6 +150,13 @@ export const editTargetText = (segmentId, targetText) =>
 export const exportTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export`);
 
+// LLM 검사 없이 SRT만 최신 findings/segments로 다시 조립한다 (경고 목록은 그대로).
+export const reassembleExport = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/export/reassemble`);
+
+export const confirmExport = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/export/confirm`, { method: "POST" });
+
 export const getTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}`);
 
