@@ -1146,20 +1146,6 @@ export default function TitleArchiveList({ onOpen }) {
                     <div key={ep.id} className="rounded-xl bg-muted/70 p-3.5">
                       <div className="mb-2 flex items-center justify-between gap-2 text-xs font-semibold text-muted-foreground">
                         <span>{ep.episode_no != null ? `${ep.episode_no}화` : ""}</span>
-                        <div className="flex items-center gap-2">
-                          {ep.target_versions.map((tv) => (
-                            <button
-                              key={tv.id}
-                              disabled={busyId === tv.id}
-                              onClick={() => handleDeleteVersion(tv)}
-                              aria-label={`${tv.display_name} 삭제`}
-                              title={`${tv.display_name} 삭제`}
-                              className="font-normal text-muted-foreground transition-colors hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              ×
-                            </button>
-                          ))}
-                        </div>
                       </div>
                       <ul className="space-y-1.5">
                         {ep.target_versions.length === 0 && (
@@ -1188,6 +1174,15 @@ export default function TitleArchiveList({ onOpen }) {
                             </button>
                             <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
                               재분석
+                            </button>
+                            <button
+                              disabled={busyId === tv.id}
+                              onClick={() => handleDeleteVersion(tv)}
+                              aria-label={`${tv.display_name} 삭제`}
+                              title={`${tv.display_name} 삭제`}
+                              className="font-normal text-muted-foreground transition-colors hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              ×
                             </button>
                           </li>
                         ))}
