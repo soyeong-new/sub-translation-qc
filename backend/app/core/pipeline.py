@@ -749,7 +749,9 @@ def _chunk_list(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-BACK_TRANSLATE_CHUNK_SIZE = 20
+# 20개씩 묶어 호출했을 때 실측으로 항목당 오역이 늘어나는 걸 확인해 5로 낮춤
+# (같은 문장을 단독 호출하면 정답, 20개 배치에 넣으면 오역 — 배치 크기 자체가 원인).
+BACK_TRANSLATE_CHUNK_SIZE = 5
 
 _UNTRANSLATED_LINE_INSTRUCTION = (
     "이 세그먼트들은 대상언어로 번역되지 않고 target_text에 한국어 원문이 그대로 "
