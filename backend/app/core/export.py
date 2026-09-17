@@ -137,18 +137,39 @@ async def glossary_consistency_check(segments: List[dict], findings: List[dict],
     try:
         results = await provider.check_glossary_reflection(candidates, profile)
         violation_by_id = {r["id"]: r["violation"] for r in results}
+        matched_text_by_id = {r["id"]: r.get("matched_text", "") for r in results}
+        matched_meaning_by_id = {r["id"]: r.get("matched_meaning", "") for r in results}
+        text_gloss_by_id = {r["id"]: r.get("text_gloss", "") for r in results}
     except Exception:
         logger.exception("용어집 반영 확인(LLM) 실패, 후보 전부 경고로 처리")
         violation_by_id = {}
-    return [
-        FormatViolation(
+        matched_text_by_id = {}
+        matched_meaning_by_id = {}
+        text_gloss_by_id = {}
+    violations = []
+    for c in candidates:
+        if not violation_by_id.get(c["id"], True):
+            continue
+        matched = matched_text_by_id.get(c["id"], "")
+        meaning = matched_meaning_by_id.get(c["id"], "")
+        gloss = text_gloss_by_id.get(c["id"], "")
+        # matched_text가 있으면(진짜 다른 표기로 바뀐 경우) 그 표기를 한국어
+        # 뜻과 함께 대본에 바로 대조해 보여준다 — 검수자가 대상언어를 몰라도
+        # 뭐가 바뀐 건지 알 수 있어야 한다. 흔적 없이 사라진 경우(matched
+        # 없음)는 text_gloss(줄 전체의 한국어 요약, LLM 호출 실패 시엔 빈
+        # 문자열)를 대신 붙인다 — 검수자가 대상언어를 몰라도 그 줄에 실제로
+        # 뭐라고 쓰여 있는지 알 수 있어야 한다.
+        if matched:
+            meaning_suffix = f"({meaning})" if meaning else ""
+            detail = f"'{c['korean_term']}' 등록 표기 '{c['canonical']}' → 최종 텍스트 '{matched}'{meaning_suffix}"
+        else:
+            detail = f"'{c['korean_term']}' 등록 표기 '{c['canonical']}'가 최종 텍스트에 없음"
+        violations.append(FormatViolation(
             segment_id=c["segment_id"], rule="glossary_mismatch",
-            detail=f"'{c['korean_term']}' 등록 표기 '{c['canonical']}'가 최종 텍스트에 없음",
-            original_text=c["text"],
-        )
-        for c in candidates
-        if violation_by_id.get(c["id"], True)
-    ]
+            detail=detail, original_text=c["text"], matched_text=matched,
+            matched_meaning=meaning, text_gloss=gloss,
+        ))
+    return violations
 
 
 def compute_stats(findings: List[dict]) -> ExportStats:

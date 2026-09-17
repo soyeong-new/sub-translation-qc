@@ -439,9 +439,15 @@ class ModelProvider(ABC):
         입력은 [{"id": str, "korean_text": str, "text": str,
         "korean_term": str, "canonical": str}, ...] — text는 최종 대상언어
         텍스트, canonical은 등록된 표준 표기(문자열 매칭으로 이미 text 안에
-        없는 것으로 확인됨). 반환값은 [{"id": str, "violation": bool}, ...]
-        — violation=false면 대명사 대체·자연스러운 생략 등 정당한 경우이니
-        경고를 내지 마라, true면 진짜 오타/누락이니 경고를 유지하라."""
+        없는 것으로 확인됨). 반환값은 [{"id": str, "violation": bool,
+        "matched_text": str, "matched_meaning": str}, ...] — violation=false면
+        대명사 대체·자연스러운 생략·품사 활용형·표준 약어 등 정당한 경우이니
+        경고를 내지 마라, true면 진짜 오타/다른 단어로의 교체이니 경고를
+        유지하라. matched_text는 violation=true일 때 text 안에서 canonical
+        대신 실제로 쓰인 표기(화면에 하이라이트로 보여줄 부분)이고,
+        matched_meaning은 그 표기의 간결한 한국어 뜻(검수자가 대상언어를
+        몰라도 뭐가 바뀐 건지 알 수 있게)이다. violation=false이거나 흔적이
+        없으면 둘 다 빈 문자열이다."""
         ...
 
     @abstractmethod

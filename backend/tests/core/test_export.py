@@ -188,3 +188,46 @@ async def test_glossary_consistency_check_falls_back_to_violation_when_llm_fails
     violations = await glossary_consistency_check(
         segments, [], _GLOSSARY_ENTRIES, _FailingProvider(), {})
     assert len(violations) == 1
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_surfaces_matched_text_in_detail():
+    """LLM이 matched_text(실제로 쓰인 다른 표기)를 돌려주면, 등록 표기와
+    나란히 비교해 보여준다 — 검수자가 대본을 직접 열어보지 않고도 "무엇이
+    무엇으로 바뀌었는지" 바로 알 수 있어야 한다."""
+    class _AbbreviationProvider(MockProvider):
+        async def check_glossary_reflection(self, items, profile):
+            return [{"id": i["id"], "violation": True, "matched_text": "EE.UU.",
+                     "matched_meaning": "미국"} for i in items]
+
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "irás a la universidad en EE.UU.",
+                 "korean_text": "미국에서 대학도 다니고"}]
+    entries = [{"entry_id": "e1", "korean_term": "미국", "canonical": "Estados Unidos"}]
+    violations = await glossary_consistency_check(
+        segments, [], entries, _AbbreviationProvider(), {})
+    assert len(violations) == 1
+    assert violations[0].matched_text == "EE.UU."
+    assert violations[0].matched_meaning == "미국"
+    assert violations[0].detail == "'미국' 등록 표기 'Estados Unidos' → 최종 텍스트 'EE.UU.'(미국)"
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_surfaces_text_gloss_when_no_trace_found():
+    """matched_text조차 없이 흔적 없이 사라진 경우, LLM이 돌려준 text_gloss
+    (최종 텍스트 전체의 한국어 요약)를 그대로 실어 보낸다 — 검수자가
+    대상언어를 몰라도 그 줄에 실제로 뭐라고 쓰여 있는지 알 수 있어야 한다."""
+    class _NoTraceProvider(MockProvider):
+        async def check_glossary_reflection(self, items, profile):
+            return [{"id": i["id"], "violation": True, "matched_text": "",
+                     "matched_meaning": "",
+                     "text_gloss": "그냥 비행기를 타고 있을 거라고만 되어 있음"} for i in items]
+
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0,
+                 "text": "Mi prometida debe estar subiendo al avión,",
+                 "korean_text": "내 약혼녀가 곧 미국행 비행기를 타거나"}]
+    entries = [{"entry_id": "e1", "korean_term": "미국", "canonical": "Estados Unidos"}]
+    violations = await glossary_consistency_check(
+        segments, [], entries, _NoTraceProvider(), {})
+    assert len(violations) == 1
+    assert violations[0].matched_text == ""
+    assert violations[0].text_gloss == "그냥 비행기를 타고 있을 거라고만 되어 있음"

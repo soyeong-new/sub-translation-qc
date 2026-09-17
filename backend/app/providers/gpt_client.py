@@ -67,9 +67,21 @@ _GLOSSARY_REFLECTION_SCHEMA_INSTRUCTION = (
     '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
     'id (문자열, 입력의 "id"와 반드시 일치), '
-    "violation (불리언, 등록 표기가 반영되지 않은 게 오타·누락 등 진짜 "
-    "문제면 true, 대명사로 자연스럽게 대체됐거나 문맥상 생략해도 자연스러운 "
-    "정당한 경우면 false)."
+    "violation (불리언, text 안에서 canonical과 무관한 다른 단어·표현으로 "
+    "바꿔치기됐거나 흔적 없이 사라졌으면 true, canonical과 같은 단어의 "
+    "품사 활용형·복수형이나 표준 약어로 남아 있거나 대명사·직함으로 "
+    "자연스럽게 대체·생략됐으면 false), "
+    "matched_text (문자열, violation=true일 때 text 안에서 canonical 대신 "
+    "실제로 쓰인 표기를 text에 있는 그대로 옮겨 적을 것 — 위조하거나 "
+    "의역하지 말 것. violation=false이거나 흔적이 전혀 없으면 빈 문자열), "
+    "matched_meaning (문자열, matched_text가 있을 때 그 표기가 이 문맥에서 "
+    "무슨 뜻인지 간결한 한국어로만, 1~4단어 정도로 — 검수자가 대상언어를 "
+    "몰라도 뭐가 바뀐 건지 알 수 있어야 한다. matched_text가 빈 문자열이면 "
+    "이것도 빈 문자열), "
+    "text_gloss (문자열, violation=true인데 matched_text가 빈 문자열일 때만 "
+    "— text 전체가 실제로 무슨 내용인지 간결한 한국어 한 문장으로 옮길 것. "
+    "검수자가 대상언어를 전혀 몰라도 이 줄에 뭐라고 쓰여 있는지 알 수 있어야 "
+    "한다. matched_text가 있거나 violation=false면 빈 문자열)."
 )
 
 _FORMALITY_SCHEMA_INSTRUCTION = (
@@ -568,9 +580,18 @@ class GptClient:
             f"다음은 한국어 원문(korean_text), 최종 {language_label} 텍스트"
             "(text), 등록된 한국어 용어(korean_term)와 그 표준 표기"
             "(canonical) 목록이다. canonical 표기가 text에 문자 그대로는 "
-            "없다는 게 이미 확인됐다 — 각 항목마다 그게 진짜 문제(오타, "
-            "누락, 다른 표기 사용)인지, 아니면 대명사로 자연스럽게 대체됐거나 "
-            "문맥상 생략해도 뜻이 통하는 정당한 경우인지 판단하라.\n"
+            "없다는 게 이미 확인됐다 — 이 검사의 목적은 '의미가 통하는가'가 "
+            "아니라 '같은 표기를 일관되게 썼는가'다. text 안에 남은 표현이 "
+            "canonical과 같은 대상을 가리키는 표준 변형(품사 활용형, 복수형, "
+            "공인된 약어처럼 문법·표기 관행상 불가피한 차이)인지, 아니면 "
+            "canonical과 무관한 다른 단어·표현으로 아예 바뀐 것인지 구분하라. "
+            "전자는 정당하니 violation=false, 후자(오타, 표기 흔들림, 다른 "
+            "단어로의 교체)는 진짜 문제이니 violation=true로 판단하라. "
+            "대명사·직함·호칭으로만 지칭되거나 문맥상 자연스럽게 생략된 경우도 "
+            "violation=false다. violation=true인데 text 안 어디에도 대체 "
+            "표현의 흔적조차 없으면(문장이 통째로 다르게 쓰여 흔적이 안 남은 "
+            "경우), 검수자가 대상언어를 몰라 text를 직접 읽지 못한다는 "
+            "전제하에 text_gloss에 그 줄 전체의 내용을 한국어로 옮겨 적어라.\n"
             + _GLOSSARY_REFLECTION_SCHEMA_INSTRUCTION
         )
         user = json.dumps(items, ensure_ascii=False)

@@ -55,6 +55,17 @@ class FormatViolation(BaseModel):
     # (그리고 틀리게) 표시되는 버그로 이어진다. 비워두면(레거시 호출자) 호출자가
     # 직접 채워야 한다.
     original_text: str = ""
+    # glossary_mismatch 전용 — original_text 안에서 canonical 대신 실제로
+    # 쓰인 표기(예: 오타, 잘못된 대체어). 프론트에서 이 부분만 하이라이트
+    # 표시하는 데 쓴다. 못 찾았거나 다른 rule이면 빈 문자열.
+    matched_text: str = ""
+    # matched_text의 간결한 한국어 뜻 — 검수자가 대상언어를 몰라도 뭐가
+    # 바뀐 건지 알 수 있게 한다. matched_text가 없으면 이것도 빈 문자열.
+    matched_meaning: str = ""
+    # matched_text조차 없을 때(흔적 없이 사라진 경우)만 채워지는, 최종
+    # 텍스트 전체의 한국어 요약 — 대상언어를 모르는 검수자도 그 줄에 실제로
+    # 뭐라고 쓰여 있는지 알 수 있게 한다. matched_text가 있으면 빈 문자열.
+    text_gloss: str = ""
 
 
 class ExportStats(BaseModel):

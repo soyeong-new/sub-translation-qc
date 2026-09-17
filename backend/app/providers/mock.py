@@ -107,8 +107,14 @@ class MockProvider(ModelProvider):
 
     async def check_glossary_reflection(self, items: List[dict], profile: dict) -> List[dict]:
         """결정론적 테스트 더블: korean_text에 "대명사"가 있으면 정당한 대체로
-        보고 걸러내고(violation=False), 그 외엔 진짜 위반으로 취급한다."""
-        return [{"id": i["id"], "violation": "대명사" not in i["korean_text"]} for i in items]
+        보고 걸러내고(violation=False), 그 외엔 진짜 위반으로 취급하며
+        matched_text/matched_meaning은 text를 그대로 돌려준다."""
+        return [
+            {"id": i["id"], "violation": "대명사" not in i["korean_text"],
+             "matched_text": i["text"] if "대명사" not in i["korean_text"] else "",
+             "matched_meaning": "뜻풀이" if "대명사" not in i["korean_text"] else ""}
+            for i in items
+        ]
 
     async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
         return [{"id": i["id"], "corrected_text": f"[{i['gender']}] {i['target_text']}"}
