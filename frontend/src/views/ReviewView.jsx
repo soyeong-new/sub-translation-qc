@@ -22,6 +22,7 @@ import {
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 import QQLogo from "../components/QQLogo.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
+import { btnBase } from "../utils/buttonStyles.js";
 
 // 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
 // 아니다(backend/app/core/requery.py의 requery_finding 참고) — 검수자가
@@ -114,17 +115,12 @@ function cardBorderClass(finding) {
 }
 
 const inputClass =
-  "block w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground " +
+  "block w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground " +
   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 const labelClass = "mb-1.5 block text-sm font-medium text-foreground";
-
-const btnBase =
-  "inline-flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium " +
-  "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
-  "focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
 
 // 승인/거부/수정 버튼은 색으로만 구분하지 않고(라벨 텍스트 병기) 채움/윤곽 스타일까지
 // 다르게 하여 시각적으로 뚜렷이 구분되도록 한다 (ui-ux-pro-max 가이드).
@@ -941,7 +937,7 @@ function SrtSyncPanel({
             type="button"
             onClick={() => goToOffset(-1)}
             disabled={activeIndex <= 0}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             &#9664; 이전 구간
           </button>
@@ -950,7 +946,7 @@ function SrtSyncPanel({
             type="button"
             onClick={() => goToOffset(1)}
             disabled={activeIndex !== -1 && activeIndex >= sorted.length - 1}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             다음 구간 &#9654;
           </button>
@@ -984,7 +980,7 @@ function SrtSyncPanel({
                 rowRefs.current[seg.id] = node;
               }}
               onClick={handleRowClick}
-              className={`cursor-pointer rounded-md px-2 py-1.5 transition-opacity ${opacityClass} ${
+              className={`cursor-pointer rounded-lg px-2 py-1.5 transition-opacity ${opacityClass} ${
                 distance === 0 ? "bg-primary/10 ring-1 ring-primary" : ""
               }`}
             >
@@ -999,7 +995,7 @@ function SrtSyncPanel({
                     rows={distance === 0 ? 4 : 2}
                     disabled={pending}
                     onBlur={handleBlur}
-                    className={`block w-full resize-none rounded-md border border-transparent bg-transparent p-0 text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50 ${
+                    className={`block w-full resize-none rounded-lg border border-transparent bg-transparent p-0 text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50 ${
                       distance === 0 ? "font-medium" : ""
                     }`}
                   />
@@ -1752,7 +1748,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
             <button
               type="button"
               onClick={() => setShowGlossary(true)}
-              className="fixed right-0 top-1/2 z-30 -translate-y-1/2 rounded-l-md border border-r-0 border-border bg-card px-2 py-3 text-xs font-semibold text-foreground shadow-md transition-colors hover:bg-accent"
+              className="fixed right-0 top-1/2 z-30 -translate-y-1/2 rounded-l-lg border border-r-0 border-border bg-card px-2 py-3 text-xs font-semibold text-foreground shadow-md transition-colors hover:bg-accent"
               style={{ writingMode: "vertical-rl" }}
             >
               용어집
@@ -1863,7 +1859,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                           <button
                             type="button"
                             onClick={handleReassemble}
-                            className="shrink-0 rounded-md border border-amber-400 bg-white px-2 py-1 font-medium hover:bg-amber-100"
+                            className="shrink-0 rounded-lg border border-amber-400 bg-white px-2 py-1 font-medium hover:bg-amber-100"
                           >
                             반영하기
                           </button>
@@ -1971,7 +1967,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                         </button>
                         <button
                           onClick={() => setExportStatus((prev) => ({ ...prev, kind: "dismissed" }))}
-                          className="rounded-md border border-input px-3 py-1.5 text-sm text-foreground hover:bg-muted"
+                          className="rounded-lg border border-input px-3 py-1.5 text-sm text-foreground hover:bg-muted"
                         >
                           닫기
                         </button>
@@ -2004,7 +2000,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                     <button
                       type="button"
                       onClick={() => setStatusFilter("all")}
-                      className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                      className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
                         statusFilter === "all"
                           ? "bg-card text-foreground shadow-sm"
                           : "text-muted-foreground hover:text-foreground"
@@ -2017,7 +2013,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                         key={status}
                         type="button"
                         onClick={() => setStatusFilter(status)}
-                        className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                        className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
                           statusFilter === status
                             ? "bg-card text-foreground shadow-sm"
                             : "text-muted-foreground hover:text-foreground"
@@ -2179,7 +2175,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                   <li
                     key={seg.id}
                     onClick={handleClick}
-                    className={`cursor-pointer rounded-md border p-3 ${isPreviewing ? "ring-1 ring-primary" : ""} ${
+                    className={`cursor-pointer rounded-lg border p-3 ${isPreviewing ? "ring-1 ring-primary" : ""} ${
                       seg.excluded ? "border-border bg-muted/30 opacity-60" : "border-border bg-muted/10"
                     }`}
                   >

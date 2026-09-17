@@ -8,17 +8,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import QQLogo from "../components/QQLogo.jsx";
+import { btnBase } from "../utils/buttonStyles.js";
 
 // 자막 타이밍이 실제 발화와 살짝 안 맞거나 씬이 잘리는 경우가 있어,
 // 재생 구간 앞뒤로 여유를 준다. 뒤쪽이 실제로 더 많이 어긋나는 경우가
 // 있어 앞뒤를 다르게 둔다.
 export const PREVIEW_PAD_START_SECONDS = 0;
 export const PREVIEW_PAD_END_SECONDS = 0.5;
-
-const btnBase =
-  "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium " +
-  "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring " +
-  "focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
 
 const binaryBtnClass =
   `${btnBase} border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground`;
@@ -288,7 +284,7 @@ export default function FlaggedSegmentStepper({
   if (!currentSegment) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-6">
-        <div className="max-w-sm rounded-lg border border-border bg-card p-6 text-center shadow-lg">
+        <div className="max-w-sm rounded-xl border border-border bg-card p-6 text-center shadow-lg">
           <p className="text-sm text-foreground">확인할 줄이 없습니다.</p>
           <div className="mt-4 flex justify-center gap-2">
             {onExit && (
