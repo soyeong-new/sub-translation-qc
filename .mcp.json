@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "npm-search": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "github:zcag/npm-search-mcp"
+      ],
+      "env": {}
+    }
+  }
+}
