@@ -16,7 +16,6 @@ from app.core.pipeline import (
     run_pipeline_phase1, run_pipeline_phase2,
     registers_need_confirmation, pairs_from_segments, resolved_registers_from_segments,
 )
-from app.core.pretreatment import find_pending_sensitive_hits
 from app.core.ingest import delete_original_video
 from app.repositories import (
     save_phase1_result, save_phase2_result, get_character_gender_facts, get_episode_gender_facts,
@@ -24,7 +23,7 @@ from app.repositories import (
 )
 from app.providers.base import get_provider, ModelProvider
 from app.language_profiles.loader import load_profile
-from app.knowledge.loader import load_knowledge, load_sensitive_terms, load_profanity_dictionary
+from app.knowledge.loader import load_knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -178,18 +177,12 @@ async def _run_phase2_and_save(target_version_id: str, provider: ModelProvider) 
 
         profile = load_profile(tv.target_language, tv.variant)
         knowledge = load_knowledge()
-        # pending_sensitive_hits는 target_text(이미 사전처리 완료)에 대해
-        # 순수 함수로 재계산 가능하다 — S1과 별도 프로세스/태스크에서 재개될
-        # 수 있으므로(사람 확인은 임의로 오래 걸릴 수 있음) DB에 따로 저장해
-        # 넘기지 않고 여기서 다시 계산한다.
         pairs = pairs_from_segments(segments, target_version_id)
-        pending_sensitive_hits = find_pending_sensitive_hits(
-            pairs, load_sensitive_terms(), load_profanity_dictionary())
         resolved_registers = resolved_registers_from_segments(segments, target_version_id)
 
         phase2 = await asyncio.wait_for(
             run_pipeline_phase2(
-                pairs, provider, profile, knowledge, pending_sensitive_hits,
+                pairs, provider, profile, knowledge,
                 target_version_id, resolved_registers, glossary_entries,
             ),
             timeout=ANALYSIS_TIMEOUT_SECONDS,

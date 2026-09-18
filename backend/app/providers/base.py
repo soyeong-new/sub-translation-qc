@@ -150,7 +150,7 @@ def build_findings_schema_instruction(lead_in: str) -> str:
         lead_in +
         'segment_id (문자열, 입력 pair의 "id"와 반드시 일치), '
         'category (문자열, 반드시 다음 중 하나: '
-        '"sensitivity"(사전에 없어 애매한 비속어), '
+        '"sensitivity"(욕설·비속어·심의 위반 표현), '
         '"mistranslation"(오타이거나 의미가 다르게 옮겨진 경우), '
         '"nuance_tone"(뉘앙스·어조가 원문과 다른 경우), '
         '"unnatural_style"(문법은 맞지만 한국어 구조를 그대로 따라간 직역투·어색한 흐름), '
@@ -231,12 +231,11 @@ class ModelProvider(ABC):
 
     @abstractmethod
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "",
                                glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         """Claude 검증 패스: 원본(korean_text/target_text)을 처음부터 독립적으로
-        검토해 사전에 없는 애매한 비속어, 번역정확성·문화맥락·뉘앙스어조·
+        검토해 욕설·비속어·심의 위반 표현, 번역정확성·문화맥락·뉘앙스어조·
         자연스러운흐름(직역투)·함축의미·로컬라이제이션·작품 용어집 고유명사 표기
         (glossary_entries가 있을 때만) 문제를 찾아 고친다. GPT 검증 패스
         (verify_and_refine)와 동시에 같은 원본을 받아 서로 독립적으로 판단한다
@@ -254,7 +253,6 @@ class ModelProvider(ABC):
 
     @abstractmethod
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
-                                 pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
                                  extra_instruction: str = "",
                                  glossary_entries: Optional[List[dict]] = None) -> List[dict]:
@@ -380,6 +378,16 @@ class ModelProvider(ABC):
     @abstractmethod
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """문장 리스트를 받아서 OpenAI text-embedding-3-small 기반 다국어 임베딩 벡터 목록을 반환한다."""
+        ...
+
+    @abstractmethod
+    async def apply_registers(self, items: List[dict], profile: dict) -> List[dict]:
+        """확정된 성별·성별 그룹·격식을 한 번에 문장에 반영한다.
+
+        입력은 ``[{"id", "target_text", "gender", "gender_groups",
+        "formality"}]``, 반환값은 ``[{"id", "corrected_text"}]``이다.
+        값이 없는 항목은 건드리지 않는다.
+        """
         ...
 
     @abstractmethod

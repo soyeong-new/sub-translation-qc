@@ -4,7 +4,7 @@ from typing import List, Optional
 from app.providers.base import ModelProvider
 
 
-def _detect_corrections(pairs: List[dict], pending_sensitive_hits: List[dict]) -> List[dict]:
+def _detect_corrections(pairs: List[dict]) -> List[dict]:
     """correct_primary/verify_and_refine이 공유하는 결정론적 테스트 규칙.
     기본 동작은 둘 다 똑같은 규칙을 쓰게 해(대칭 시그니처이므로 가능),
     합의(둘 다 같은 줄을 지적)가 기본값이 되게 한다 — 불일치 경로를 테스트하려면
@@ -13,11 +13,6 @@ def _detect_corrections(pairs: List[dict], pending_sensitive_hits: List[dict]) -
         {"segment_id": p["id"], "category": "mistranslation",
          "corrected_text": "texto corregido", "description": "테스트용 오역 마커 감지"}
         for p in pairs if "BAD_TRANSLATION" in p.get("target_text", "")
-    ]
-    corrections += [
-        {"segment_id": hit["segment_id"], "category": "sensitivity",
-         "corrected_text": "[교정됨]", "description": "테스트용 비속어 교정"}
-        for hit in pending_sensitive_hits
     ]
     return corrections
 
@@ -34,18 +29,16 @@ class MockProvider(ModelProvider):
         return [{"start": 0.0, "end": 2.0, "text": "안녕하세요"}]
 
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "",
                                glossary_entries: Optional[List[dict]] = None) -> List[dict]:
-        return _detect_corrections(pairs, pending_sensitive_hits)
+        return _detect_corrections(pairs)
 
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
-                                 pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
                                  extra_instruction: str = "",
                                  glossary_entries: Optional[List[dict]] = None) -> List[dict]:
-        return _detect_corrections(pairs, pending_sensitive_hits)
+        return _detect_corrections(pairs)
 
     async def shrink_line(self, text: str, max_chars: int, max_lines: int,
                            extra_instruction: str = "") -> str:
@@ -89,6 +82,20 @@ class MockProvider(ModelProvider):
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         return [{"id": i["id"], "corrected_text": f"[{i['formality']}] {i['target_text']}"}
                 for i in items]
+
+    async def apply_registers(self, items: List[dict], profile: dict) -> List[dict]:
+        results = []
+        for item in items:
+            text = item["target_text"]
+            groups = item.get("gender_groups") or []
+            if groups:
+                text = f"[{','.join(g['gender'] for g in groups)}] {text}"
+            elif item.get("gender"):
+                text = f"[{item['gender']}] {text}"
+            if item.get("formality"):
+                text = f"[{item['formality']}] {text}"
+            results.append({"id": item["id"], "corrected_text": text})
+        return results
 
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
         """결정론적 테스트 더블: 후보 단어마다 별도 그룹으로 취급하고(사람
@@ -135,4 +142,3 @@ class MockProvider(ModelProvider):
             vec[1] = (hash(t) % 100) / 100.0
             res.append(vec)
         return res
-

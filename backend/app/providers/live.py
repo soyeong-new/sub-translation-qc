@@ -23,22 +23,20 @@ class LiveModelProvider(ModelProvider):
         return await self._gpt.transcribe(audio_path)
 
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                               pending_sensitive_hits: List[dict],
                                knowledge: str, format_constraint: str,
                                extra_instruction: str = "",
                                glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         return await self._claude.correct_primary(
-            pairs, profile, pending_sensitive_hits,
+            pairs, profile,
             knowledge, format_constraint, extra_instruction, glossary_entries,
         )
 
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
-                                 pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
                                  extra_instruction: str = "",
                                  glossary_entries: Optional[List[dict]] = None) -> List[dict]:
         return await self._gpt.verify_and_refine(
-            pairs, profile, pending_sensitive_hits,
+            pairs, profile,
             knowledge, format_constraint, extra_instruction, glossary_entries,
         )
 
@@ -76,6 +74,9 @@ class LiveModelProvider(ModelProvider):
     async def apply_formality(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.apply_formality(items, profile)
 
+    async def apply_registers(self, items: List[dict], profile: dict) -> List[dict]:
+        return await self._gpt.apply_registers(items, profile)
+
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
         return await self._gpt.resolve_gender_from_context(items, profile)
 
@@ -90,4 +91,3 @@ class LiveModelProvider(ModelProvider):
 
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         return await self._gpt.get_embeddings(texts)
-

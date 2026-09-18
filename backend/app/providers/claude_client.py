@@ -199,7 +199,6 @@ class ClaudeClient:
             raise ValueError(f"Claude 응답이 JSON 객체가 아님: {text[:200]}") from exc
 
     async def correct_primary(self, pairs: List[dict], profile: dict,
-                                pending_sensitive_hits: List[dict],
                                 knowledge: str, format_constraint: str,
                                 extra_instruction: str = "",
                                 glossary_entries: Optional[List[dict]] = None) -> List[dict]:
@@ -238,10 +237,6 @@ class ClaudeClient:
         schema_instruction = _PRIMARY_SCHEMA_INSTRUCTION
         if extra_instruction:
             schema_instruction += "\n" + _BACK_TRANSLATION_FIELD_INSTRUCTION
-        system += (
-            f"사전에 없어 애매한 비속어 후보(참고용): "
-            f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
-        )
         system += build_naturalness_instruction_line(naturalness_instruction)
         system += json_instruction + "\n" + schema_instruction
 

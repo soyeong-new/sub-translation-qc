@@ -18,11 +18,7 @@ from app.core.format_rules import (
 from app.core.safety_net import shrink_violating_lines, enforce_line_length
 from app.core.glossary_guard import revert_canonical_regression
 from app.language_profiles.loader import load_profile
-from app.knowledge.loader import (
-    load_knowledge, load_sensitive_terms, load_cta_patterns,
-    load_profanity_dictionary,
-)
-from app.core.pretreatment import run_pretreatment
+from app.knowledge.loader import load_knowledge
 from app.core.grammar_necessity import (
     check_grammar_necessity, _strip_html_tags, _detect_korean_gender,
 )
@@ -318,26 +314,66 @@ async def _run_grammar_necessity_check(
             or flags_by_id.get(p.id, {}).get("formality_check_needed")
         ]
 
+        # 같은 회차의 다른 언어판에서 정확히 같은 위치·한국어 원문의 단일
+        # 인물 성별을 이미 확인했고 현재 번역의 후보도 하나뿐이면, 저장값으로
+        # 그룹을 바로 만들어 문맥 판단·뜻풀이 LLM 입력에서 제외한다.
+        pre_resolved_groups_by_id: dict = {}
+        if episode_gender_facts:
+            for p in flagged_pairs:
+                flag = flags_by_id[p.id]
+                candidate_words = flag.get("candidate_words") or []
+                if (len(candidate_words) != 1
+                        or flag.get("resolved_gender_from_korean") is not None):
+                    continue
+                key = (pair_index_by_id[p.id], korean_text_by_id.get(p.id, ""))
+                fact_gender = episode_gender_facts.get(key)
+                if not fact_gender:
+                    continue
+                pre_resolved_groups_by_id[p.id] = [{
+                    "group_index": 0,
+                    "referent": None,
+                    "character_name": None,
+                    "words": candidate_words,
+                    "target_word_lemmas": flag.get("candidate_word_lemmas") or [],
+                    "candidate_indices": [0],
+                    "gender": fact_gender,
+                    "suggested_gender": fact_gender,
+                    "human_confirmed": False,
+                }]
+
         # 한국어 규칙이 이미 확정한(후보 1개뿐인 줄만 가능) 것은 LLM을
         # 부를 필요가 없다 — 그 외 후보가 있는 줄만 배치로 묶어 한 번에
         # 판단받는다(gloss_gender_words와 같은 이유로 영화 전체를 한
         # 콜에 몰아넣는다 — 항목이 word+context 수준으로 가벼움).
         def _llm_item(p) -> dict:
             context_before, context_after = _context_window(pairs, pair_index_by_id[p.id])
+            korean_context = " ".join([
+                *(item["korean_text"] for item in context_before),
+                p.korean.text if p.korean else "",
+                *(item["korean_text"] for item in context_after),
+            ])
+            normalized_context = normalize_character_name(korean_context)
+            known_characters = [
+                {"name": name, "gender": gender}
+                for name, gender in (known_gender_facts or {}).items()
+                if name and normalize_character_name(name) in normalized_context
+            ]
             return {
                 "id": p.id, "target_text": p.target.text if p.target else "",
                 "korean_text": p.korean.text if p.korean else "",
                 "candidate_words": flags_by_id[p.id]["candidate_words"],
                 "candidate_word_lemmas": flags_by_id[p.id]["candidate_word_lemmas"],
                 "context_before": context_before, "context_after": context_after,
+                "known_characters": known_characters,
             }
 
         llm_items = [
             _llm_item(p) for p in flagged_pairs
             if flags_by_id[p.id]["candidate_words"]
             and flags_by_id[p.id]["resolved_gender_from_korean"] is None
+            and p.id not in pre_resolved_groups_by_id
         ]
-        gender_groups_by_id: dict = {}
+        gender_groups_by_id: dict = dict(pre_resolved_groups_by_id)
         # ponytail: 영화 전체 llm_items를 한 콜로 보낸다 — _split_into_scenes/
         # _verify_chunk(AI 검증)처럼 씬 단위로 청킹하지 않는다. 토큰 한도로
         # 이 콜이 실패하면 영화 전체가 미확정 그룹 폴백으로 넘어간다(문장별
@@ -349,7 +385,9 @@ async def _run_grammar_necessity_check(
             wire_items = [
                 {"id": i["id"], "target_text": i["target_text"],
                  "korean_text": i["korean_text"], "candidate_words": i["candidate_words"],
-                 "context_before": i["context_before"], "context_after": i["context_after"]}
+                 "context_before": i["context_before"],
+                 "context_after": i["context_after"],
+                 "known_characters": i["known_characters"]}
                 for i in llm_items
             ]
             # LLM이 완전히 실패하거나(예외), 응답에서 특정 id가 통째로
@@ -794,7 +832,7 @@ async def _back_translate_all(
 async def _back_translate_proposals(
     provider: ModelProvider, profile: dict,
     agreed: list, claude_only: list, gpt_only: list, target_version_id: str,
-    pairs: list,
+    pairs: list, prepare_survivors=None,
 ) -> tuple[dict, dict, set, list]:
     """제안된 문구가 교정 전 원문보다 실제로 나아졌는지를 반대쪽 모델이 먼저
     판단하고(judge_improvement), 개선으로 인정된 문구만 한국어로
@@ -849,6 +887,13 @@ async def _back_translate_proposals(
         if not r.get("is_improvement", True)
     }
 
+    if prepare_survivors is not None:
+        await prepare_survivors(not_improved)
+        # 준비 단계에서 성별·격식·온점·길이·용어 표기가 바뀔 수 있으므로,
+        # 역번역 payload를 최종 corrected_text로 다시 만든다.
+        claude_authored_texts = _to_payload(claude_only)
+        gpt_authored_texts = _to_payload(agreed + gpt_only)
+
     claude_authored_survivors = [
         t for t in claude_authored_texts if (t["id"], "claude_authored") not in not_improved
     ]
@@ -893,6 +938,32 @@ async def _back_translate_proposals(
     return backtranslation_by_id, original_backtranslation_by_id, not_improved, warnings
 
 
+async def _finalize_correction_for_review(
+    pair, correction: dict, provider: ModelProvider,
+    glossary_entries: Optional[list] = None,
+) -> None:
+    """사용자에게 보여줄 제안문을 확정한다.
+
+    역번역보다 먼저 길이 제약과 등록 용어 표기까지 반영해, 역번역 대상과
+    실제 finding.suggested_text가 같은 문장이 되게 한다.
+    """
+    corrected_text, _ = await enforce_line_length(
+        correction["corrected_text"], provider)
+    description = correction["description"]
+    original_text = pair.target.text
+    korean_text = pair.korean.text if pair.korean else ""
+    patched_text = revert_canonical_regression(
+        korean_text, original_text, corrected_text, glossary_entries or [])
+    if patched_text != corrected_text:
+        corrected_text = patched_text
+        description = (
+            f"{description} (참고: 고유명사 표기가 용어집 등록 표기와 달라 "
+            "자동으로 맞췄습니다 — 위 설명 중 표기 관련 내용은 무시하세요)"
+        )
+    correction["corrected_text"] = corrected_text
+    correction["description"] = description
+
+
 async def _make_dual_verification_finding(
     target_version_id: str, pair, correction: dict,
     status: str, model_label: str, source: str, backtranslation_by_id: dict,
@@ -906,27 +977,8 @@ async def _make_dual_verification_finding(
     # (사용자 재현). status="approved"도 여기서 같이 걸러두면 S4가 같은
     # 세그먼트를 또 검사할 필요가 없다(enforce_line_length는 위반이 없으면
     # LLM을 안 부르므로 여기서 미리 해도 비용이 늘지 않는다).
-    corrected_text, _ = await enforce_line_length(correction["corrected_text"], provider)
+    corrected_text = correction["corrected_text"]
     description = correction["description"]
-    # LLM이 mistranslation류를 판단할 때 용어집을 참고는 하지만 강제되지는
-    # 않는다 — 근접한 두 등록 용어(예: "강옥"/"강오크")를 본명/별명 관계로
-    # 잘못 추론해 원문(original_text)에 이미 정확히 쓰여 있던 등록 표기를
-    # 다른(미등록) 표기로 바꿔버리는 사례가 실측 확인됐다. glossary_guard의
-    # diff는 지금까지 검수자 승인 시점에만 돌았는데(findings.py), 그때는
-    # 이미 틀린 표기가 검수 화면에 노출된 뒤다 — 파인딩 생성 시점에도 같은
-    # 검증을 한 번 더 돌려 표기 자체는 항상 등록 캐노니컬로 유지한다.
-    # revert_canonical_regression은 원문에 canonical이 정확히 존재했다는
-    # 것을 앵커로 요구해서만 되돌리므로("미래" 같은 동음이의어를 이름으로
-    # 오인하는 오탐 없음), 근접 오탈자 교정용 patch_missing_canonical과
-    # 달리 여기 목적(회귀 방지)에 맞는다. description(LLM의 설명 문장)은
-    # 이 시점엔 이미 틀린 근거로 쓰여 있을 수 있어 고치지 않고, 대신 표기가
-    # 자동 교정됐다는 태그만 참고용으로 덧붙인다.
-    korean_text = pair.korean.text if pair.korean else ""
-    patched_text = revert_canonical_regression(
-        korean_text, original_text, corrected_text, glossary_entries or [])
-    if patched_text != corrected_text:
-        corrected_text = patched_text
-        description = f"{description} (참고: 고유명사 표기가 용어집 등록 표기와 달라 자동으로 맞췄습니다 — 위 설명 중 표기 관련 내용은 무시하세요)"
     correction["corrected_text"] = corrected_text
     backtranslation = backtranslation_by_id.get((correction["segment_id"], source))
     if backtranslation:
@@ -1093,7 +1145,7 @@ async def _reapply_resolved_gender_to_corrections(
 
 async def _run_dual_verification_pass(
     pairs: list, provider: ModelProvider, profile: dict,
-    pending_sensitive_hits: list, knowledge: dict,
+    knowledge: dict,
     format_constraint: str, target_version_id: str, resolved_registers: dict,
     glossary_entries: Optional[list] = None,
 ) -> tuple[list, list]:
@@ -1146,12 +1198,12 @@ async def _run_dual_verification_pass(
         return await asyncio.gather(
             _safe_call(
                 provider.correct_primary(
-                    chunk_dicts, profile, pending_sensitive_hits,
+                    chunk_dicts, profile,
                     knowledge, format_constraint, glossary_entries=glossary_entries),
                 "Claude 검증", "해당 구간을 스킵하고 계속 진행", target_version_id, warnings),
             _safe_call(
                 provider.verify_and_refine(
-                    chunk_dicts, profile, pending_sensitive_hits,
+                    chunk_dicts, profile,
                     knowledge, format_constraint, glossary_entries=glossary_entries),
                 "GPT 검증", "해당 구간을 스킵하고 계속 진행", target_version_id, warnings),
         )
@@ -1181,7 +1233,7 @@ async def _run_dual_verification_pass(
         untranslated_chunk_results = await asyncio.gather(*[
             _safe_call(
                 provider.correct_primary(
-                    [_to_dict(p) for p in chunk], profile, pending_sensitive_hits, knowledge,
+                    [_to_dict(p) for p in chunk], profile, knowledge,
                     format_constraint, extra_instruction=_UNTRANSLATED_LINE_INSTRUCTION,
                     glossary_entries=glossary_entries),
                 "미번역 줄 재번역", "해당 구간은 한국어 원문이 그대로 남았습니다",
@@ -1213,45 +1265,53 @@ async def _run_dual_verification_pass(
         if c.get("category") not in ("unnatural_style", "nuance_tone")
     ]
 
+    entries: list = []
+    pair_by_id = {p.id: p for p in pairs}
+
+    async def _prepare_surviving_proposals(not_improved: set) -> None:
+        # 개선이 아닌 후보를 먼저 제거한 뒤, 실제 사용자에게 보여줄 문장만
+        # 성별·온점·길이·용어집 순서로 확정한다.
+        true_agreed[:] = [
+            c for c in true_agreed
+            if (c["segment_id"], "gpt_authored") not in not_improved
+        ]
+        filtered_claude_only[:] = [
+            c for c in filtered_claude_only
+            if (c["segment_id"], "claude_authored") not in not_improved
+        ]
+        filtered_gpt_only[:] = [
+            c for c in filtered_gpt_only
+            if (c["segment_id"], "gpt_authored") not in not_improved
+        ]
+
+        entries.extend([
+            *((c, "pending", "claude+gpt", False, "gpt_authored")
+              for c in true_agreed),
+            *((c, "pending", "claude", False, "claude_authored")
+              for c in filtered_claude_only),
+            *((c, "pending", "gpt", False, "gpt_authored")
+              for c in filtered_gpt_only),
+        ])
+
+        await _reapply_resolved_gender_to_corrections(
+            entries, provider, profile, resolved_registers)
+
+        for correction, _status, _model_label, _applies, _source in entries:
+            fixed, changed = fix_ellipsis(correction["corrected_text"])
+            if changed:
+                correction["corrected_text"] = fixed
+            pair = pair_by_id.get(correction["segment_id"])
+            if pair is None or pair.target is None:
+                continue
+            await _finalize_correction_for_review(
+                pair, correction, provider, glossary_entries)
+
     (backtranslation_by_id, original_backtranslation_by_id, not_improved,
      backtranslation_warnings) = await _back_translate_proposals(
         provider, profile, true_agreed, filtered_claude_only, filtered_gpt_only,
-        target_version_id, pairs)
+        target_version_id, pairs, _prepare_surviving_proposals)
     warnings.extend(backtranslation_warnings)
 
-    # 원문보다 나아지지 않았다고 판정된 교정은 여기서 폐기한다 — true_agreed여도
-    # 예외 없음(두 모델이 같은 문구에 합의했다는 것과, 그 문구가 원문보다
-    # 실제로 나은 것은 별개다). 폐기된 항목은 finding 자체가 안 생긴다.
-    true_agreed = [c for c in true_agreed if (c["segment_id"], "gpt_authored") not in not_improved]
-    filtered_claude_only = [
-        c for c in filtered_claude_only
-        if (c["segment_id"], "claude_authored") not in not_improved
-    ]
-    filtered_gpt_only = [
-        c for c in filtered_gpt_only if (c["segment_id"], "gpt_authored") not in not_improved
-    ]
-
-    entries = [
-        # true_agreed 항목의 corrected_text는 gpt_correction이다(agreed는
-        # GPT 문구로 통일 — _check_equivalence 참고) — 그래서 역번역 출처도
-        # "gpt_authored"다.
-        *((c, "pending", "claude+gpt", False, "gpt_authored") for c in true_agreed),
-        *((c, "pending", "claude", False, "claude_authored") for c in filtered_claude_only),
-        *((c, "pending", "gpt", False, "gpt_authored") for c in filtered_gpt_only),
-    ]
-
-    await _reapply_resolved_gender_to_corrections(entries, provider, profile, resolved_registers)
-
-    # 온점 4개 이상은 제안 문구 자체의 표기 오류이므로, 검수자가 승인했을 때
-    # 그 오류까지 그대로 반영되지 않도록 pending 제안문을 미리 정리해 둔다.
-    # pair.target.text는 건드리지 않는다 — 승인 전까지는 어떤 텍스트도
-    # 바뀌지 않는다.
-    for correction, _status, _model_label, _applies, _source in entries:
-        fixed, changed = fix_ellipsis(correction["corrected_text"])
-        if changed:
-            correction["corrected_text"] = fixed
-
-    pair_by_id = {p.id: p for p in pairs}
     findings: list = []
     for correction, status, model_label, applies, source in entries:
         pair = pair_by_id.get(correction["segment_id"])
@@ -1563,29 +1623,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                 "message": f"한국어 STT와 대상언어 SRT 사이 {global_offset:+.1f}초 오프셋을 감지해 자동 보정했습니다.",
             })
         pairs = align(korean_words, target_segments)
-
-
-    # 온점 자동보정은 다른 모든 단계보다 먼저 적용한다 — 이후 단계가 보정된
-    # 텍스트를 기준으로 작업하도록. 판단 여지가 없는 기계적 규칙이라 텍스트에
-    # 바로 반영하지만, 검수자 진행률 카운팅(ReviewView.jsx)에서는 사람이
-    # 손댄 적 없는(reviewed_at 없는) 자동보정 finding을 제외해 실제 검수
-    # 대상과 섞이지 않게 한다.
-    ellipsis_violations = check_ellipsis(pairs)
-    fixed_by_segment = {v.segment_id: v.fixed_text for v in ellipsis_violations}
-    for pair in pairs:
-        if pair.id in fixed_by_segment:
-            pair.target.text = fixed_by_segment[pair.id]
-
     profile = load_profile(language, variant)
-    sensitive_terms = load_sensitive_terms()
-    cta_patterns = load_cta_patterns()
-    profanity_dictionary = load_profanity_dictionary()
-
-    pretreatment = run_pretreatment(
-        pairs, cta_patterns, profanity_dictionary, sensitive_terms,
-        target_version_id,
-    )
-    pairs = pretreatment.pairs
 
     segment_resolutions, grammar_warnings = await _run_grammar_necessity_check(
         pairs, profile, provider, target_version_id, known_gender_facts, episode_gender_facts,
@@ -1594,68 +1632,37 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
 
     return {
         "pairs": pairs,
-        "format_violations": ellipsis_violations,
+        "format_violations": [],
         "segment_resolutions": segment_resolutions,
         "video_path": video_path,
         "video_proxy_path": video_proxy_path,
         "video_offset_seconds": video_offset_seconds,
         "korean_segments_raw": korean_raw,
         "warnings": warnings,
-        "findings": pretreatment.findings,
-        "pending_sensitive_hits": pretreatment.pending_sensitive_hits,
+        "findings": [],
     }
 
 
-async def _apply_resolved_gender(
+async def _apply_resolved_registers(
     pairs: list, provider: ModelProvider, profile: dict, resolved_registers: dict,
 ) -> None:
-    """확정된 성별만 반영하는 전담 LLM 호출로 문장을 고친다(제자리 수정,
-    apply_formality와 같은 패턴 — design §성별 치환은 LLM 재작성으로).
-    예전엔 파이썬 문법 규칙으로 형용사/분사 어미만 기계적으로 치환했지만,
-    같은 명사구의 관사·한정사는 건드리지 못해 "el única" 같은 문법 오류가
-    남았다 — 관사까지 같이 고치려면 형태소 규칙표가 아니라 문장을 실제로
-    이해하는 LLM이 필요하다. 한 줄에 인물이 둘 이상이면(gender_groups)
-    인물별로 확정된 성별을 그 인물의 단어에만 적용한다. 이 결과가 이후
-    이중검증(S2)의 새 기준 텍스트가 된다."""
-    single_items = [
-        {"id": p.id, "target_text": p.target.text, "gender": resolved_registers[p.id]["gender"]}
-        for p in pairs
-        if p.target is not None and resolved_registers.get(p.id, {}).get("gender")
-    ]
-    group_items = [
-        {"id": p.id, "target_text": p.target.text, "groups": resolved_registers[p.id]["gender_groups"]}
-        for p in pairs
-        if p.target is not None and resolved_registers.get(p.id, {}).get("gender_groups")
-    ]
-    if not single_items and not group_items:
-        return
-    corrected_by_id: dict = {}
-    if single_items:
-        results = await provider.apply_gender(single_items, profile)
-        corrected_by_id.update({r["id"]: r["corrected_text"] for r in results})
-    if group_items:
-        results = await provider.apply_gender_groups(group_items, profile)
-        corrected_by_id.update({r["id"]: r["corrected_text"] for r in results})
-    for pair in pairs:
-        if pair.id in corrected_by_id:
-            pair.target.text = corrected_by_id[pair.id]
-
-
-async def _apply_resolved_formality(
-    pairs: list, provider: ModelProvider, profile: dict, resolved_registers: dict,
-) -> None:
-    """확정된 격식만 반영하는 전담 LLM 호출로 문장을 고친다(제자리 수정) —
-    오역/뉘앙스 등 다른 검증과 한 프롬프트에 섞이면 이 지시를 놓치는 문제가
-    있었다(design §격식 지시가 무시됨). 이 결과가 이후 이중검증(S2)의 새
-    기준 텍스트가 된다."""
+    """확정된 성별·격식을 한 번의 전담 LLM 호출로 문장에 반영한다."""
     items = [
-        {"id": p.id, "target_text": p.target.text, "formality": resolved_registers[p.id]["formality"]}
+        {
+            "id": p.id,
+            "target_text": p.target.text,
+            "gender": resolved_registers[p.id].get("gender"),
+            "gender_groups": resolved_registers[p.id].get("gender_groups"),
+            "formality": resolved_registers[p.id].get("formality"),
+        }
         for p in pairs
-        if p.target is not None and resolved_registers.get(p.id, {}).get("formality")
+        if p.target is not None and resolved_registers.get(p.id)
+        and any(resolved_registers[p.id].get(key)
+                for key in ("gender", "gender_groups", "formality"))
     ]
     if not items:
         return
-    results = await provider.apply_formality(items, profile)
+    results = await provider.apply_registers(items, profile)
     corrected_by_id = {r["id"]: r["corrected_text"] for r in results}
     for pair in pairs:
         if pair.id in corrected_by_id:
@@ -1663,20 +1670,14 @@ async def _apply_resolved_formality(
 
 
 async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dict,
-                               knowledge: dict, pending_sensitive_hits: list,
+                               knowledge: dict,
                                target_version_id: str, resolved_registers: dict,
                                glossary_entries: Optional[list] = None) -> dict:
     """S2(Claude/GPT 이중 독립 검증) + S4(최종 안전망). 성별/격식 확인이
-    필요한 줄이 모두 확정된 뒤에만 호출돼야 한다(run_pipeline_phase1의
-    registers_need_confirmation이 False일 때, 또는 사람이 스텝퍼에서 답을
-    마친 뒤). resolved_registers는 확정된 성별/격식({segment_id: {"gender":..,
-    "formality":..}})이다 — 이중검증을 시작하기 전에 먼저 이 값을 pair.target
-    .text에 실제로 반영한다(성별은 파이썬으로 결정론적으로, 격식은 격식만
-    전담하는 별도 LLM 호출로) — 그래야 이중검증이 "이미 맞는 문장"을 기준
-    으로 다른 문제만 찾으면 된다(design §AI에게 반영해달라 부탁하지 말고
-    파이썬/전담 호출이 먼저 확정)."""
-    await _apply_resolved_gender(pairs, provider, profile, resolved_registers)
-    await _apply_resolved_formality(pairs, provider, profile, resolved_registers)
+    필요한 줄이 모두 확정된 뒤에만 호출된다. 이중검증 전에 확정된 성별,
+    성별 그룹, 격식을 통합 전담 LLM 호출 한 번으로 pair.target.text에
+    반영하고, 이중검증은 그 결과를 기준으로 다른 문제를 찾는다."""
+    await _apply_resolved_registers(pairs, provider, profile, resolved_registers)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 
@@ -1688,7 +1689,7 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
 
     dual_verification_findings, dual_verification_warnings = await _run_dual_verification_pass(
         pairs, provider, profile,
-        pending_sensitive_hits, knowledge, format_constraint,
+        knowledge, format_constraint,
         target_version_id, resolved_registers, glossary_entries,
     )
 
@@ -1737,7 +1738,7 @@ async def run_pipeline(video_path: str, target_srt_path: str,
     )
     resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
     phase2 = await run_pipeline_phase2(
-        phase1["pairs"], provider, profile, knowledge, phase1["pending_sensitive_hits"],
+        phase1["pairs"], provider, profile, knowledge,
         target_version_id, resolved_registers,
     )
     return {

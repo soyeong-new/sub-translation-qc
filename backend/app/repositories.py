@@ -127,9 +127,24 @@ async def save_phase1_result(session: AsyncSession, target_version_id: str,
 
 
 async def save_phase2_result(session: AsyncSession, target_version_id: str,
-                              result: dict) -> None:
+                             result: dict) -> None:
     """S2(Claude/GPT 이중 독립 검증) + S4(최종 안전망) 결과를 저장한다.
     save_phase1_result가 이미 만든 Segment 행이 존재한다고 가정한다."""
+    target_text_by_segment_id = {
+        _ns(target_version_id, pair.id): pair.target.text
+        for pair in result["pairs"]
+        if pair.target is not None
+    }
+    if target_text_by_segment_id:
+        segments = (await session.execute(
+            select(Segment).where(
+                Segment.target_version_id == target_version_id,
+                Segment.id.in_(target_text_by_segment_id),
+            )
+        )).scalars().all()
+        for segment in segments:
+            segment.target_text = target_text_by_segment_id[segment.id]
+
     _save_findings(session, target_version_id, result["findings"])
 
     target_text_by_pair = {

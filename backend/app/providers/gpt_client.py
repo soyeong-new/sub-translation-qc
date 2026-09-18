@@ -100,6 +100,14 @@ _GENDER_APPLY_SCHEMA_INSTRUCTION = (
     "원문 그대로)."
 )
 
+_REGISTER_APPLY_SCHEMA_INSTRUCTION = (
+    '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+    '각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: '
+    '"id" (문자열, 입력의 "id"와 반드시 일치), '
+    '"corrected_text" (문자열, 확정된 성별과 격식을 모두 반영한 전체 문장; '
+    '이미 일치하면 원문 그대로).'
+)
+
 _GLOSSARY_EXTRACTION_SCHEMA_INSTRUCTION = (
     '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
     "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
@@ -425,7 +433,6 @@ class GptClient:
             raise ValueError(f"{prefix}이 기대한 JSON 형태가 아님: {preview}") from exc
 
     async def verify_and_refine(self, pairs: List[dict], profile: dict,
-                                 pending_sensitive_hits: List[dict],
                                  knowledge: str, format_constraint: str,
                                  extra_instruction: str = "",
                                  glossary_entries: Optional[List[dict]] = None) -> List[dict]:
@@ -460,10 +467,6 @@ class GptClient:
         )
         system += glossary_block
 
-        system += (
-            f"사전에 없어 애매한 비속어 후보(참고용): "
-            f"{json.dumps(pending_sensitive_hits, ensure_ascii=False)}\n"
-        )
         system += build_naturalness_instruction_line(naturalness_instruction)
         json_instruction = _JSON_INSTRUCTION_REQUERY if extra_instruction else _JSON_INSTRUCTION
         schema_instruction = _VERIFY_SCHEMA_INSTRUCTION
@@ -639,6 +642,26 @@ class GptClient:
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(system, user, key="results", label="격식 반영", model_override=self._light_model)
 
+    async def apply_registers(self, items: List[dict], profile: dict) -> List[dict]:
+        language_label = _language_label(profile)
+        formality_instruction = (
+            profile.get("formality_instruction") or _DEFAULT_FORMALITY_INSTRUCTION)
+        system = (
+            f"다음은 {language_label} 문장과 이미 확정된 성별·격식 정보다. "
+            "gender가 있으면 그 인물을 가리키는 관사·형용사·과거분사·명사 "
+            "등을 함께 일치시켜라. gender_groups가 있으면 각 그룹의 words와 "
+            "referent에 해당하는 표현에만 그 그룹의 gender를 적용하고 다른 "
+            "인물의 표현은 건드리지 마라. formality가 있으면 2인칭 대명사와 "
+            f"동사 활용을 해당 값에 맞춰라. {formality_instruction} "
+            "값이 null인 항목은 변경 사유로 사용하지 마라. 성별과 격식 외의 "
+            "의미·어휘·어순·줄바꿈·구두점은 바꾸지 마라.\n"
+            + _REGISTER_APPLY_SCHEMA_INSTRUCTION
+        )
+        user = json.dumps(items, ensure_ascii=False)
+        return await self._call(
+            system, user, key="results", label="성별·격식 통합 반영",
+            model_override=self._light_model, seed=_SEED)
+
     async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
         system = (
@@ -699,7 +722,13 @@ class GptClient:
     async def resolve_gender_from_context(self, items: List[dict], profile: dict) -> List[dict]:
         """성별 문맥 판단 전용 콜."""
         language_label = _language_label(profile)
-        system = f"{_GENDER_RESOLUTION_SYSTEM_PREFIX} 대상언어는 {language_label}이다."
+        system = (
+            f"{_GENDER_RESOLUTION_SYSTEM_PREFIX} 대상언어는 {language_label}이다. "
+            "입력의 known_characters는 작품에서 사용자가 이전에 확정한 인물 "
+            "이름과 성별이다. 현재 후보가 그 인물이라고 문맥상 판단될 때는 "
+            "character_name을 해당 이름으로 쓰고 gender는 저장된 값을 그대로 "
+            "사용하라. 연결 근거가 없으면 억지로 연결하지 마라."
+        )
         user = json.dumps(items, ensure_ascii=False)
         response = await self._sdk_client.chat.completions.create(
             model=self._light_model,
@@ -759,4 +788,3 @@ class GptClient:
             model=model,
         )
         return [item.embedding for item in response.data]
-
