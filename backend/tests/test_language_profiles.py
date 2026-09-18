@@ -6,7 +6,7 @@ def test_load_es_latam_profile_has_expected_shape():
     profile = load_profile("es", "LATAM")
     assert profile["language"] == "es"
     assert profile["variant"] == "LATAM"
-    assert "직역투" in profile["naturalness_check"]["llm_instruction"]
+    assert "naturalness_check" not in profile
 
 
 def test_load_profile_raises_for_unknown_language():
@@ -53,7 +53,7 @@ def test_load_pt_br_profile_has_expected_shape():
     profile = load_profile("pt", "BR")
     assert profile["language"] == "pt"
     assert profile["variant"] == "BR"
-    assert "포르투갈어" in profile["naturalness_check"]["llm_instruction"]
+    assert "naturalness_check" not in profile
     assert "você" in profile["formality_instruction"]
 
 
@@ -66,7 +66,7 @@ def test_load_en_us_profile_has_formality_disabled():
     profile = load_profile("en", "US")
     assert profile["language"] == "en"
     assert profile["variant"] == "US"
-    assert "영어" in profile["naturalness_check"]["llm_instruction"]
+    assert "naturalness_check" not in profile
     assert profile["formality_applicable"] is False
 
 
@@ -79,7 +79,7 @@ def test_load_fr_fr_profile_has_expected_shape():
     profile = load_profile("fr", "FR")
     assert profile["language"] == "fr"
     assert profile["variant"] == "FR"
-    assert "프랑스어" in profile["naturalness_check"]["llm_instruction"]
+    assert "naturalness_check" not in profile
     assert "vous" in profile["formality_instruction"]
 
 

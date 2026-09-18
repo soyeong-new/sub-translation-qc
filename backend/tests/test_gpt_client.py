@@ -28,7 +28,7 @@ async def test_verify_and_refine_sends_korean_and_target_text():
     client = _make_client_with_fake_sdk(json.dumps(payload))
     result = await client.verify_and_refine(
         pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "hola"}],
-        profile={}, pending_sensitive_hits=[],
+        profile={},
         knowledge="", format_constraint="줄당 50자 이내",
     )
     assert result == payload["findings"]
@@ -42,7 +42,7 @@ async def test_verify_and_refine_does_not_mention_a_prior_correction_pass():
     있다 — 프롬프트에 "1차"/"이전 교정" 같은 언급이 없어야 한다."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -50,22 +50,10 @@ async def test_verify_and_refine_does_not_mention_a_prior_correction_pass():
 
 
 @pytest.mark.asyncio
-async def test_verify_and_refine_includes_pending_sensitive_hits_in_prompt():
-    client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
-    await client.verify_and_refine(
-        pairs=[], profile={},
-        pending_sensitive_hits=[{"segment_id": "p1", "term": "미친"}],
-        knowledge="", format_constraint="",
-    )
-    sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-    assert "미친" in sent_system
-
-
-@pytest.mark.asyncio
 async def test_verify_and_refine_includes_extra_instruction_in_prompt_when_given():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
         extra_instruction="직역투를 더 강하게 잡아줘",
     )
@@ -82,7 +70,7 @@ async def test_verify_and_refine_forbids_skipping_when_extra_instruction_given()
     반드시 포함하라는 지시로 바뀌어야 한다."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
         extra_instruction="더 격식있게 다시 써줘",
     )
@@ -98,7 +86,7 @@ async def test_verify_and_refine_warns_not_to_trust_own_prior_suggestion_when_ex
     이전 제안이라는 것과, 그렇다고 이미 맞다고 여기지 말라는 경고가 필요하다."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
         extra_instruction="문장의 의미를 제대로 파악할 것",
     )
@@ -113,7 +101,7 @@ async def test_verify_and_refine_keeps_skip_clean_instruction_without_extra_inst
     오탐이 생긴다."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -128,7 +116,7 @@ async def test_verify_and_refine_uses_json_schema_response_format_with_required_
     한다(프롬프트 지시만으로는 강제가 안 됨)."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
     )
     call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
@@ -146,7 +134,7 @@ async def test_verify_and_refine_requires_back_translation_when_extra_instructio
     필드를 함께 요청해 한 번의 호출로 끝낸다."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
         extra_instruction="더 격식있게 다시 써줘",
     )
@@ -165,7 +153,7 @@ async def test_verify_and_refine_omits_back_translation_without_extra_instructio
     쓰고 있어 여기서 추가하면 불필요한 중복이다."""
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
     )
     call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
@@ -202,7 +190,7 @@ async def test_verify_and_refine_retries_when_corrected_text_leaks_korean():
         side_effect=[_fake_response(leaked), _fake_response(fixed)])
     result = await client.verify_and_refine(
         pairs=[{"id": "p1", "korean_text": "기사가 있는 리무진을 가졌어", "target_text": "hola"}],
-        profile={}, pending_sensitive_hits=[], knowledge="", format_constraint="",
+        profile={}, knowledge="", format_constraint="",
     )
     assert result == fixed["findings"]
     assert client._sdk_client.chat.completions.create.call_count == 2
@@ -221,7 +209,7 @@ async def test_verify_and_refine_flags_description_when_retry_still_leaks_korean
         side_effect=[_fake_response(leaked), _fake_response(leaked)])
     result = await client.verify_and_refine(
         pairs=[{"id": "p1", "korean_text": "기사가 있는 리무진을 가졌어", "target_text": "hola"}],
-        profile={}, pending_sensitive_hits=[], knowledge="", format_constraint="",
+        profile={}, knowledge="", format_constraint="",
     )
     assert "직접 재확인 필요" in result[0]["description"]
 
@@ -290,7 +278,7 @@ async def test_verify_and_refine_uses_profile_language_and_variant_in_prompt():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
         pairs=[], profile={"language": "es", "variant": "LATAM"},
-        pending_sensitive_hits=[], knowledge="", format_constraint="",
+        knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert "es(LATAM)" in sent_system
@@ -304,7 +292,7 @@ async def test_verify_and_refine_includes_naturalness_instruction_from_profile()
         "naturalness_check": {"llm_instruction": "직역투를 한국어 어순과 대조해 찾아라"},
     }
     await client.verify_and_refine(
-        pairs=[], profile=profile, pending_sensitive_hits=[],
+        pairs=[], profile=profile,
         knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -315,7 +303,7 @@ async def test_verify_and_refine_includes_naturalness_instruction_from_profile()
 async def test_verify_and_refine_falls_back_when_profile_empty():
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
-        pairs=[], profile={}, pending_sensitive_hits=[],
+        pairs=[], profile={},
         knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
@@ -464,6 +452,31 @@ async def test_apply_gender_groups_sends_items_and_returns_results():
 
 
 @pytest.mark.asyncio
+async def test_apply_registers_sends_gender_groups_and_formality_in_one_request():
+    payload = {"results": [{"id": "p1", "corrected_text": "A senhora está cansada."}]}
+    client = _make_client_with_fake_sdk(json.dumps(payload))
+    items = [{
+        "id": "p1", "target_text": "Você está cansado.",
+        "gender": "female", "gender_groups": None, "formality": "formal",
+    }]
+
+    result = await client.apply_registers(
+        items=items,
+        profile={
+            "language": "pt", "variant": "BR",
+            "formality_instruction": "formal이면 o senhor/a senhora 활용형으로.",
+        },
+    )
+
+    assert result == payload["results"]
+    call_kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    assert json.loads(call_kwargs["messages"][1]["content"]) == items
+    assert "성별" in call_kwargs["messages"][0]["content"]
+    assert "격식" in call_kwargs["messages"][0]["content"]
+    assert "o senhor/a senhora" in call_kwargs["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_verify_and_refine_system_prompt_contains_shared_verification_block():
     """claude/gpt가 반드시 같아야 하는 우선순위 문단·5단계 체크리스트는
     base.py의 공유 빌더 결과를 그대로 포함해야 한다 — 나중에 한쪽 클라이언트가
@@ -471,7 +484,7 @@ async def test_verify_and_refine_system_prompt_contains_shared_verification_bloc
     client = _make_client_with_fake_sdk(json.dumps({"findings": []}))
     await client.verify_and_refine(
         pairs=[], profile={"language": "es", "variant": "LATAM"},
-        pending_sensitive_hits=[], knowledge="", format_constraint="",
+        knowledge="", format_constraint="",
     )
     sent_system = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
     assert build_verification_priority_paragraph() in sent_system
@@ -496,7 +509,7 @@ async def test_verify_and_refine_includes_glossary_block_when_entries_given(monk
     profile = {"target_language": "es", "variant": "LATAM"}
     glossary_entries = [{"korean_term": "김현", "category": "person",
                           "canonical": "Kim Hyun", "aliases": []}]
-    await client.verify_and_refine([], profile, [], "", "", "", glossary_entries)
+    await client.verify_and_refine([], profile, "", "", "", glossary_entries)
 
     assert "[작품 용어집]" in captured["system"]
     assert "김현 (person): Kim Hyun" in captured["system"]

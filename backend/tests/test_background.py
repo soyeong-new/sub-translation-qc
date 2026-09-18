@@ -486,7 +486,7 @@ async def test_run_phase2_and_save_injects_and_persists_glossary(monkeypatch):
     captured = {}
 
     class SpyProvider(MockProvider):
-        async def correct_primary(self, pairs, profile, pending_sensitive_hits,
+        async def correct_primary(self, pairs, profile,
                                    knowledge, format_constraint, extra_instruction="",
                                    glossary_entries=None):
             captured["glossary_entries"] = glossary_entries

@@ -5,11 +5,13 @@ from sqlalchemy import select
 from app.db import async_session, engine
 from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection
 from app.repositories import (
-    save_pipeline_result, get_findings, delete_target_version_results,
+    save_pipeline_result, save_phase1_result, save_phase2_result,
+    get_findings, delete_target_version_results,
     get_character_gender_facts, upsert_character_gender_facts,
     get_episode_gender_facts,
     get_glossary_prompt_entries, upsert_glossary_extraction,
 )
+from app.core.export import assemble_final_srt
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
 
 
@@ -70,6 +72,60 @@ async def test_save_pipeline_result_persists_findings():
         # findings.segment_id도 같은 네임스페이싱된 id를 가리켜야 FK가 성립한다.
         assert rows[0].segment_id == f"{tv.id}:p1"
         assert rows[0].id == f"{tv.id}:f1"
+
+
+@pytest.mark.asyncio
+async def test_save_phase2_result_persists_register_applied_text_for_export():
+    """성별·격식 반영문은 finding이 없어도 최종 SRT의 기준문으로 남는다."""
+    async with async_session() as session:
+        title = Title(name="Test Movie", type="movie", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4")
+        session.add(episode)
+        await session.flush()
+        tv = TargetVersion(
+            episode_id=episode.id, target_language="pt", variant="BR")
+        session.add(tv)
+        await session.flush()
+
+        original_pair = AlignedPair(
+            id="p1",
+            korean=SegmentText(start=0.0, end=1.5, text="나 피곤해."),
+            target=SegmentText(start=0.0, end=1.5, text="Estou cansado."),
+        )
+        await save_phase1_result(session, tv.id, {
+            "pairs": [original_pair],
+            "segment_resolutions": [],
+            "findings": [],
+            "format_violations": [],
+        })
+        await session.flush()
+
+        register_applied_pair = AlignedPair(
+            id="p1",
+            korean=SegmentText(start=0.0, end=1.5, text="나 피곤해."),
+            target=SegmentText(start=0.0, end=1.5, text="Estou cansada."),
+        )
+        await save_phase2_result(session, tv.id, {
+            "pairs": [register_applied_pair],
+            "findings": [],
+            "format_violations": [],
+        })
+        await session.commit()
+
+        segment = await session.get(Segment, f"{tv.id}:p1")
+        srt = assemble_final_srt([{
+            "id": segment.id,
+            "start": segment.start,
+            "end": segment.end,
+            "text": segment.target_text,
+            "excluded": False,
+        }], [])
+
+        assert segment.target_text == "Estou cansada."
+        assert "Estou cansada." in srt
+        assert "Estou cansado." not in srt
 
 
 def _pipeline_result(target_version_id: str) -> dict:
@@ -283,39 +339,39 @@ async def test_save_pipeline_result_persists_finding_model():
 
 
 @pytest.mark.asyncio
-async def test_save_pipeline_result_persists_final_text_and_status_for_pretreatment_findings():
-    """회귀(important): FindingRow(...) 생성에서 final_text/reviewer_name을
-    빠뜨리면, pretreatment.py/safety_net.py가 status="approved",
-    final_text=suggested_text로 직접 구성해 넘긴 Finding이 DB에는
-    final_text=""(기본값)로 저장된다 — 검수자 판단 없이 이미 확정된 자동교정
-    결과가 검수 화면에서 빈 텍스트로 보이는 버그였다. run_pretreatment를 실제
-    CTA 패턴으로 실행해 진짜 Finding을 만들고 save_pipeline_result에 그대로
-    흘려보내 영속화된 행을 검증한다."""
-    from app.core.pretreatment import run_pretreatment
-    from app.schemas import AlignedPair, SegmentText
-
+@pytest.mark.asyncio
+async def test_save_pipeline_result_persists_final_text_for_approved_rule_findings():
+    """자동 승인된 규칙 finding의 최종 문구와 상태를 그대로 저장한다."""
     async with async_session() as session:
         title = Title(name="Movie E", type="movie", created_at=datetime.now())
         session.add(title)
         await session.flush()
         tv = await _make_target_version(session, title)
-
-        pairs = [AlignedPair(id="pair_1",
-                              target=SegmentText(start=0.0, end=1.5, text="구독 좋아요 눌러주세요"))]
-        pretreatment = run_pretreatment(pairs, [r"구독.{0,5}좋아요"], [], [], tv.id)
-        assert pretreatment.findings, "CTA 패턴이 실제로 Finding을 만들어야 이 테스트가 유효하다"
-
-        result = _result_with(findings=pretreatment.findings, pairs=pretreatment.pairs)
+        pairs = [AlignedPair(
+            id="pair_1",
+            target=SegmentText(start=0.0, end=1.5, text="target text"),
+        )]
+        finding = Finding(
+            id="finding_pair_1_rule", target_version_id=tv.id,
+            segment_id="pair_1", category="formatting",
+            description="자동 규칙 보정", original_text="target text",
+            suggested_text="fixed text", confidence=1.0,
+            source="rule", model="safety-net", status="approved",
+            final_text="fixed text",
+        )
+        result = _result_with(findings=[finding], pairs=pairs)
         await save_pipeline_result(session, tv.id, result)
         await session.commit()
 
         rows = await get_findings(session, tv.id)
         assert len(rows) == 1
         row = rows[0]
-        assert row.category == "cta"
+        assert row.category == "formatting"
         assert row.status == "approved"
-        assert row.suggested_text == "눌러주세요"
-        assert row.final_text == "눌러주세요"
+        assert row.suggested_text == "fixed text"
+        assert row.final_text == "fixed text"
+
+
 
 
 @pytest.mark.asyncio
