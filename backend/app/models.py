@@ -180,3 +180,12 @@ class GlossarySpelling(Base):
     # 뜻 — 자동 추출은 이 행이 이미 있으면 절대 덮어쓰지 않는다("최초 확정
     # 우선", 사람의 PATCH만 덮어쓸 수 있다).
     canonical: Mapped[str] = mapped_column(String)
+
+
+class GlossarySuppression(Base):
+    """사용자가 삭제해 자동 추출로 다시 만들지 않을 작품별 한국어 용어."""
+    __tablename__ = "glossary_suppressions"
+    __table_args__ = (UniqueConstraint("title_id", "korean_term"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
+    korean_term: Mapped[str] = mapped_column(String)

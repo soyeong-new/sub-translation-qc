@@ -6,7 +6,7 @@ from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion,
-    GlossaryEntry, GlossarySpelling,
+    GlossaryEntry, GlossarySpelling, GlossarySuppression,
 )
 from app.schemas import Finding
 
@@ -360,11 +360,15 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
         select(GlossaryEntry).where(GlossaryEntry.title_id == title_id)
     )).scalars().all()
     entry_by_term = {e.korean_term: e for e in existing_entries}
+    suppressed_terms = set((await session.execute(
+        select(GlossarySuppression.korean_term).where(
+            GlossarySuppression.title_id == title_id)
+    )).scalars().all())
 
     for extraction in extractions:
         term = extraction.get("korean_term")
         canonical = extraction.get("canonical")
-        if not term or not canonical:
+        if not term or not canonical or term in suppressed_terms:
             continue
         entry = entry_by_term.get(term)
         if entry is None:
@@ -390,9 +394,14 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
 
 
 async def create_glossary_entry(session: AsyncSession, title_id: str, korean_term: str,
-                                 category: str, aliases: list) -> GlossaryEntry:
+                                category: str, aliases: list) -> GlossaryEntry:
+    # 사람이 직접 다시 추가하면 이전의 자동 재등록 제외 결정을 해제한다.
+    await session.execute(delete(GlossarySuppression).where(
+        GlossarySuppression.title_id == title_id,
+        GlossarySuppression.korean_term == korean_term,
+    ))
     entry = GlossaryEntry(title_id=title_id, korean_term=korean_term,
-                           category=category, aliases=aliases)
+                          category=category, aliases=aliases)
     session.add(entry)
     await session.flush()
     return entry
@@ -439,6 +448,17 @@ async def delete_glossary_entry(session: AsyncSession, entry_id: str) -> bool:
     entry = await session.get(GlossaryEntry, entry_id)
     if entry is None:
         return False
+    existing_suppression = (await session.execute(
+        select(GlossarySuppression.id).where(
+            GlossarySuppression.title_id == entry.title_id,
+            GlossarySuppression.korean_term == entry.korean_term,
+        )
+    )).scalar_one_or_none()
+    if existing_suppression is None:
+        session.add(GlossarySuppression(
+            title_id=entry.title_id,
+            korean_term=entry.korean_term,
+        ))
     await session.execute(delete(GlossarySpelling).where(GlossarySpelling.entry_id == entry_id))
     await session.delete(entry)
     await session.flush()

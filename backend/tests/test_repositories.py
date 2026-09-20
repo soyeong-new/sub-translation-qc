@@ -3,13 +3,17 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 from app.db import async_session, engine
-from app.models import Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection
+from app.models import (
+    Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection,
+    GlossaryEntry,
+)
 from app.repositories import (
     save_pipeline_result, save_phase1_result, save_phase2_result,
     get_findings, delete_target_version_results,
     get_character_gender_facts, upsert_character_gender_facts,
     get_episode_gender_facts,
     get_glossary_prompt_entries, upsert_glossary_extraction,
+    create_glossary_entry, delete_glossary_entry,
 )
 from app.core.export import assemble_final_srt
 from app.schemas import Finding, AlignedPair, SegmentText, FormatViolation
@@ -790,6 +794,57 @@ async def test_upsert_glossary_extraction_never_overwrites_existing_spelling():
         await upsert_glossary_extraction(
             session, title_id, "es", "LATAM",
             [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyeon"}])
+        await session.commit()
+
+    async with async_session() as session:
+        entries = await get_glossary_prompt_entries(session, title_id, "es", "LATAM")
+        assert len(entries) == 1
+        assert entries[0]["canonical"] == "Kim Hyun"
+
+
+@pytest.mark.asyncio
+async def test_deleted_glossary_term_is_not_readded_by_automatic_extraction():
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        title_id = title.id
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}],
+        )
+        entry_id = (await session.execute(
+            select(GlossaryEntry.id).where(GlossaryEntry.title_id == title_id)
+        )).scalar_one()
+        await delete_glossary_entry(session, entry_id)
+        await session.commit()
+
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyeon"}],
+        )
+        await session.commit()
+
+    async with async_session() as session:
+        entries = await get_glossary_prompt_entries(session, title_id, "es", "LATAM")
+        assert entries == []
+
+
+@pytest.mark.asyncio
+async def test_manual_glossary_creation_allows_a_deleted_term_to_be_extracted_again():
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        title_id = title.id
+        entry = await create_glossary_entry(session, title_id, "김현", "person", [])
+        await delete_glossary_entry(session, entry.id)
+        await create_glossary_entry(session, title_id, "김현", "person", [])
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}],
+        )
         await session.commit()
 
     async with async_session() as session:
