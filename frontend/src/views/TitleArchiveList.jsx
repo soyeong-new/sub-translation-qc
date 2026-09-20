@@ -147,17 +147,44 @@ function Field({ id, label, children }) {
   );
 }
 
+function InlineFormCloseButton({ onClick, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label="취소"
+      title="취소"
+      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4" aria-hidden="true">
+        <path d="M5 5l10 10M15 5 5 15" strokeLinecap="round" />
+      </svg>
+    </button>
+  );
+}
+
 function AddLanguageForm({ episodes, selectedEpisodeId, onSelectEpisode, availableProfiles,
-                            selectedProfile, onSelectProfile,
-                            srtFile, onSrtSelected, progress, status, onSubmit, onCancel }) {
+                           selectedProfile, onSelectProfile,
+                           srtFile, onSrtSelected, progress, status, onSubmit, onCancel }) {
   const isSubmitting = status?.kind === "loading";
   const canSubmit = Boolean(selectedProfile && srtFile) && !isSubmitting;
 
   return (
-    <div className="mt-2 animate-fade-slide-in space-y-3 rounded-xl border border-dashed border-border bg-muted/50 p-3.5">
-      <div className="flex items-end gap-2">
+    <div className="mt-3 animate-fade-slide-in space-y-4 rounded-xl border border-border bg-muted/40 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">언어판 추가</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">기존 회차에 새로운 대상언어 자막을 추가합니다.</p>
+        </div>
+        <InlineFormCloseButton onClick={onCancel} disabled={isSubmitting} />
+      </div>
+
+      <div className={episodes.length > 1
+        ? "grid gap-3 sm:grid-cols-[6rem_minmax(0,1fr)_minmax(0,1fr)] sm:items-end"
+        : "grid gap-3 sm:grid-cols-2 sm:items-end"}>
         {episodes.length > 1 && (
-          <div className="min-w-0 shrink-0">
+          <div className="min-w-0">
             <label htmlFor="add-language-episode" className="mb-1.5 block whitespace-nowrap text-xs font-medium text-foreground">
               회차
             </label>
@@ -205,19 +232,23 @@ function AddLanguageForm({ episodes, selectedEpisodeId, onSelectEpisode, availab
             disabled={isSubmitting}
           />
         </div>
-        <button type="button" onClick={onCancel} disabled={isSubmitting} className={`shrink-0 ${rerunBtnClass}`}>
-          취소
-        </button>
       </div>
-      {status && (
-        <p role="status" aria-live="polite"
-           className={`text-xs ${status.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>
-          {status.message}
-        </p>
-      )}
-      <button type="button" onClick={onSubmit} disabled={!canSubmit} className={primarySolidBtnClass}>
-        추가 및 분석 시작
-      </button>
+
+      <div className="flex flex-col gap-3 border-t border-border/70 pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-h-4 min-w-0 flex-1">
+          {status && (
+            <p role="status" aria-live="polite"
+               className={`text-xs ${status.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>
+              {status.message}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2">
+          <button type="button" onClick={onSubmit} disabled={!canSubmit} className={primarySolidBtnClass}>
+            추가 및 분석 시작
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -300,9 +331,17 @@ function AddEpisodeForm({ titleId, languageProfiles, isMountedRef, onDone, onCan
   }
 
   return (
-    <div className="mt-3 animate-fade-slide-in space-y-2 rounded-xl border border-dashed border-border/70 bg-background/50 p-3">
-      <div className="flex items-end gap-2">
-        <div className="w-20 shrink-0">
+    <div className="mt-3 animate-fade-slide-in space-y-4 rounded-xl border border-border bg-muted/40 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">새 회차 추가</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">영상과 자막을 등록하고 새 회차 분석을 시작합니다.</p>
+        </div>
+        <InlineFormCloseButton onClick={onCancel} disabled={isSubmitting} />
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-[6rem_minmax(0,1fr)] sm:items-end">
+        <div className="min-w-0">
           <label htmlFor="add-episode-no" className="mb-1.5 block whitespace-nowrap text-xs font-medium text-foreground">
             회차
           </label>
@@ -336,11 +375,9 @@ function AddEpisodeForm({ titleId, languageProfiles, isMountedRef, onDone, onCan
             ))}
           </select>
         </div>
-        <button type="button" onClick={onCancel} disabled={isSubmitting} className={`shrink-0 ${rerunBtnClass}`}>
-          취소
-        </button>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+
+      <div className="grid gap-3 md:grid-cols-3">
         <FileDropzone
           id="add-episode-video"
           label="한국어 원본 영상"
@@ -369,15 +406,22 @@ function AddEpisodeForm({ titleId, languageProfiles, isMountedRef, onDone, onCan
           disabled={isSubmitting}
         />
       </div>
-      {status && (
-        <p role="status" aria-live="polite"
-           className={`text-xs ${status.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>
-          {status.message}
-        </p>
-      )}
-      <button type="button" onClick={handleSubmit} disabled={!canSubmit} className={primarySolidBtnClass}>
-        회차 추가 및 분석 시작
-      </button>
+
+      <div className="flex flex-col gap-3 border-t border-border/70 pt-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-h-4 min-w-0 flex-1">
+          {status && (
+            <p role="status" aria-live="polite"
+               className={`text-xs ${status.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>
+              {status.message}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center justify-end gap-2">
+          <button type="button" onClick={handleSubmit} disabled={!canSubmit} className={primarySolidBtnClass}>
+            회차 추가 및 분석 시작
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
