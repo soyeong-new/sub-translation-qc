@@ -47,6 +47,15 @@ export const updateTitleName = (titleId, name) =>
 export const updateCharacterGender = (factId, gender) =>
   request(`/character-genders/${factId}`, { method: "PATCH", body: JSON.stringify({ gender }) });
 
+export const createCharacterGender = (titleId, characterName, gender) =>
+  request(`/titles/${titleId}/character-genders`, {
+    method: "POST",
+    body: JSON.stringify({ character_name: characterName, gender }),
+  });
+
+export const deleteCharacterGender = (factId) =>
+  request(`/character-genders/${factId}`, { method: "DELETE" });
+
 export const createEpisode = (titleId, episodeNo, videoPath, koreanSrtPath = null) =>
   request(`/titles/${titleId}/episodes`, {
     method: "POST",

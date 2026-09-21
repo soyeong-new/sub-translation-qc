@@ -8,6 +8,7 @@ import {
   listTitles, deleteTitle, deleteTargetVersion, rerunAnalysis, pollTargetVersionStatus, getStorageUsage,
   listLanguageProfiles, uploadSrt, uploadSrtKo, uploadVideo, createTitle, createEpisode,
   createTargetVersion, runAnalysis, updateTitleType, updateTitleName, updateCharacterGender,
+  createCharacterGender, deleteCharacterGender,
 } from "../api.js";
 import FileDropzone from "../components/FileDropzone.jsx";
 import Disclosure from "../components/Disclosure.jsx";
@@ -676,6 +677,11 @@ export default function TitleArchiveList({ onOpen }) {
   const [addLanguageProgress, setAddLanguageProgress] = useState(null);
   const [addLanguageStatus, setAddLanguageStatus] = useState(null);
 
+  // 캐릭터 추가 폼 상태
+  const [addingCharacterTitleId, setAddingCharacterTitleId] = useState(null);
+  const [addingCharacterName, setAddingCharacterName] = useState("");
+  const [addingCharacterGender, setAddingCharacterGender] = useState("male");
+
   // 오른쪽 상세 패널에 표시할 대상 — title id | "new" | null.
   const [selection, setSelectionState] = useState(loadSelection);
   const [confirmState, setConfirmState] = useState(null); // { message, onConfirm } | null
@@ -813,6 +819,49 @@ export default function TitleArchiveList({ onOpen }) {
       refresh();
     } catch (err) {
       setError(err.message ?? "캐릭터 성별 변경 중 오류가 발생했습니다.");
+    } finally {
+      if (isMountedRef.current) setBusyId(null);
+    }
+  }
+
+  async function handleAddCharacter(titleId) {
+    const trimmed = addingCharacterName.trim();
+    if (!trimmed) {
+      setError("캐릭터 이름을 입력해주세요.");
+      return;
+    }
+    if (!addingCharacterGender) {
+      setError("성별을 선택해주세요.");
+      return;
+    }
+    
+    setBusyId(titleId);
+    setError(null);
+    try {
+      await createCharacterGender(titleId, trimmed, addingCharacterGender);
+      setAddingCharacterTitleId(null);
+      setAddingCharacterName("");
+      setAddingCharacterGender("male");
+      refresh();
+    } catch (err) {
+      if (err.message?.includes("409")) {
+        setError("이미 등록된 캐릭터입니다.");
+      } else {
+        setError(err.message ?? "캐릭터 추가 중 오류가 발생했습니다.");
+      }
+    } finally {
+      if (isMountedRef.current) setBusyId(null);
+    }
+  }
+
+  async function handleDeleteCharacter(fact) {
+    setBusyId(fact.id);
+    setError(null);
+    try {
+      await deleteCharacterGender(fact.id);
+      refresh();
+    } catch (err) {
+      setError(err.message ?? "캐릭터 삭제 중 오류가 발생했습니다.");
     } finally {
       if (isMountedRef.current) setBusyId(null);
     }
@@ -1083,27 +1132,84 @@ export default function TitleArchiveList({ onOpen }) {
                       </>
                     }
                   >
-                    <div className="flex flex-wrap gap-1.5 px-4 py-3.5">
-                      {title.character_genders.map((fact) => (
-                        <span
-                          key={fact.id}
-                          className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-foreground"
-                        >
-                          {fact.character_name}
-                          <select
-                            aria-label={`${fact.character_name} 성별`}
-                            value={fact.gender}
-                            disabled={busyId === fact.id}
-                            onChange={(e) => handleChangeCharacterGender(fact, e.target.value)}
-                            className={`rounded-full border-none px-1.5 py-0.5 text-[10px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
-                              fact.gender === "female" ? "bg-violet-500/10 text-violet-600" : "bg-primary/10 text-primary"
-                            }`}
+                    <div className="space-y-3 px-4 py-3.5">
+                      <div className="flex flex-wrap gap-1.5">
+                        {title.character_genders.map((fact) => (
+                          <span
+                            key={fact.id}
+                            className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs text-foreground group"
                           >
-                            <option value="male">M</option>
-                            <option value="female">F</option>
+                            {fact.character_name}
+                            <select
+                              aria-label={`${fact.character_name} 성별`}
+                              value={fact.gender}
+                              disabled={busyId === fact.id}
+                              onChange={(e) => handleChangeCharacterGender(fact, e.target.value)}
+                              className={`rounded-full border-none px-1.5 py-0.5 text-[10px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
+                                fact.gender === "female" ? "bg-violet-500/10 text-violet-600" : "bg-primary/10 text-primary"
+                              }`}
+                            >
+                              <option value="male">M</option>
+                              <option value="female">F</option>
+                            </select>
+                            <button
+                              aria-label={`${fact.character_name} 삭제`}
+                              onClick={() => handleDeleteCharacter(fact)}
+                              disabled={busyId === fact.id}
+                              className="ml-1 text-muted-foreground hover:text-destructive disabled:opacity-50 disabled:cursor-not-allowed text-[9px]"
+                              title="삭제"
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      
+                      {addingCharacterTitleId === title.id ? (
+                        <div className="flex gap-2 items-center pt-2 border-t">
+                          <input
+                            type="text"
+                            placeholder="캐릭터 이름"
+                            value={addingCharacterName}
+                            onChange={(e) => setAddingCharacterName(e.target.value)}
+                            disabled={busyId === title.id}
+                            className="flex-1 px-2 py-1 text-xs border rounded bg-background"
+                          />
+                          <select
+                            value={addingCharacterGender}
+                            onChange={(e) => setAddingCharacterGender(e.target.value)}
+                            disabled={busyId === title.id}
+                            className="px-2 py-1 text-xs border rounded bg-background"
+                          >
+                            <option value="male">남성</option>
+                            <option value="female">여성</option>
                           </select>
-                        </span>
-                      ))}
+                          <button
+                            onClick={() => handleAddCharacter(title.id)}
+                            disabled={busyId === title.id || !addingCharacterName.trim()}
+                            className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            저장
+                          </button>
+                          <button
+                            onClick={() => {
+                              setAddingCharacterTitleId(null);
+                              setAddingCharacterName("");
+                              setAddingCharacterGender("male");
+                            }}
+                            className="px-2 py-1 text-xs border rounded hover:bg-muted"
+                          >
+                            취소
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setAddingCharacterTitleId(title.id)}
+                          className="text-xs text-muted-foreground hover:text-foreground px-2 py-1"
+                        >
+                          + 캐릭터 추가
+                        </button>
+                      )}
                     </div>
                   </Disclosure>
                 </div>
