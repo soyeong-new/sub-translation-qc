@@ -1166,41 +1166,47 @@ export default function TitleArchiveList({ onOpen }) {
                       </div>
                       
                       {addingCharacterTitleId === title.id ? (
-                        <div className="flex gap-2 items-center pt-2 border-t">
-                          <input
-                            type="text"
-                            placeholder="캐릭터 이름"
-                            value={addingCharacterName}
-                            onChange={(e) => setAddingCharacterName(e.target.value)}
-                            disabled={busyId === title.id}
-                            className="flex-1 px-2 py-1 text-xs border rounded bg-background"
-                          />
-                          <select
-                            value={addingCharacterGender}
-                            onChange={(e) => setAddingCharacterGender(e.target.value)}
-                            disabled={busyId === title.id}
-                            className="px-2 py-1 text-xs border rounded bg-background"
-                          >
-                            <option value="male">남성</option>
-                            <option value="female">여성</option>
-                          </select>
-                          <button
-                            onClick={() => handleAddCharacter(title.id)}
-                            disabled={busyId === title.id || !addingCharacterName.trim()}
-                            className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            저장
-                          </button>
-                          <button
-                            onClick={() => {
-                              setAddingCharacterTitleId(null);
-                              setAddingCharacterName("");
-                              setAddingCharacterGender("male");
-                            }}
-                            className="px-2 py-1 text-xs border rounded hover:bg-muted"
-                          >
-                            취소
-                          </button>
+                        <div className="space-y-2 pt-2 border-t">
+                          <div className="flex gap-2 items-center">
+                            <input
+                              type="text"
+                              placeholder="캐릭터 이름"
+                              value={addingCharacterName}
+                              onChange={(e) => setAddingCharacterName(e.target.value)}
+                              disabled={busyId === title.id}
+                              className="flex-1 px-2 py-1 text-xs border rounded bg-background"
+                            />
+                            <select
+                              value={addingCharacterGender}
+                              onChange={(e) => setAddingCharacterGender(e.target.value)}
+                              disabled={busyId === title.id}
+                              className="px-2 py-1 text-xs border rounded bg-background"
+                            >
+                              <option value="male">남성</option>
+                              <option value="female">여성</option>
+                            </select>
+                            <button
+                              onClick={() => handleAddCharacter(title.id)}
+                              disabled={busyId === title.id || !addingCharacterName.trim()}
+                              className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              저장
+                            </button>
+                            <button
+                              onClick={() => {
+                                setAddingCharacterTitleId(null);
+                                setAddingCharacterName("");
+                                setAddingCharacterGender("male");
+                                setError(null);
+                              }}
+                              className="px-2 py-1 text-xs border rounded hover:bg-muted"
+                            >
+                              취소
+                            </button>
+                          </div>
+                          {error && addingCharacterTitleId === title.id && (
+                            <p className="text-xs text-destructive">{error}</p>
+                          )}
                         </div>
                       ) : (
                         <button
