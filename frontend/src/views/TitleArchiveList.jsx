@@ -681,6 +681,7 @@ export default function TitleArchiveList({ onOpen }) {
   const [addingCharacterTitleId, setAddingCharacterTitleId] = useState(null);
   const [addingCharacterName, setAddingCharacterName] = useState("");
   const [addingCharacterGender, setAddingCharacterGender] = useState("male");
+  const [addingCharacterError, setAddingCharacterError] = useState(null);
 
   // 오른쪽 상세 패널에 표시할 대상 — title id | "new" | null.
   const [selection, setSelectionState] = useState(loadSelection);
@@ -827,16 +828,16 @@ export default function TitleArchiveList({ onOpen }) {
   async function handleAddCharacter(titleId) {
     const trimmed = addingCharacterName.trim();
     if (!trimmed) {
-      setError("캐릭터 이름을 입력해주세요.");
+      setAddingCharacterError("캐릭터 이름을 입력해주세요.");
       return;
     }
     if (!addingCharacterGender) {
-      setError("성별을 선택해주세요.");
+      setAddingCharacterError("성별을 선택해주세요.");
       return;
     }
     
     setBusyId(titleId);
-    setError(null);
+    setAddingCharacterError(null);
     try {
       await createCharacterGender(titleId, trimmed, addingCharacterGender);
       setAddingCharacterTitleId(null);
@@ -845,9 +846,9 @@ export default function TitleArchiveList({ onOpen }) {
       refresh();
     } catch (err) {
       if (err.message?.includes("409")) {
-        setError("이미 등록된 캐릭터입니다.");
+        setAddingCharacterError("이미 등록된 캐릭터입니다.");
       } else {
-        setError(err.message ?? "캐릭터 추가 중 오류가 발생했습니다.");
+        setAddingCharacterError(err.message ?? "캐릭터 추가 중 오류가 발생했습니다.");
       }
     } finally {
       if (isMountedRef.current) setBusyId(null);
@@ -1197,15 +1198,15 @@ export default function TitleArchiveList({ onOpen }) {
                                 setAddingCharacterTitleId(null);
                                 setAddingCharacterName("");
                                 setAddingCharacterGender("male");
-                                setError(null);
+                                setAddingCharacterError(null);
                               }}
                               className="px-2 py-1 text-xs border rounded hover:bg-muted"
                             >
                               취소
                             </button>
                           </div>
-                          {error && addingCharacterTitleId === title.id && (
-                            <p className="text-xs text-destructive">{error}</p>
+                          {addingCharacterError && (
+                            <p className="text-xs text-destructive">{addingCharacterError}</p>
                           )}
                         </div>
                       ) : (
