@@ -293,8 +293,8 @@ async def delete_title(title_id: str):
     """title을 소프트 삭제한다(deleted_at만 세팅) — episode/target_version/
     segment/finding/SttCorrection 등 교정 이력은 DB에 그대로 남긴다(나중에
     QC 이력 재활용 용도로 쓰기 위해). 목록 조회(list_titles)에서만 안 보이게
-    걸러진다. 용량만 차지하는 원본/프록시 영상 파일은 디스크에서 실제로
-    지운다."""
+    걸러진다. 용량만 차지하는 원본/프록시 영상 파일과 SRT 파일은 디스크에서 
+    실제로 지운다."""
     async with async_session() as session:
         title = await session.get(Title, title_id)
         if title is None or title.deleted_at is not None:
@@ -310,12 +310,17 @@ async def delete_title(title_id: str):
                 files_to_delete.append(ep.video_path)
             if ep.video_proxy_path:
                 files_to_delete.append(ep.video_proxy_path)
+            if ep.korean_srt_path:
+                files_to_delete.append(ep.korean_srt_path)
 
         if episode_ids:
             tvs = (await session.execute(
                 select(TargetVersion).where(TargetVersion.episode_id.in_(episode_ids))
             )).scalars().all()
             files_to_delete += [tv.video_proxy_path for tv in tvs if tv.video_proxy_path]
+            # 각 target_version의 SRT 파일도 수집
+            # target_srt_path는 실제로는 repository에서 생성될 때 지정되지 않으므로
+            # finding_rows의 저장된 srt는 export 시 동적으로 생성되기 때문에 별도 파일이 없음
 
         title.deleted_at = datetime.now(timezone.utc)
         await session.commit()
