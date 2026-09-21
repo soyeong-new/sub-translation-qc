@@ -44,6 +44,11 @@ class CharacterGenderUpdateIn(BaseModel):
     gender: str
 
 
+class CharacterGenderCreateIn(BaseModel):
+    character_name: str
+    gender: str
+
+
 GlossaryCategory = Literal["person", "place", "business", "title"]
 
 
@@ -213,6 +218,53 @@ async def update_character_gender(fact_id: str, payload: CharacterGenderUpdateIn
         fact.gender = payload.gender
         await session.commit()
         return {"id": fact.id, "character_name": fact.character_name, "gender": fact.gender}
+
+
+@router.post("/titles/{title_id}/character-genders")
+async def create_character_gender(title_id: str, payload: CharacterGenderCreateIn):
+    """사용자가 직접 캐릭터와 성별을 추가한다. 작품 단위로 저장되어 다른 회차/언어판에서 재사용된다."""
+    if payload.gender not in ("male", "female"):
+        raise HTTPException(400, "gender는 male 또는 female이어야 합니다")
+    if not payload.character_name.strip():
+        raise HTTPException(400, "캐릭터 이름은 비워둘 수 없습니다")
+    
+    async with async_session() as session:
+        title = await session.get(Title, title_id)
+        if title is None:
+            raise HTTPException(404, "title not found")
+        
+        # 같은 작품에서 같은 이름의 캐릭터가 이미 있는지 확인
+        existing = (await session.execute(
+            select(CharacterGenderFact).where(
+                CharacterGenderFact.title_id == title_id,
+                CharacterGenderFact.character_name == payload.character_name.strip()
+            )
+        )).scalar_one_or_none()
+        
+        if existing is not None:
+            raise HTTPException(409, "이미 등록된 캐릭터입니다")
+        
+        new_fact = CharacterGenderFact(
+            title_id=title_id,
+            character_name=payload.character_name.strip(),
+            gender=payload.gender
+        )
+        session.add(new_fact)
+        await session.commit()
+        await session.refresh(new_fact)
+        return {"id": new_fact.id, "character_name": new_fact.character_name, "gender": new_fact.gender}
+
+
+@router.delete("/character-genders/{fact_id}")
+async def delete_character_gender(fact_id: str):
+    """사용자가 추가한 캐릭터 성별을 삭제한다."""
+    async with async_session() as session:
+        fact = await session.get(CharacterGenderFact, fact_id)
+        if fact is None:
+            raise HTTPException(404, "character gender fact not found")
+        await session.delete(fact)
+        await session.commit()
+        return {"deleted": True}
 
 
 @router.get("/titles/{title_id}/glossary")
