@@ -99,6 +99,7 @@ class CorrectSttIn(BaseModel):
 
 class EditTargetTextIn(BaseModel):
     target_text: str
+    reviewer_name: str = ""
 
 
 @router.get("/target-versions/{target_version_id}/findings")
@@ -580,6 +581,17 @@ async def edit_target_text(segment_id: str, payload: EditTargetTextIn):
         seg = await session.get(Segment, segment_id)
         if seg is None:
             raise HTTPException(404, "segment not found")
+        findings = await get_findings_for_segment(session, segment_id)
+        if any(f.status == "pending" for f in findings):
+            raise HTTPException(409, "처리되지 않은 Finding이 있어 전체 자막에서 수정할 수 없습니다.")
+
         seg.target_text = payload.target_text
+        now = datetime.now(timezone.utc)
+        for finding in findings:
+            if finding.status in ("approved", "modified"):
+                finding.status = "modified"
+                finding.final_text = payload.target_text
+                finding.reviewer_name = payload.reviewer_name
+                finding.reviewed_at = now
         await session.commit()
         return {"id": seg.id, "target_text": seg.target_text}

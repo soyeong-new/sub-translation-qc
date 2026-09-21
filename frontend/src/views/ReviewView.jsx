@@ -842,7 +842,7 @@ function PairedFindingCard({
 // 현재 줄은 진하게, 멀어질수록 흐리게(아이폰 타이머 다이얼과 비슷한 느낌).
 function SrtSyncPanel({
   videoSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
-  controllingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+  pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
   boundaryClearedRef,
 }) {
   const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
@@ -959,7 +959,7 @@ function SrtSyncPanel({
           const distance = activeIndex === -1 ? 99 : Math.abs(i - activeIndex);
           const opacityClass =
             distance === 0 ? "opacity-100" : distance <= 2 ? "opacity-80" : distance <= 5 ? "opacity-50" : "opacity-25";
-          const canEdit = !controllingSegmentIds.has(seg.id);
+          const canEdit = !pendingFindingSegmentIds.has(seg.id);
           const displayText = resolvedTextBySegment[seg.id] ?? seg.target_text ?? "";
           const pending = srtPendingId === seg.id;
 
@@ -1025,7 +1025,7 @@ function SrtSyncPanel({
 
 function VideoPreviewPanel({
   videoProxyUrl, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
-  controllingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+  pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
   boundaryClearedRef,
 }) {
   if (!videoProxyUrl) {
@@ -1057,7 +1057,7 @@ function VideoPreviewPanel({
           previewSegment={previewSegment}
           previewTick={previewTick}
           onSeekSegment={onSeekSegment}
-          controllingSegmentIds={controllingSegmentIds}
+          pendingFindingSegmentIds={pendingFindingSegmentIds}
           resolvedTextBySegment={resolvedTextBySegment}
           srtPendingId={srtPendingId}
           srtErrors={srtErrors}
@@ -1436,10 +1436,11 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     setSrtErrors((prev) => ({ ...prev, [segmentId]: null }));
     setSrtPendingId(segmentId);
     try {
-      const result = await editTargetText(segmentId, newText);
+      const result = await editTargetText(segmentId, newText, reviewerName);
       setSegments((prev) =>
         prev.map((s) => (s.id === segmentId ? { ...s, target_text: result.target_text } : s))
       );
+      setFindings(await getFindings(targetVersionId));
     } catch (err) {
       setSrtErrors((prev) => ({
         ...prev,
@@ -1579,8 +1580,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // segment.target_text로 폴백하므로 직접 수정이 그대로 반영되지만, pending/
   // approved/modified finding이 있는 줄은 그 finding의 final_text가 최종
   // 텍스트를 결정하므로 여기서 target_text를 고쳐도 export에 반영되지 않는다.
-  const controllingSegmentIds = new Set(
-    (findings ?? []).filter((f) => f.status !== "rejected").map((f) => f.segment_id)
+  // Only unresolved Finding cards keep their subtitle rows read-only.
+  const pendingFindingSegmentIds = new Set(
+    (findings ?? []).filter((f) => f.status === "pending").map((f) => f.segment_id)
   );
 
   // 전체 자막 패널에 finding이 이미 반영된 최종 텍스트를 보여주기 위한
@@ -1810,7 +1812,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               previewSegment={previewSegment}
               previewTick={previewTick}
               onSeekSegment={previewFindingSegment}
-              controllingSegmentIds={controllingSegmentIds}
+              pendingFindingSegmentIds={pendingFindingSegmentIds}
               resolvedTextBySegment={resolvedTargetTextBySegment}
               srtPendingId={srtPendingId}
               srtErrors={srtErrors}

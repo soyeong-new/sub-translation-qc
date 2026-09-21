@@ -141,10 +141,10 @@ export const correctStt = (segmentId, correctedText, reviewerName) =>
     body: JSON.stringify({ corrected_text: correctedText, reviewer_name: reviewerName }),
   });
 
-export const editTargetText = (segmentId, targetText) =>
+export const editTargetText = (segmentId, targetText, reviewerName) =>
   request(`/segments/${segmentId}/edit-target-text`, {
     method: "POST",
-    body: JSON.stringify({ target_text: targetText }),
+    body: JSON.stringify({ target_text: targetText, reviewer_name: reviewerName }),
   });
 
 export const exportTargetVersion = (targetVersionId) =>
