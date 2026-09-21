@@ -1,5 +1,6 @@
 """작품(Title) 등록, 에피소드 등록, 목록 조회/삭제 엔드포인트."""
 
+import logging
 import shutil
 from datetime import datetime, timezone
 from typing import Literal
@@ -17,6 +18,8 @@ from app.core.ingest import delete_original_video
 from app.core.uploads import MEDIA_ROOT
 from app.language_profiles.loader import list_profiles
 from app.repositories import create_glossary_entry, update_glossary_entry, delete_glossary_entry
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -317,7 +320,26 @@ async def delete_title(title_id: str):
         title.deleted_at = datetime.now(timezone.utc)
         await session.commit()
 
+    # 각 파일 삭제 결과를 추적한다
+    deleted_count = 0
+    failed_files = []
+    
     for path in files_to_delete:
-        delete_original_video(path)  # missing_ok unlink — 재사용
+        success = delete_original_video(path)
+        if success:
+            deleted_count += 1
+        else:
+            failed_files.append(path)
+    
+    # 삭제 실패 파일이 있으면 로깅
+    if failed_files:
+        logger.warning(
+            "title 삭제 시 %d개 파일 삭제 실패 (title_id=%s): %s",
+            len(failed_files), title_id, failed_files
+        )
 
-    return {"deleted": True}
+    return {
+        "deleted": True,
+        "files_deleted": deleted_count,
+        "files_failed": len(failed_files),
+    }

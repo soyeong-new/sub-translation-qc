@@ -138,15 +138,13 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
         # (필요한 원본 영상이 이미 없으므로).
         #
         # 이 삭제 자체는 별도로 감싼다 — 이미 상태가 커밋까지 끝난 뒤라,
-        # 여기서 예외(예: 권한 문제로 unlink가 FileNotFoundError 아닌
-        # OSError를 던지는 경우)가 바깥 except로 새어나가 _mark_failed를
+        # 여기서 예외가 바깥 except로 새어나가 _mark_failed를
         # 호출하면 이미 성공한 S1 결과를 "실패"로 덮어써버리게 된다.
-        try:
-            delete_original_video(episode.video_path)
-        except Exception:
-            logger.exception(
-                "원본 영상 삭제 실패, S1 결과는 이미 저장됨 (target_version_id=%s)",
-                target_version_id,
+        success = delete_original_video(episode.video_path)
+        if not success:
+            logger.warning(
+                "원본 영상 삭제 실패, S1 결과는 이미 저장됨 (target_version_id=%s, video_path=%s)",
+                target_version_id, episode.video_path,
             )
 
         if not needs_confirmation:

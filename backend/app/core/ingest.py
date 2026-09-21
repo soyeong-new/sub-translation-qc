@@ -107,10 +107,25 @@ def generate_video_proxy(video_path: str, out_dir: Optional[str] = None) -> str:
     return out
 
 
-def delete_original_video(video_path: str) -> None:
+def delete_original_video(video_path: str) -> bool:
     """프록시 생성 후 원본을 지운다. 스토리지 한도 안에서 여러 작품을 처리하려면
-    필수 동작이다. 파일이 이미 없어도(중복 호출 등) 에러 없이 넘어간다."""
-    Path(video_path).unlink(missing_ok=True)
+    필수 동작이다. 파일이 이미 없어도(중복 호출 등) 에러 없이 넘어간다.
+    
+    Returns:
+        bool: 삭제 성공 여부. 파일이 없었던 경우도 True를 반환한다.
+              예외가 발생한 경우에만 False를 반환한다.
+    """
+    try:
+        path = Path(video_path)
+        if path.exists():
+            path.unlink()
+            return True
+        else:
+            # 파일이 이미 없음 (정상, 중복 호출 또는 이전에 삭제됨)
+            return True
+    except Exception as e:
+        # 권한 문제, I/O 에러 등으로 삭제 실패
+        return False
 
 
 def split_audio_into_chunks(wav_path: str, chunk_seconds: float = 600.0,
