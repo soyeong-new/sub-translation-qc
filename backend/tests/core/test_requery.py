@@ -5,6 +5,7 @@ from app.core.requery import (
     RequeryNotSupportedError, RequeryNoResultError,
 )
 from app.models import FindingRow, Segment
+from app.providers.live import LiveModelProvider
 from app.providers.mock import MockProvider
 
 
@@ -31,6 +32,37 @@ class _StubProvider:
                             "corrected_text": "hola verificado", "description": "재질문 반영",
                             "back_translation": "안녕 확인됨"}])
         self.shrink_line = AsyncMock(return_value="hola corto")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["claude", "gpt"])
+async def test_requery_live_provider_passes_instruction_without_argument_collision(model):
+    provider = LiveModelProvider(
+        claude_api_key="fake", claude_model="claude-test",
+        gpt_api_key="fake", gpt_model="gpt-test",
+    )
+    response = [{
+        "segment_id": "seg1", "category": "mistranslation",
+        "corrected_text": "hola verificado", "description": "재질문 반영",
+        "back_translation": "안녕 확인됨",
+    }]
+    provider._claude.correct_primary = AsyncMock(return_value=response)
+    provider._gpt.verify_and_refine = AsyncMock(return_value=response)
+
+    corrected, back_translation = await requery_finding(
+        _finding(model), _segment(), "더 정확하게", provider,
+        "지식", {"language": "es", "variant": "LATAM"},
+    )
+
+    assert corrected == "hola verificado"
+    assert back_translation == "안녕 확인됨"
+    called = provider._claude.correct_primary if model == "claude" else provider._gpt.verify_and_refine
+    assert called.await_args.args[:4] == (
+        [{"id": "seg1", "korean_text": "안녕", "target_text": "hola corregido"}],
+        {"language": "es", "variant": "LATAM"}, "지식",
+        "줄당 50자 이내, 세그먼트당 최대 2줄을 지켜서 제안할 것.",
+    )
+    assert called.await_args.args[4] == "더 정확하게"
 
 
 @pytest.mark.asyncio

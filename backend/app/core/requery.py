@@ -47,12 +47,12 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
 
     if finding.model == "claude":
         results = await provider.correct_primary(
-            item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
+            item, profile, knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
             glossary_entries=glossary_entries,
         )
     elif finding.model in ("gpt", "claude+gpt"):
         results = await provider.verify_and_refine(
-            item, profile, [], knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
+            item, profile, knowledge, _FORMAT_CONSTRAINT, extra_instruction=extra_instruction,
             glossary_entries=glossary_entries,
         )
     elif finding.model == "안전망":
