@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from statistics import median
 from typing import Optional
@@ -11,6 +12,7 @@ from app.core.ingest import load_srt, extract_audio, generate_video_proxy, split
 from app.core.stt_srt_matching import match_stt_words_to_korean_srt, merge_words_by_korean_cue
 from app.core.alignment import align, align_by_korean_cue, detect_global_offset
 from app.core.embedding_dp_alignment import align_by_embedding_dp, _clean_text_for_embedding
+from app.core.alignment_review import review_ambiguous_alignment
 
 from app.core.format_rules import (
     check_line_length, check_ellipsis, fix_ellipsis, MAX_LINE_CHARS, MAX_LINES,
@@ -1580,6 +1582,9 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
         korean_raw = [{"start": c.start, "end": c.end, "text": c.text} for c in korean_cues]
         pairs = await align_by_embedding_dp(
             korean_cues, target_segments, provider, korean_raw_cues=raw_cues)
+        if os.getenv("ALIGNMENT_CONTEXT_REVIEW", "0").lower() in ("1", "true", "yes"):
+            pairs = await review_ambiguous_alignment(
+                korean_cues, target_segments, pairs, provider, warnings=warnings)
 
     elif cached_korean_segments is not None and cached_video_proxy_path is not None:
         # Episode 단위 캐시 재사용 (한국어 SRT가 없는 STT 전용 경로)

@@ -91,3 +91,7 @@ class LiveModelProvider(ModelProvider):
 
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         return await self._gpt.get_embeddings(texts)
+
+    async def realign_subtitles(self, korean: List[dict], target: List[dict],
+                                baseline: List[dict]) -> List[dict]:
+        return await self._gpt.realign_subtitles(korean, target, baseline)

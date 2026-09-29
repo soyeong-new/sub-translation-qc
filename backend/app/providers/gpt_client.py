@@ -788,3 +788,23 @@ class GptClient:
             model=model,
         )
         return [item.embedding for item in response.data]
+
+    async def realign_subtitles(self, korean: List[dict], target: List[dict],
+                                baseline: List[dict]) -> List[dict]:
+        """Use dialogue context to reassign existing cue IDs in one suspect window."""
+        system = (
+            "Align Korean source subtitles with translated subtitle cues. "
+            "Return only a mapping of existing cue IDs. Do not translate, rewrite or correct text. "
+            "Use meaning and surrounding dialogue to identify equivalent utterances. "
+            "Timestamps are helpful but can locally drift. Do not merge unrelated utterances "
+            "simply because their times overlap. Preserve order on each side. Allow 1:many, "
+            "many:1 and many:many when needed for equivalent content. Include every input ID "
+            "exactly once; if a cue has no counterpart, use an empty list for the other side. "
+            "A complete question and the following reply can refer to different source cues. "
+            "Do not assume the baseline mapping is correct. Mark uncertain correspondences "
+            "confidence=uncertain. Return JSON {\"groups\":[{\"k_ids\":[int],\"t_ids\":[int],"
+            "\"confidence\":\"confident\" or \"uncertain\",\"reason\":\"short Korean explanation\"}]}"
+        )
+        user = json.dumps({"korean": korean, "target": target, "baseline": baseline},
+                          ensure_ascii=False)
+        return await self._call(system, user, key="groups", label="자막 정렬 재검토", seed=42)

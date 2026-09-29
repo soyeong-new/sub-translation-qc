@@ -805,6 +805,86 @@ async def test_pipeline_uses_embedding_dp_when_korean_srt_path_given(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pipeline_calls_context_alignment_review_when_enabled(tmp_path, monkeypatch):
+    srt_path = tmp_path / "target.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:02,000\nBonjour.\n", encoding="utf-8")
+    ko_path = tmp_path / "ko.srt"
+    ko_path.write_text("1\n00:00:00,000 --> 00:00:02,000\n안녕.\n", encoding="utf-8")
+    monkeypatch.setenv("ALIGNMENT_CONTEXT_REVIEW", "1")
+    called = []
+
+    async def spy(korean, target, pairs, provider, *, warnings):
+        called.append((korean, target, pairs))
+        return pairs
+
+    monkeypatch.setattr("app.core.pipeline.review_ambiguous_alignment", spy, raising=False)
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), patch(
+        "app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"
+    ):
+        await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="fr", variant="FR", target_version_id="tv-review",
+            provider=MockProvider(), korean_srt_path=str(ko_path),
+        )
+    assert len(called) == 1
+    assert called[0][0][0].text == "안녕."
+
+
+@pytest.mark.asyncio
+async def test_reviewed_alignment_reaches_ai_verification_with_correct_korean(tmp_path, monkeypatch):
+    from app.schemas import AlignedPair, SegmentText
+
+    srt_path = tmp_path / "fr.srt"
+    srt_path.write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\nQu'est-ce qui ne va pas ?\n\n"
+        "2\n00:00:01,000 --> 00:00:02,000\nIl est gentil et sérieux.\n",
+        encoding="utf-8",
+    )
+    ko_path = tmp_path / "ko.srt"
+    ko_path.write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\n우리가 뭐 어때서?\n\n"
+        "2\n00:00:02,000 --> 00:00:04,000\n착하고 성실하대\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALIGNMENT_CONTEXT_REVIEW", "1")
+
+    async def bad_dp(korean, target, provider, **kwargs):
+        return [AlignedPair(
+            id="pair_1", korean=korean[0],
+            target=SegmentText(start=0, end=2,
+                               text="Qu'est-ce qui ne va pas ? Il est gentil et sérieux."),
+        ), AlignedPair(id="pair_2", korean=korean[1], target=None)]
+
+    monkeypatch.setattr("app.core.pipeline.align_by_embedding_dp", bad_dp)
+
+    class ReviewingProvider(MockProvider):
+        def __init__(self):
+            self.verified = []
+
+        async def realign_subtitles(self, korean, target, baseline):
+            return [{"k_ids": [0], "t_ids": [0]}, {"k_ids": [1], "t_ids": [1]}]
+
+        async def verify_and_refine(self, pairs, *args, **kwargs):
+            self.verified.extend(pairs)
+            return []
+
+    provider = ReviewingProvider()
+    with patch("app.core.pipeline.extract_audio", return_value="/fake/audio.wav"), patch(
+        "app.core.pipeline.generate_video_proxy", return_value="/fake/proxy.mp4"
+    ):
+        result = await run_pipeline(
+            video_path="/fake/video.mp4", target_srt_path=str(srt_path),
+            language="fr", variant="FR", target_version_id="tv-reviewed",
+            provider=provider, korean_srt_path=str(ko_path),
+        )
+
+    assert any(p["korean_text"] == "착하고 성실하대"
+               and "gentil" in p["target_text"] for p in provider.verified)
+    assert any(p.korean.text == "착하고 성실하대" and "gentil" in p.target.text
+               for p in result["pairs"])
+
+
+@pytest.mark.asyncio
 async def test_pipeline_drops_pure_stage_direction_korean_cue(tmp_path):
     """회귀: 한국어 SRT 큐가 지문/효과음뿐이라 정제 후 대사가 하나도 안
     남으면(예: "[침을 퉤퉤 뱉는다] [웃음]"), 브라켓 원본을 그대로 되살려

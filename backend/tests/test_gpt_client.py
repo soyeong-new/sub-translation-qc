@@ -22,6 +22,22 @@ def _make_client_with_fake_sdk(response_text) -> GptClient:
 
 
 @pytest.mark.asyncio
+async def test_realign_subtitles_requests_cue_mapping_only():
+    groups = [{"k_ids": [0], "t_ids": [0], "confidence": "confident", "reason": "질문"}]
+    client = _make_client_with_fake_sdk(json.dumps({"groups": groups}))
+    actual = await client.realign_subtitles(
+        [{"id": 0, "start": 1, "end": 2, "text": "어때서?"}],
+        [{"id": 0, "start": 1, "end": 2, "text": "Pourquoi?"}],
+        [{"k_ids": [0], "t_ids": [0]}],
+    )
+    assert actual == groups
+    kwargs = client._sdk_client.chat.completions.create.call_args.kwargs
+    assert kwargs["model"] == "gpt-test"
+    assert "어때서?" in kwargs["messages"][1]["content"]
+    assert "do not" in kwargs["messages"][0]["content"].lower()
+
+
+@pytest.mark.asyncio
 async def test_verify_and_refine_sends_korean_and_target_text():
     payload = {"findings": [{"segment_id": "p1", "category": "mistranslation",
                               "corrected_text": "texto final", "description": "정확성 보완"}]}

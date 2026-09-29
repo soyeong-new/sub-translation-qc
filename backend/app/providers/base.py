@@ -378,6 +378,11 @@ class ModelProvider(ABC):
     @abstractmethod
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """문장 리스트를 받아서 OpenAI text-embedding-3-small 기반 다국어 임베딩 벡터 목록을 반환한다."""
+
+    async def realign_subtitles(self, korean: List[dict], target: List[dict],
+                                baseline: List[dict]) -> List[dict]:
+        """Context review hook; providers without a reviewer preserve the baseline."""
+        return baseline
         ...
 
     @abstractmethod
