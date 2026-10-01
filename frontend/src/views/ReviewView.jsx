@@ -1,6 +1,6 @@
 // findings 승인/거부/수정, 인물/관계 확인, STT 수정, export를 담당하는 검수 화면.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { runTour, autoRunTour } from "../tour.js";
 import {
   getFindings,
@@ -146,6 +146,20 @@ const primaryBtnClass = `${btnBase} bg-primary text-primary-foreground hover:bg-
 // 본 사람에게도 바뀐 안내가 다시 한 번 뜨게 하기 위해서다.
 const TOUR_KEY = "review-v1";
 
+// 전체 투어 내용을 다시 바꾸지 않고, 새로 추가된 기능 하나만 기존 사용자에게
+// 알리고 싶을 때 쓰는 "NEW" 뱃지용 미니 투어 — 전체 투어(TOUR_KEY)를 이미 본
+// 사용자에게만 자동으로 한 번 뜨고, 신규 사용자는 전체 투어 안에 이미 분할
+// 기능 설명이 포함돼 있어서(③ 전체 자막 스텝) 따로 또 안 보여준다.
+const SPLIT_FEATURE_KEY = "feature-split-v1";
+const SPLIT_FEATURE_STEP = {
+  element: '[data-tour="split-button"]',
+  popover: {
+    title: "자막 분할",
+    description: "대사가 길어서 타임코드를 벗어날 때 '분할' 버튼으로 둘로 나눌 수 있어요.",
+    popoverClass: "tour-popover-feature",
+  },
+};
+
 function buildReviewTourSteps(hasFindings) {
   const steps = [
     {
@@ -167,7 +181,7 @@ function buildReviewTourSteps(hasFindings) {
       popover: {
         title: "③ 전체 자막",
         description:
-          "타임코드나 텍스트를 클릭하면 그 자리에서 바로 고칠 수 있고, 수정한 내용이 최종 자막에 그대로 반영돼요. 한 줄에 두 사람 대사가 섞여 있으면, 그 줄을 선택했을 때 오른쪽 위에 뜨는 '분할' 버튼으로 둘로 나눌 수 있어요.",
+          "타임코드나 텍스트를 클릭하면 그 자리에서 바로 고칠 수 있고, 수정한 내용이 최종 자막에 그대로 반영돼요. 대사가 길어서 타임코드를 벗어날 때는 그 줄을 선택했을 때 오른쪽 위에 뜨는 '분할' 버튼으로 둘로 나눌 수 있어요.",
       },
     },
     {
@@ -195,7 +209,7 @@ function buildReviewTourSteps(hasFindings) {
             <div><b>승인</b> — AI 제안을 그대로 반영해요</div>
             <div><b>거부</b> — 제안을 무시하고 원문 번역을 그대로 둬요</div>
             <div><b>수정</b> — 제안 문구를 직접 고쳐서 반영해요</div>
-            <div><b>다시 질문</b> — AI에게 추가 설명을 주고 새로운 제안을 다시 받아요(일부 항목에서만 보여요)</div>
+            <div><b>다시 질문</b> — AI에게 추가 설명을 주고 새로운 제안을 다시 받아요</div>
           </div>
         `,
       },
@@ -938,14 +952,22 @@ function PairedFindingCard({
 // 겹쳐 같은 문장이 중복으로 들어간 경우, finding 카드 하나만 봐서는 그
 // 앞뒤 줄과의 관계를 알아채기 어려워 앞뒤 줄까지 항상 같이 보이게 한다.
 // 현재 줄은 진하게, 멀어질수록 흐리게(아이폰 타이머 다이얼과 비슷한 느낌).
-function SrtSyncPanel({
+const SrtSyncPanel = forwardRef(function SrtSyncPanel({
   videoSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
   srtTimingErrors, onSaveSrtTiming, onSplitSegment,
-  boundaryClearedRef,
-}) {
+  boundaryClearedRef, showSplitBadge, onDismissSplitBadge,
+}, ref) {
   const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
   const [activeId, setActiveId] = useState(null);
+  // 분할 버튼은 "선택된" 줄에서만 렌더링된다. NEW 기능 투어가 그 버튼을
+  // 실제로 짚을 수 있도록, 투어 시작 직전에 외부(ReviewView)에서 첫 줄을
+  // 강제로 선택시킬 수 있게 메서드를 열어둔다.
+  useImperativeHandle(ref, () => ({
+    selectFirstSegment: () => {
+      if (sorted.length > 0) setActiveId(sorted[0].id);
+    },
+  }));
   const rowRefs = useRef({});
   const listRef = useRef(null);
   // 형식이 잘못된 타임코드 입력(서버에 보내지도 않고 그 자리에서 되돌리는
@@ -1055,7 +1077,18 @@ function SrtSyncPanel({
         </div>
       </div>
       <div data-tour="subtitle-list" className="mt-3 rounded-xl border border-border bg-card p-3 shadow-sm">
-        <p className="mb-1.5 text-xs font-medium text-muted-foreground">전체 자막</p>
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <p className="text-xs font-medium text-muted-foreground">전체 자막</p>
+          {showSplitBadge && (
+            <button
+              type="button"
+              onClick={onDismissSplitBadge}
+              className="rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground"
+            >
+              NEW
+            </button>
+          )}
+        </div>
         <ul ref={listRef} className="max-h-80 space-y-1 overflow-y-auto p-1">
         {sorted.map((seg, i) => {
           const distance = activeIndex === -1 ? 99 : Math.abs(i - activeIndex);
@@ -1109,6 +1142,7 @@ function SrtSyncPanel({
               {canEdit && distance === 0 && (
                 <button
                   type="button"
+                  data-tour="split-button"
                   disabled={pending}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1175,14 +1209,14 @@ function SrtSyncPanel({
       </div>
     </>
   );
-}
+});
 
-function VideoPreviewPanel({
+const VideoPreviewPanel = forwardRef(function VideoPreviewPanel({
   videoProxyUrl, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
   srtTimingErrors, onSaveSrtTiming, onSplitSegment,
-  boundaryClearedRef,
-}) {
+  boundaryClearedRef, showSplitBadge, onDismissSplitBadge,
+}, ref) {
   if (!videoProxyUrl) {
     return (
       <aside>
@@ -1205,6 +1239,7 @@ function VideoPreviewPanel({
     <aside className="space-y-3">
       {segments && segments.length > 0 ? (
         <SrtSyncPanel
+          ref={ref}
           videoSlot={video}
           segments={segments}
           videoRef={videoRef}
@@ -1221,13 +1256,15 @@ function VideoPreviewPanel({
           onSaveSrtTiming={onSaveSrtTiming}
           onSplitSegment={onSplitSegment}
           boundaryClearedRef={boundaryClearedRef}
+          showSplitBadge={showSplitBadge}
+          onDismissSplitBadge={onDismissSplitBadge}
         />
       ) : (
         <div className="rounded-xl border border-border bg-card p-3 shadow-sm">{video}</div>
       )}
     </aside>
   );
-}
+});
 
 export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [findings, setFindings] = useState(null); // null = 로딩 중
@@ -1336,6 +1373,22 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [excludePendingId, setExcludePendingId] = useState(null);
   const [excludeErrors, setExcludeErrors] = useState({});
 
+  const [showSplitBadge, setShowSplitBadge] = useState(
+    () =>
+      Boolean(localStorage.getItem(`qc_tour_seen:${TOUR_KEY}`)) &&
+      !localStorage.getItem(`qc_tour_seen:${SPLIT_FEATURE_KEY}`)
+  );
+  // 분할 버튼은 선택된 줄에만 렌더링되므로, 이 미니 투어가 실제 버튼을
+  // 짚을 수 있도록 첫 줄을 강제로 선택시킨 뒤(버튼이 DOM에 나타난 뒤) 투어를 띄운다.
+  const srtPanelRef = useRef(null);
+
+  function dismissSplitBadge() {
+    srtPanelRef.current?.selectFirstSegment();
+    runTour([SPLIT_FEATURE_STEP]);
+    localStorage.setItem(`qc_tour_seen:${SPLIT_FEATURE_KEY}`, "1");
+    setShowSplitBadge(false);
+  }
+
   function startTour() {
     runTour(buildReviewTourSteps(findings && findings.length > 0));
   }
@@ -1343,9 +1396,21 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 이 브라우저(컴퓨터)에서 처음 들어온 경우에만 한 번 자동으로 띄운다.
   // 투어가 가리키는 요소들이 실제로 그려진 뒤에 시작해야 하므로 findings/segments
   // 로딩이 끝난 뒤에만 실행한다.
+  const autoTourTriggeredRef = useRef(false);
   useEffect(() => {
     if (findings === null || segments === null) return;
+    // StrictMode(개발 모드)는 effect를 두 번 실행한다 — ref 없이 두면 두 번째
+    // 실행이 "전체 투어를 이미 봤다"고(첫 실행이 막 세팅한 값을) 잘못 읽어
+    // 분할 기능 미니 투어가 전체 투어와 동시에 뜨는 레이스 컨디션이 생긴다.
+    if (autoTourTriggeredRef.current) return;
+    autoTourTriggeredRef.current = true;
+    const sawFullTourBefore = Boolean(localStorage.getItem(`qc_tour_seen:${TOUR_KEY}`));
     autoRunTour(TOUR_KEY, buildReviewTourSteps(findings.length > 0));
+    if (sawFullTourBefore) {
+      srtPanelRef.current?.selectFirstSegment();
+      autoRunTour(SPLIT_FEATURE_KEY, [SPLIT_FEATURE_STEP]);
+      setShowSplitBadge(false);
+    }
   }, [findings, segments]);
 
   useEffect(() => {
@@ -2028,6 +2093,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(280px,30%)_1fr]">
           <div className="space-y-3 md:sticky md:top-6 md:self-start">
             <VideoPreviewPanel
+              ref={srtPanelRef}
               videoProxyUrl={videoProxyUrl}
               videoRef={previewVideoRef}
               segments={segments}
@@ -2044,6 +2110,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               onSaveSrtTiming={handleSaveSrtTiming}
               onSplitSegment={handleSplitSegment}
               boundaryClearedRef={boundaryClearedRef}
+              showSplitBadge={showSplitBadge}
+              onDismissSplitBadge={dismissSplitBadge}
             />
 
             <div data-tour="export-button" className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">

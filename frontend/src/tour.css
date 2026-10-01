@@ -70,3 +70,38 @@
 .driver-popover-arrow-side-bottom {
   border-top-color: hsl(var(--card));
 }
+
+/* "NEW" 기능 안내 미니 투어 — 일반 온보딩 투어 팝오버와 한눈에 구분되도록
+   강조 테두리 + 타이틀 앞 NEW 칩을 붙인다. */
+.tour-popover-feature {
+  border: 1px solid hsl(var(--primary));
+  box-shadow: 0 4px 16px hsl(var(--primary) / 0.25);
+}
+
+/* 대상이 작은 버튼이라 화살표 삼각형이 카드의 둥근 모서리와 겹쳐 보이는
+   문제가 있어, 이 미니 투어는 화살표 없이 스포트라이트만으로 보여준다. */
+.tour-popover-feature .driver-popover-arrow {
+  display: none;
+}
+
+.tour-popover-feature .driver-popover-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.tour-popover-feature .driver-popover-title::before {
+  content: "NEW";
+  display: inline-block;
+  padding: 2px 7px;
+  margin-right: 2px;
+  border-radius: 999px;
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  transform: translateY(-2px);
+}
