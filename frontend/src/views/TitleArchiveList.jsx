@@ -13,6 +13,90 @@ import {
 import FileDropzone from "../components/FileDropzone.jsx";
 import Disclosure from "../components/Disclosure.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
+import { autoRunTour } from "../tour.js";
+
+const TITLE_LIST_TOUR_KEY = "title-list-v1";
+export const TITLE_LIST_TOUR_STEPS = [
+  {
+    element: '[data-tour="new-title-button"]',
+    popover: {
+      title: "① 새 작품 등록",
+      description: "영상·자막 파일을 올려 새 작품을 등록해요.",
+    },
+  },
+  {
+    element: '[data-tour="title-list"]',
+    popover: {
+      title: "② 작품 목록",
+      description: "등록된 작품들이에요. 클릭하면 오른쪽에 상세(회차, 언어판, 캐릭터, 용어집)가 나와요.",
+    },
+  },
+  {
+    element: '[data-tour="status-legend"]',
+    popover: {
+      title: "③ 상태 표시",
+      description: `
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-success"></span>
+            검토가능 — 바로 검수할 수 있어요
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-warning"></span>
+            확인필요 — 성별·격식 확인이 먼저 필요해요
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-muted-foreground/50"></span>
+            분석중 — 아직 분석이 진행 중이에요
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="inline-block h-2 w-2 shrink-0 rounded-full bg-destructive"></span>
+            실패 — 분석이 실패해 재분석이 필요해요
+          </div>
+        </div>
+      `,
+    },
+  },
+  {
+    element: '[data-tour="character-genders"]',
+    popover: {
+      title: "④ 캐릭터 성별",
+      description:
+        "자동 인식된 캐릭터 이름과 성별이에요. 성별을 바로 고치거나 삭제할 수 있고, '+ 캐릭터 추가'로 직접 추가할 수도 있어요. 번역 검수 시 호칭·어미를 판단하는 기준이 돼요.",
+    },
+  },
+  {
+    element: '[data-tour="glossary-section"]',
+    popover: {
+      title: "⑤ 용어집",
+      description: "인명·고유명사 등 번역 일관성이 필요한 용어들이에요. 펼쳐서 언어별 표기를 확인하거나 직접 수정할 수 있어요.",
+    },
+  },
+  {
+    element: '[data-tour="add-buttons"]',
+    popover: {
+      title: "⑥ 언어/회차 추가",
+      description: `
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div><b>+ 언어 추가</b> — 기존 회차에 새 번역 언어판을 더할 때 사용해요</div>
+          <div><b>+ 회차 추가</b> — 새 에피소드를 통째로 등록할 때 사용해요</div>
+        </div>
+      `,
+    },
+  },
+  {
+    element: '[data-tour="version-actions"]',
+    popover: {
+      title: "⑦ 열기 / 재분석",
+      description: `
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div><b>열기</b> — 해당 언어판의 검수 화면으로 들어가요</div>
+          <div><b>재분석</b> — 분석이 실패했거나 자막·캐릭터 정보를 바꾼 뒤 처음부터 다시 돌릴 때 사용해요</div>
+        </div>
+      `,
+    },
+  },
+];
 
 const SRT_EXTENSIONS = [".srt"];
 const VIDEO_EXTENSIONS = [".mp4", ".mov", ".mkv", ".avi"];
@@ -667,6 +751,12 @@ export default function TitleArchiveList({ onOpen }) {
   const [storage, setStorage] = useState(null); // { used, total } bytes
   const [languageProfiles, setLanguageProfiles] = useState([]);
 
+  // 이 브라우저(컴퓨터)에서 처음 들어온 경우에만 한 번 자동으로 안내 투어를 띄운다.
+  useEffect(() => {
+    if (titles === null) return;
+    autoRunTour(TITLE_LIST_TOUR_KEY, TITLE_LIST_TOUR_STEPS);
+  }, [titles]);
+
   // "회차 추가" 폼은 한 번에 하나의 title에서만 연다.
   const [addEpisodeTitleId, setAddEpisodeTitleId] = useState(null);
 
@@ -968,7 +1058,7 @@ export default function TitleArchiveList({ onOpen }) {
     <div className="flex min-h-0 w-full flex-1 gap-4">
       {/* 왼쪽: title 목록 */}
       <div className="flex w-72 shrink-0 flex-col gap-3 rounded-xl border border-border bg-card p-3">
-        <button type="button" onClick={() => setSelection("new")} className={newTitleBtnClass}>
+        <button data-tour="new-title-button" type="button" onClick={() => setSelection("new")} className={newTitleBtnClass}>
           <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
             <path d="M10 4a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 10 4Z" />
           </svg>
@@ -995,7 +1085,7 @@ export default function TitleArchiveList({ onOpen }) {
           <p role="status" aria-live="polite" className="text-sm text-destructive">{error}</p>
         )}
 
-        <ul className="flex-1 space-y-1 overflow-y-auto">
+        <ul data-tour="title-list" className="flex-1 space-y-1 overflow-y-auto">
           {filteredTitles.map((title) => {
             const isSelected = selection === title.id;
             return (
@@ -1114,7 +1204,10 @@ export default function TitleArchiveList({ onOpen }) {
                     <option value="series">드라마</option>
                   </select>
                 </div>
-                <div className="flex shrink-0 items-center gap-3 whitespace-nowrap rounded-full bg-muted px-3 py-1.5 text-[11px] leading-none text-muted-foreground">
+                <div
+                  data-tour="status-legend"
+                  className="flex shrink-0 items-center gap-3 whitespace-nowrap rounded-full bg-muted px-3 py-1.5 text-[11px] leading-none text-muted-foreground"
+                >
                   {STATUS_LEGEND.map(({ key, dot }) => (
                     <span key={key} title={STATUS_LABELS[key]} className="inline-flex items-center gap-1.5">
                       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
@@ -1125,7 +1218,7 @@ export default function TitleArchiveList({ onOpen }) {
               </div>
 
               {title.character_genders?.length > 0 && (
-                <div className="mb-3 overflow-hidden rounded-xl border border-border">
+                <div data-tour="character-genders" className="mb-3 overflow-hidden rounded-xl border border-border">
                   <Disclosure
                     summary={
                       <>
@@ -1222,7 +1315,7 @@ export default function TitleArchiveList({ onOpen }) {
                 </div>
               )}
 
-              <div className="mb-6 overflow-hidden rounded-xl border border-border">
+              <div data-tour="glossary-section" className="mb-6 overflow-hidden rounded-xl border border-border">
                 <Disclosure
                   summary={
                     <>
@@ -1242,7 +1335,7 @@ export default function TitleArchiveList({ onOpen }) {
               </div>
 
               <div className="mb-5">
-                <div className="flex flex-wrap gap-2">
+                <div data-tour="add-buttons" className="flex flex-wrap gap-2">
                   {languageProfiles.length > 0 && addLanguageEpisodeId === null && (
                     <button
                       className={addLangBtnClass}
@@ -1326,12 +1419,14 @@ export default function TitleArchiveList({ onOpen }) {
                                 {tv.reviewers.join(", ")}
                               </span>
                             )}
-                            <button disabled={busyId === tv.id} onClick={() => handleOpen(tv, title.id)} className={`ml-auto ${openBtnClass}`}>
-                              열기
-                            </button>
-                            <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
-                              재분석
-                            </button>
+                            <span data-tour="version-actions" className="ml-auto flex items-center gap-2">
+                              <button disabled={busyId === tv.id} onClick={() => handleOpen(tv, title.id)} className={openBtnClass}>
+                                열기
+                              </button>
+                              <button disabled={busyId === tv.id} onClick={() => handleRerun(tv)} className={rerunBtnClass}>
+                                재분석
+                              </button>
+                            </span>
                             <button
                               disabled={busyId === tv.id}
                               onClick={() => handleDeleteVersion(tv)}

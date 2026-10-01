@@ -1,6 +1,7 @@
 // findings 승인/거부/수정, 인물/관계 확인, STT 수정, export를 담당하는 검수 화면.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { runTour, autoRunTour } from "../tour.js";
 import {
   getFindings,
   submitReviewAction,
@@ -14,6 +15,8 @@ import {
   getTargetVersion,
   correctStt,
   editTargetText,
+  editSegmentTiming,
+  splitSegment,
   resolveGender,
   resolveGenderGroup,
   excludeSegment,
@@ -43,6 +46,15 @@ function formatSrtTimestamp(seconds) {
   const s = Math.floor((totalMs % 60000) / 1000);
   const ms = totalMs % 1000;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+// formatSrtTimestamp의 역변환. "HH:MM:SS,mmm" 형식이 아니면 null(잘못된 입력을
+// 조용히 저장하지 않고 에러로 알리기 위해 Number.NaN 대신 명시적으로 구분한다).
+function parseSrtTimestamp(text) {
+  const match = /^(\d{1,2}):(\d{2}):(\d{2}),(\d{3})$/.exec(text.trim());
+  if (!match) return null;
+  const [, h, m, s, ms] = match;
+  return Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000;
 }
 
 // glossary_mismatch 경고의 matched_text(등록 표기 대신 실제로 쓰인 표기)를
@@ -129,6 +141,89 @@ const rejectBtnClass = `${btnBase} border border-destructive/40 bg-destructive/1
 const modifyBtnClass = `${btnBase} border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground`;
 const ghostBtnClass = `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
 const primaryBtnClass = `${btnBase} bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2`;
+
+// 투어 내용을 바꿀 때는 이 키의 버전을 올린다("review-v2" 등) — 이미 한 번
+// 본 사람에게도 바뀐 안내가 다시 한 번 뜨게 하기 위해서다.
+const TOUR_KEY = "review-v1";
+
+function buildReviewTourSteps(hasFindings) {
+  const steps = [
+    {
+      element: '[data-tour="reviewer-name"]',
+      popover: {
+        title: "① 검수자 이름 입력",
+        description: "승인·거부·수정 작업을 하려면 이름을 먼저 입력해야 해요. 같은 작품 안에서는 한 번만 입력하면 계속 유지돼요.",
+      },
+    },
+    {
+      element: '[data-tour="video-card"]',
+      popover: {
+        title: "② 영상",
+        description: "전체 자막 목록에서 줄을 클릭하면 그 장면으로 영상이 이동해요.",
+      },
+    },
+    {
+      element: '[data-tour="subtitle-list"]',
+      popover: {
+        title: "③ 전체 자막",
+        description:
+          "타임코드나 텍스트를 클릭하면 그 자리에서 바로 고칠 수 있고, 수정한 내용이 최종 자막에 그대로 반영돼요. 한 줄에 두 사람 대사가 섞여 있으면, 그 줄을 선택했을 때 오른쪽 위에 뜨는 '분할' 버튼으로 둘로 나눌 수 있어요.",
+      },
+    },
+    {
+      element: '[data-tour="glossary-tab"]',
+      popover: {
+        title: "④ 용어집",
+        description: "인명·고유명사 등 번역 일관성이 필요한 용어들이에요. 열어서 언어별 표기를 확인하거나 직접 수정할 수 있어요.",
+      },
+    },
+    {
+      element: '[data-tour="findings-section"]',
+      popover: {
+        title: "⑤ Findings 목록",
+        description: "번역 중 AI가 확인이 필요하다고 표시한 부분이 여기 나열돼요. 위 탭으로 대기중/승인/거부/수정 등 상태별로 걸러 볼 수 있어요.",
+      },
+    },
+  ];
+  if (hasFindings) {
+    steps.push({
+      element: '[data-tour="finding-actions"]',
+      popover: {
+        title: "⑥ 항목 처리하기",
+        description: `
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div><b>승인</b> — AI 제안을 그대로 반영해요</div>
+            <div><b>거부</b> — 제안을 무시하고 원문 번역을 그대로 둬요</div>
+            <div><b>수정</b> — 제안 문구를 직접 고쳐서 반영해요</div>
+            <div><b>다시 질문</b> — AI에게 추가 설명을 주고 새로운 제안을 다시 받아요(일부 항목에서만 보여요)</div>
+          </div>
+        `,
+      },
+    });
+    steps.push({
+      element: '[data-tour="stt-edit-button"]',
+      popover: {
+        title: "⑦ 한국어 수정",
+        description: "음성인식(STT)이 원문을 잘못 알아들은 경우, 한국어 원문을 직접 고치고 재검증을 다시 실행할 수 있어요.",
+      },
+    });
+    steps.push({
+      element: '[data-tour="reject-both-button"]',
+      popover: {
+        title: "⑧ 원본 유지",
+        description: "Claude와 GPT의 제안이 서로 다를 때(이견 카드) 보이는 버튼이에요. 둘 다 원본보다 별로면, 각각 거부하지 않고 한 번에 원본 번역을 그대로 유지할 수 있어요.",
+      },
+    });
+  }
+  steps.push({
+    element: '[data-tour="export-button"]',
+    popover: {
+      title: hasFindings ? "⑨ 내보내기" : "⑥ 내보내기",
+      description: "모든 항목을 처리했으면 여기서 최종 자막(SRT) 파일을 내보낼 수 있어요. 지금까지 고친 내용이 전부 반영된 상태로 나가요.",
+    },
+  });
+  return steps;
+}
 
 function Spinner() {
   return (
@@ -374,6 +469,7 @@ function FindingCard({
                 오타 자체는 안 고쳐지고 계속 남는다. */}
             {segment && !sttEditing && (
               <button
+                data-tour="stt-edit-button"
                 disabled={!reviewerName.trim()}
                 onClick={onStartSttEdit}
                 className="text-xs font-medium text-primary transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
@@ -464,7 +560,7 @@ function FindingCard({
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div data-tour="finding-actions" className="mt-3 flex flex-wrap items-center gap-2">
         <button disabled={!canAct} onClick={onApprove} className={approveBtnClass}>
           {pending === "approved" && <Spinner />}
           승인
@@ -749,6 +845,7 @@ function PairedFindingCard({
             </p>
             {segment && !sttEditing && (
               <button
+                data-tour="stt-edit-button"
                 disabled={!reviewerName.trim()}
                 onClick={onStartSttEdit}
                 className="text-xs font-medium text-primary transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
@@ -807,6 +904,7 @@ function PairedFindingCard({
           {/* 둘 다 원본보다 못한 제안일 때 — 개별 카드를 하나씩 거부하지
               않아도 여기서 한 번에 원본을 유지할 수 있게 한다. */}
           <button
+            data-tour="reject-both-button"
             disabled={!reviewerName.trim() || pendingActions[a.id] != null || pendingActions[b.id] != null}
             onClick={onRejectBoth}
             className={`${modifyBtnClass} px-2.5 py-1 text-xs`}
@@ -843,12 +941,16 @@ function PairedFindingCard({
 function SrtSyncPanel({
   videoSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+  srtTimingErrors, onSaveSrtTiming, onSplitSegment,
   boundaryClearedRef,
 }) {
   const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
   const [activeId, setActiveId] = useState(null);
   const rowRefs = useRef({});
   const listRef = useRef(null);
+  // 형식이 잘못된 타임코드 입력(서버에 보내지도 않고 그 자리에서 되돌리는
+  // 경우)은 서버 에러(srtTimingErrors)와 별개로 즉시 보여줘야 하므로 로컬로 둔다.
+  const [localTimingErrors, setLocalTimingErrors] = useState({});
 
   useEffect(() => {
     const video = videoRef.current;
@@ -930,7 +1032,7 @@ function SrtSyncPanel({
 
   return (
     <>
-      <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
+      <div data-tour="video-card" className="rounded-xl border border-border bg-card p-3 shadow-sm">
         {videoSlot}
         <div className="mt-2 flex items-center justify-between gap-2">
           <button
@@ -952,7 +1054,7 @@ function SrtSyncPanel({
           </button>
         </div>
       </div>
-      <div className="mt-3 rounded-xl border border-border bg-card p-3 shadow-sm">
+      <div data-tour="subtitle-list" className="mt-3 rounded-xl border border-border bg-card p-3 shadow-sm">
         <p className="mb-1.5 text-xs font-medium text-muted-foreground">전체 자막</p>
         <ul ref={listRef} className="max-h-80 space-y-1 overflow-y-auto p-1">
         {sorted.map((seg, i) => {
@@ -973,6 +1075,26 @@ function SrtSyncPanel({
             if (value !== displayText) onSaveSrtEdit(seg.id, value);
           }
 
+          const timingText = `${formatSrtTimestamp(seg.start)} --> ${formatSrtTimestamp(seg.end)}`;
+
+          function handleTimingBlur(e) {
+            const value = e.target.value;
+            if (value === timingText) return;
+            const [startText, endText] = value.split("-->");
+            const start = startText ? parseSrtTimestamp(startText) : null;
+            const end = endText ? parseSrtTimestamp(endText) : null;
+            if (start === null || end === null || end <= start) {
+              setLocalTimingErrors((prev) => ({
+                ...prev,
+                [seg.id]: "형식이 올바르지 않습니다 (00:00:00,000 --> 00:00:00,000, 종료 > 시작)",
+              }));
+              e.target.value = timingText;
+              return;
+            }
+            setLocalTimingErrors((prev) => ({ ...prev, [seg.id]: null }));
+            onSaveSrtTiming(seg.id, start, end);
+          }
+
           return (
             <li
               key={seg.id}
@@ -980,19 +1102,51 @@ function SrtSyncPanel({
                 rowRefs.current[seg.id] = node;
               }}
               onClick={handleRowClick}
-              className={`cursor-pointer rounded-lg px-2 py-1.5 transition-opacity ${opacityClass} ${
+              className={`relative cursor-pointer rounded-lg px-2 py-1.5 transition-opacity ${opacityClass} ${
                 distance === 0 ? "bg-primary/10 ring-1 ring-primary" : ""
               }`}
             >
-              <div className="font-mono text-[11px] text-muted-foreground">
-                {`${formatSrtTimestamp(seg.start)} --> ${formatSrtTimestamp(seg.end)}`}
-              </div>
+              {canEdit && distance === 0 && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSplitSegment(seg.id, displayText);
+                  }}
+                  className="absolute right-1 top-1 z-10 rounded-lg bg-card px-2 py-1 text-[10px] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground disabled:opacity-50"
+                >
+                  분할
+                </button>
+              )}
+              {canEdit ? (
+                <div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      key={`${seg.id}:timing:${timingText}`}
+                      type="text"
+                      defaultValue={timingText}
+                      disabled={pending}
+                      onBlur={handleTimingBlur}
+                      onClick={(e) => e.stopPropagation()}
+                      className="block w-full rounded-lg border border-transparent bg-transparent p-0 font-mono text-[11px] text-muted-foreground focus:border-input focus:bg-background disabled:opacity-50"
+                    />
+                  </div>
+                  {(localTimingErrors[seg.id] || srtTimingErrors[seg.id]) && (
+                    <p className="text-xs text-destructive">
+                      {localTimingErrors[seg.id] || srtTimingErrors[seg.id]}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="font-mono text-[11px] text-muted-foreground">{timingText}</div>
+              )}
               {canEdit ? (
                 <div>
                   <textarea
                     key={`${seg.id}:${displayText}`}
                     defaultValue={displayText}
-                    rows={distance === 0 ? 4 : 2}
+                    rows={Math.max(displayText.split("\n").length, 1)}
                     disabled={pending}
                     onBlur={handleBlur}
                     className={`block w-full resize-none rounded-lg border border-transparent bg-transparent p-0 text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50 ${
@@ -1026,6 +1180,7 @@ function SrtSyncPanel({
 function VideoPreviewPanel({
   videoProxyUrl, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
+  srtTimingErrors, onSaveSrtTiming, onSplitSegment,
   boundaryClearedRef,
 }) {
   if (!videoProxyUrl) {
@@ -1062,6 +1217,9 @@ function VideoPreviewPanel({
           srtPendingId={srtPendingId}
           srtErrors={srtErrors}
           onSaveSrtEdit={onSaveSrtEdit}
+          srtTimingErrors={srtTimingErrors}
+          onSaveSrtTiming={onSaveSrtTiming}
+          onSplitSegment={onSplitSegment}
           boundaryClearedRef={boundaryClearedRef}
         />
       ) : (
@@ -1101,6 +1259,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 편집 가능, blur 시 저장), 여기서는 저장 중/에러 상태만 추적한다.
   const [srtPendingId, setSrtPendingId] = useState(null);
   const [srtErrors, setSrtErrors] = useState({});
+  const [srtTimingErrors, setSrtTimingErrors] = useState({});
   // STT 재검증이 성별 확인이 필요한 새 제안문구를 만들어놓고 사람 답을
   // 기다리는 경우, finding 카드 안에서 바로 답하기 위한 state — segment.id
   // 기준이라 sttPendingId/sttErrors와 같은 패턴이다.
@@ -1176,6 +1335,18 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [segments, setSegments] = useState(null);
   const [excludePendingId, setExcludePendingId] = useState(null);
   const [excludeErrors, setExcludeErrors] = useState({});
+
+  function startTour() {
+    runTour(buildReviewTourSteps(findings && findings.length > 0));
+  }
+
+  // 이 브라우저(컴퓨터)에서 처음 들어온 경우에만 한 번 자동으로 띄운다.
+  // 투어가 가리키는 요소들이 실제로 그려진 뒤에 시작해야 하므로 findings/segments
+  // 로딩이 끝난 뒤에만 실행한다.
+  useEffect(() => {
+    if (findings === null || segments === null) return;
+    autoRunTour(TOUR_KEY, buildReviewTourSteps(findings.length > 0));
+  }, [findings, segments]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1451,6 +1622,47 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     }
   }
 
+  // 정렬(자동/AI)이 틀어진 큐를 검수자가 시간으로 직접 고친다 — edit-target-text와
+  // 마찬가지로 별도 승인 절차 없이 바로 최종 export에 반영된다(seg.start/end를
+  // assemble_final_srt가 그대로 읽는다).
+  async function handleSaveSrtTiming(segmentId, start, end) {
+    setSrtTimingErrors((prev) => ({ ...prev, [segmentId]: null }));
+    setSrtPendingId(segmentId);
+    try {
+      const result = await editSegmentTiming(segmentId, start, end, reviewerName);
+      setSegments((prev) =>
+        prev.map((s) => (s.id === segmentId ? { ...s, start: result.start, end: result.end } : s))
+      );
+    } catch (err) {
+      setSrtTimingErrors((prev) => ({
+        ...prev,
+        [segmentId]: err.message ?? "시간 수정 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setSrtPendingId(null);
+    }
+  }
+
+  // 한 큐에 여러 화자 대사가 뭉쳐 있을 때 중간 지점에서 둘로 쪼갠다. 새로
+  // 생긴 줄도 바로 timing/text 편집 UI로 다듬을 수 있도록 segments에 추가한다.
+  async function handleSplitSegment(segmentId, displayText) {
+    setSrtPendingId(segmentId);
+    try {
+      const { original, new: newSeg } = await splitSegment(segmentId, displayText);
+      setSegments((prev) => [
+        ...prev.map((s) => (s.id === original.id ? { ...s, start: original.start, end: original.end } : s)),
+        newSeg,
+      ]);
+    } catch (err) {
+      setSrtTimingErrors((prev) => ({
+        ...prev,
+        [segmentId]: err.message ?? "분할 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setSrtPendingId(null);
+    }
+  }
+
   // 세그먼트의 성별을 답하면(단일 인물), 백엔드가 그 세그먼트의 pending
   // finding 제안문구도 이미 반영해뒀으므로 segments/findings를 모두
   // 다시 불러온다 — 카드의 "제안" 텍스트가 즉시 갱신되게.
@@ -1642,9 +1854,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-card/90 px-6 backdrop-blur">
+        <QQLogo className="h-5 w-auto shrink-0" />
         <div className="mx-auto flex w-full max-w-6xl items-center gap-4">
           <div className="flex shrink-0 items-center gap-3">
-            <QQLogo className="h-5 w-auto" />
             <button
               onClick={onBack}
               className="flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
@@ -1699,7 +1911,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
 
           <div className="h-6 w-px shrink-0 bg-border" />
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div data-tour="reviewer-name" className="flex shrink-0 items-center gap-2">
             <label htmlFor="reviewer-name" className="text-sm font-medium text-foreground">
               검수자
             </label>
@@ -1713,6 +1925,16 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           </div>
         </div>
       </header>
+
+      <div className="px-6 pt-1.5">
+        <button
+          type="button"
+          onClick={startTour}
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          튜토리얼 보기
+        </button>
+      </div>
 
       {pipelineWarnings.length > 0 && (
         <div className="mx-auto max-w-6xl px-6 pt-4">
@@ -1749,6 +1971,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           {!showGlossary && (
             <button
               type="button"
+              data-tour="glossary-tab"
               onClick={() => setShowGlossary(true)}
               className="fixed right-0 top-1/2 z-30 -translate-y-1/2 rounded-l-lg border border-r-0 border-border bg-card px-2 py-3 text-xs font-semibold text-foreground shadow-md transition-colors hover:bg-accent"
               style={{ writingMode: "vertical-rl" }}
@@ -1817,10 +2040,13 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               srtPendingId={srtPendingId}
               srtErrors={srtErrors}
               onSaveSrtEdit={handleSaveSrtEdit}
+              srtTimingErrors={srtTimingErrors}
+              onSaveSrtTiming={handleSaveSrtTiming}
+              onSplitSegment={handleSplitSegment}
               boundaryClearedRef={boundaryClearedRef}
             />
 
-            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
+            <div data-tour="export-button" className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
               <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
                 {isExporting && <Spinner />}
                 내보내기
@@ -1981,7 +2207,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               );
             })()}
 
-            <section aria-labelledby="findings-heading" className="relative">
+            <section data-tour="findings-section" aria-labelledby="findings-heading" className="relative">
               {exportStatus.kind === "checked" && (
                 <div
                   className="absolute inset-0 z-10 rounded-xl bg-background/70 backdrop-blur-sm"

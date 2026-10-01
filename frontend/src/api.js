@@ -156,6 +156,18 @@ export const editTargetText = (segmentId, targetText, reviewerName) =>
     body: JSON.stringify({ target_text: targetText, reviewer_name: reviewerName }),
   });
 
+export const editSegmentTiming = (segmentId, start, end, reviewerName) =>
+  request(`/segments/${segmentId}/edit-timing`, {
+    method: "POST",
+    body: JSON.stringify({ start, end, reviewer_name: reviewerName }),
+  });
+
+export const splitSegment = (segmentId, targetText) =>
+  request(`/segments/${segmentId}/split`, {
+    method: "POST",
+    body: JSON.stringify({ target_text: targetText }),
+  });
+
 export const exportTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export`);
 

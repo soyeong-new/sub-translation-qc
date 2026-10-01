@@ -9,6 +9,53 @@
 import { useEffect, useRef, useState } from "react";
 import QQLogo from "../components/QQLogo.jsx";
 import { btnBase } from "../utils/buttonStyles.js";
+import { runTour, autoRunTour } from "../tour.js";
+
+const CONFIRM_TOUR_KEY = "confirm-v1";
+const CONFIRM_TOUR_STEPS = [
+  {
+    element: '[data-tour="stepper-question-card"]',
+    popover: {
+      title: "① 성별·격식 확인",
+      description: "원문만으로는 성별이나 존댓말 여부를 판단할 수 없는 줄만 여기서 물어봐요. 영상을 보고 알맞은 걸 선택하면 번역에 바로 반영돼요.",
+    },
+  },
+  {
+    element: '[data-tour="stepper-gender-section"]',
+    popover: {
+      title: "② 성별",
+      description: `
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div>영상 속 화자/대상의 성별에 맞는 걸 선택해요.</div>
+          <div><b>남성</b> — 남녀가 섞인 무리를 가리킬 때도 남성을 선택해요</div>
+          <div><b>여성</b></div>
+          <div><b>사람 아님(해당 없음)</b> — 사람이 아니라 사물·상황을 가리키는 단어일 때 선택해요</div>
+        </div>
+      `,
+    },
+  },
+  {
+    element: '[data-tour="stepper-formality-section"]',
+    popover: {
+      title: "③ 격식",
+      description: "화자가 실제로 쓴 말투에 맞게 존댓말/반말 중 하나를 선택해요.",
+    },
+  },
+  {
+    element: '[data-tour="stepper-progress"]',
+    popover: {
+      title: "④ 진행 상황",
+      description: "지금 몇 번째 줄까지 확인했는지 보여줘요. 한 번에 한 줄씩, 답하면 자동으로 다음 줄로 넘어가요.",
+    },
+  },
+  {
+    element: '[data-tour="stepper-complete-button"]',
+    popover: {
+      title: "⑤ AI 검증 시작하기",
+      description: "모든 줄에 답을 선택하면 눌러서 AI 검증을 시작해요.",
+    },
+  },
+];
 
 // 자막 타이밍이 실제 발화와 살짝 안 맞거나 씬이 잘리는 경우가 있어,
 // 재생 구간 앞뒤로 여유를 준다. 뒤쪽이 실제로 더 많이 어긋나는 경우가
@@ -146,6 +193,12 @@ export default function FlaggedSegmentStepper({
   const currentSegment = segments[currentIndex] ?? null;
   const unresolvedCount = segments.filter((s) => !isSegmentResolved(s)).length;
   const allResolved = unresolvedCount === 0;
+
+  // 이 화면은 확인할 줄이 있을 때만 그려지므로(없으면 부모가 건너뜀), 마운트
+  // 시 한 번만 이 브라우저(컴퓨터) 기준으로 안내 투어를 띄운다.
+  useEffect(() => {
+    autoRunTour(CONFIRM_TOUR_KEY, CONFIRM_TOUR_STEPS);
+  }, []);
 
   // 줄이 바뀔 때마다 그 줄의 구간으로 seek하고 재생하며, 구간 끝에 도달하면
   // 멈춘다(반복재생 아님 — 필요하면 검수자가 <video controls>로 직접 다시
@@ -312,9 +365,9 @@ export default function FlaggedSegmentStepper({
           미확인 줄이 남아 있는 동안 사라지지 않고 비활성 상태로 자리를
           지켜, 헤더 폭이 들썩이지 않게 한다. */}
       <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-card/90 px-6 backdrop-blur">
+        <QQLogo className="h-5 w-auto shrink-0" />
         <div className="mx-auto flex w-full max-w-6xl items-center gap-4">
           <div className="flex shrink-0 items-center gap-3">
-            <QQLogo className="h-5 w-auto" />
             {onExit && (
               <button
                 onClick={onExit}
@@ -350,7 +403,7 @@ export default function FlaggedSegmentStepper({
 
           <div className="h-6 w-px shrink-0 bg-border" />
 
-          <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          <div data-tour="stepper-progress" className="hidden shrink-0 items-center gap-2 sm:flex">
             <span className="whitespace-nowrap text-xs text-muted-foreground">확인 중인 줄</span>
             <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted">
               <div
@@ -366,6 +419,7 @@ export default function FlaggedSegmentStepper({
           <div className="h-6 w-px shrink-0 bg-border" />
 
           <button
+            data-tour="stepper-complete-button"
             disabled={!allResolved || completePending}
             onClick={onComplete}
             className={`${primaryBtnClass} shrink-0`}
@@ -374,6 +428,16 @@ export default function FlaggedSegmentStepper({
           </button>
         </div>
       </header>
+
+      <div className="px-6 pt-1.5">
+        <button
+          type="button"
+          onClick={() => runTour(CONFIRM_TOUR_STEPS)}
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          튜토리얼 보기
+        </button>
+      </div>
 
       <main className="mx-auto max-w-6xl px-6 py-8">
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(300px,38%)_1fr]">
@@ -403,6 +467,7 @@ export default function FlaggedSegmentStepper({
                 방식이 더 맞다. 성별/격식 섹션은 색이 아니라 회색 톤
                 진하기로 구분한다(미확인 쪽이 더 짙다). */}
             <div
+              data-tour="stepper-question-card"
               onClick={replayCurrentSegment}
               className="cursor-pointer rounded-lg border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/40"
             >
@@ -410,24 +475,13 @@ export default function FlaggedSegmentStepper({
               <p className="whitespace-pre-wrap text-sm text-foreground">{currentSegment.korean_text}</p>
 
               {currentSegment.gender_check_needed && (
-                <section aria-labelledby="stepper-gender-heading" className="mt-4 rounded-md border border-border bg-muted p-3">
+                <section
+                  data-tour="stepper-gender-section"
+                  aria-labelledby="stepper-gender-heading"
+                  className="mt-4 rounded-md border border-border bg-muted p-3"
+                >
                   <div className="mb-3 flex items-center gap-2">
                     <h3 id="stepper-gender-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">성별</h3>
-                    {/* 여러 명을 함께 가리키는 혼성 집단(예: "부모님")은 스페인어
-                        문법상 남성복수로 표기한다(grammar_necessity.py의
-                        _detect_korean_gender 참고) — 한국어 규칙으로 못 거른
-                        애매한 경우만 여기까지 올라오므로, 매 카드마다 항상
-                        보이는 문구 대신 필요할 때만 확인하는 아이콘으로 둔다.
-                        네이티브 title 속성은 hover 지연이 크고 환경에 따라
-                        안 뜨는 경우가 있어(실사용 확인됨), CSS로 직접 그리는
-                        말풍선을 쓴다. */}
-                    <span className="group relative flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-muted-foreground/40 text-[10px] leading-none text-muted-foreground">
-                      i
-                      <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-1.5 hidden w-56 -translate-x-1/2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-normal normal-case tracking-normal text-foreground shadow-md group-hover:block">
-                        남녀가 섞인 무리를 가리키면 남성을, 사람이 아닌
-                        사물이나 상황을 가리키면 사람 아님을 선택하세요.
-                      </span>
-                    </span>
                     {genderResolved && <span className="text-xs text-muted-foreground">확인됨</span>}
                   </div>
                   <div className="space-y-4">
@@ -467,7 +521,11 @@ export default function FlaggedSegmentStepper({
               )}
 
               {currentSegment.formality_check_needed && (
-                <section aria-labelledby="stepper-formality-heading" className="mt-3 rounded-md border border-border bg-muted/40 p-3">
+                <section
+                  data-tour="stepper-formality-section"
+                  aria-labelledby="stepper-formality-heading"
+                  className="mt-3 rounded-md border border-border bg-muted/40 p-3"
+                >
                   <div className="mb-3 flex items-center gap-2">
                     <h3 id="stepper-formality-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">격식</h3>
                     {formalityResolved && <span className="text-xs text-muted-foreground">확인됨</span>}

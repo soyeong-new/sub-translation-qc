@@ -1,0 +1,72 @@
+/* driver.js 기본 테마(Helvetica, 5px 라운드, 회색 보더)를 이 앱의 디자인 토큰
+   (index.css의 CSS 변수)에 맞춰 덮어쓴다 — 값을 복제하지 않고 변수를 그대로 참조해
+   앱 테마가 바뀌면 투어 팝오버도 자동으로 따라가게 한다. */
+.driver-popover {
+  font-family: "Wanted Sans Variable", Inter, -apple-system, BlinkMacSystemFont,
+    "Apple SD Gothic Neo", sans-serif;
+  background-color: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
+  max-width: 320px;
+}
+
+.driver-popover-title {
+  color: hsl(var(--foreground));
+  font-size: 15px;
+}
+
+.driver-popover-description {
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
+.driver-popover-progress-text {
+  color: hsl(var(--muted-foreground));
+}
+
+.driver-popover-footer-btn {
+  border-radius: calc(var(--radius) - 4px);
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+  background-color: hsl(var(--card));
+}
+
+.driver-popover-footer-btn:hover,
+.driver-popover-footer-btn:focus {
+  background-color: hsl(var(--muted));
+}
+
+.driver-popover-next-btn {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+}
+
+.driver-popover-next-btn:hover,
+.driver-popover-next-btn:focus {
+  background-color: hsl(var(--primary) / 0.9);
+}
+
+.driver-popover-close-btn {
+  color: hsl(var(--muted-foreground));
+}
+
+.driver-popover-close-btn:hover,
+.driver-popover-close-btn:focus {
+  color: hsl(var(--foreground));
+}
+
+.driver-popover-arrow-side-left {
+  border-right-color: hsl(var(--card));
+}
+.driver-popover-arrow-side-right {
+  border-left-color: hsl(var(--card));
+}
+.driver-popover-arrow-side-top {
+  border-bottom-color: hsl(var(--card));
+}
+.driver-popover-arrow-side-bottom {
+  border-top-color: hsl(var(--card));
+}

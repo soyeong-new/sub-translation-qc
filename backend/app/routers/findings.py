@@ -102,6 +102,18 @@ class EditTargetTextIn(BaseModel):
     reviewer_name: str = ""
 
 
+class EditSegmentTimingIn(BaseModel):
+    start: float
+    end: float
+    reviewer_name: str = ""
+
+
+class SplitSegmentIn(BaseModel):
+    # 화면에 지금 보이는 최종 텍스트(finding이 반영됐으면 그 final_text) —
+    # DB의 seg.target_text는 finding 반영 전 원본일 수 있어 따로 받는다.
+    target_text: str = ""
+
+
 @router.get("/target-versions/{target_version_id}/findings")
 async def list_findings(target_version_id: str):
     async with async_session() as session:
@@ -595,3 +607,57 @@ async def edit_target_text(segment_id: str, payload: EditTargetTextIn):
                 finding.reviewed_at = now
         await session.commit()
         return {"id": seg.id, "target_text": seg.target_text}
+
+
+@router.post("/segments/{segment_id}/edit-timing")
+async def edit_segment_timing(segment_id: str, payload: EditSegmentTimingIn):
+    """자동/AI 정렬이 틀어진 큐를 검수자가 직접 시간으로 고칠 수 있게 한다.
+    export(assemble_final_srt)는 seg.start로 정렬해 그대로 내보내므로, 이 값만
+    바꾸면 별도 처리 없이 최종 SRT 순서·타임코드에 반영된다."""
+    if payload.end <= payload.start:
+        raise HTTPException(400, "종료 시간은 시작 시간보다 커야 합니다.")
+    if payload.start < 0:
+        raise HTTPException(400, "시작 시간은 0 이상이어야 합니다.")
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        seg.start = payload.start
+        seg.end = payload.end
+        await session.commit()
+        return {"id": seg.id, "start": seg.start, "end": seg.end}
+
+
+@router.post("/segments/{segment_id}/split")
+async def split_segment(segment_id: str, payload: SplitSegmentIn):
+    """한 큐에 여러 화자 대사가 섞여 길게 뭉쳐 있을 때, 검수자가 중간 지점에서
+    둘로 쪼갤 수 있게 한다. 시간은 중간 지점으로 반분하고 텍스트는 그대로
+    복제해서 넘겨주며, 각 줄을 어디서 자르고 경계를 어디로 맞출지는 이미 있는
+    텍스트/시간 편집 UI로 검수자가 직접 다듬는다."""
+    async with async_session() as session:
+        seg = await session.get(Segment, segment_id)
+        if seg is None:
+            raise HTTPException(404, "segment not found")
+        text = payload.target_text or seg.target_text
+        midpoint = (seg.start + seg.end) / 2
+        new_seg = Segment(
+            target_version_id=seg.target_version_id,
+            index=seg.index,
+            start=midpoint,
+            end=seg.end,
+            korean_text=seg.korean_text,
+            target_text=text,
+        )
+        seg.end = midpoint
+        session.add(new_seg)
+        await session.commit()
+        return {
+            "original": {"id": seg.id, "start": seg.start, "end": seg.end},
+            "new": {
+                "id": new_seg.id,
+                "start": new_seg.start,
+                "end": new_seg.end,
+                "korean_text": new_seg.korean_text,
+                "target_text": new_seg.target_text,
+            },
+        }
