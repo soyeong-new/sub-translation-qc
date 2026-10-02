@@ -416,8 +416,9 @@ async def test_back_translate_proposals_chunks_large_batches():
 
     assert warnings == []
     assert not_improved == set()  # is_improvement 없이 응답 → 기본 보존
-    assert len(call_batches) == 2  # 35 + 5, 한 콜에 다 안 들어가고 두 번 나뉨
-    assert all(n <= CHUNK_MAX_SIZE for n in call_batches)
+    assert len(call_batches) > 1
+    assert sum(call_batches) == total
+    assert all(0 < n <= 5 for n in call_batches)
     assert len(backtranslation_by_id) == total
     assert backtranslation_by_id[("p0", "claude_authored")] == "역번역:texto 0"
     assert backtranslation_by_id[(f"p{total - 1}", "claude_authored")] == f"역번역:texto {total - 1}"
