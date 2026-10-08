@@ -660,7 +660,7 @@ class GptClient:
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(
             system, user, key="results", label="성별·격식 통합 반영",
-            model_override=self._light_model, seed=_SEED)
+            model_override=self._model, seed=_SEED)
 
     async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -731,7 +731,7 @@ class GptClient:
         )
         user = json.dumps(items, ensure_ascii=False)
         response = await self._sdk_client.chat.completions.create(
-            model=self._light_model,
+            model=self._model,
             response_format=_GENDER_RESOLUTION_SCHEMA,
             seed=_SEED,
             messages=[

@@ -29,7 +29,7 @@ from kiwipiepy import Kiwi
 
 LANGUAGE_TO_SPACY_MODEL = {
     "es": "es_core_news_sm",
-    "pt": "pt_core_news_sm",
+    "pt": "pt_core_news_md",
     "en": "en_core_web_sm",
     "fr": "fr_core_news_lg",
 }
