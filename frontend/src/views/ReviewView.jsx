@@ -98,6 +98,13 @@ const CATEGORY_BADGE_CLASS = {
 };
 const FALLBACK_BADGE_CLASS = "bg-muted text-muted-foreground border-border";
 
+// 승인 때 저장된 최종 텍스트가 AI 제안과 달라진 이유 — 백엔드(final_text_reason)가 저장값으로 추정한다.
+const FINAL_TEXT_REASON_LABEL = {
+  line_wrap: " (글자수 제약으로 줄바꿈이 조정됨)",
+  glossary: " (용어집 표기가 적용됨)",
+  line_limit_or_glossary: " (글자수 제약 또는 용어집 표기로 조정됨)",
+};
+
 // findings 필터 탭에서만 쓰는 라벨 — 카드 배지("승인됨" 등)를 없앤 뒤로는
 // 이 필터 탭이 유일한 소비처라, 탭에 어울리는 짧은 형태로 둔다.
 const STATUS_LABELS = {
@@ -568,7 +575,7 @@ function FindingCard({
         <div className="mt-3 border-t border-warning/30 pt-2">
           <p className="mb-1 text-xs font-medium uppercase tracking-wide text-warning">
             저장된 최종 텍스트
-            {finding.status === "approved" && " (글자수 제약으로 자동 축약됨)"}
+            {FINAL_TEXT_REASON_LABEL[finding.final_text_reason] ?? (finding.status === "approved" ? " (승인할 때 자동으로 조정됨)" : "")}
           </p>
           <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.final_text}</p>
         </div>

@@ -63,6 +63,18 @@ def violates_line_length(text: str, max_chars: int = MAX_LINE_CHARS,
     return len(lines) > max_lines or any(len(ln) > max_chars for ln in lines)
 
 
+def final_text_reason(suggested: str, final: str) -> Optional[str]:
+    """승인 때 저장된 최종 텍스트가 AI 제안문과 달라진 이유를 저장값만으로 추정한다(DB에 이유를
+    따로 저장하지 않는다). 공백·줄바꿈만 다르면 "line_wrap", 단어가 다른데 제안문이 글자수
+    제한 안이면 글자수가 원인일 수 없으므로 "glossary", 제안문이 제한을 넘으면 둘 중 하나라
+    "line_limit_or_glossary". 같거나 비어 있으면 None."""
+    if not suggested or not final or suggested == final:
+        return None
+    if suggested.split() == final.split():
+        return "line_wrap"
+    return "line_limit_or_glossary" if violates_line_length(suggested) else "glossary"
+
+
 def check_line_length(pairs: List[AlignedPair]) -> List[FormatViolation]:
     """최초 체크(design §5-1의 1번 지점) 및 export 직전 안전망(3번 지점)에서
     호출된다. 자동 수정은 하지 않고 finding만 만든다 — 줄바꿈 재배치로 될

@@ -18,7 +18,7 @@ from app.core.requery import (
     apply_resolved_gender_to_text, flag_new_gender_ambiguity, gloss_new_gender_words,
     reapply_gender_to_pending_findings,
 )
-from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length
+from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length, final_text_reason
 from app.core.safety_net import enforce_line_length
 from app.core.glossary_guard import patch_missing_canonical, find_canonical_overrides
 from app.language_profiles.loader import load_profile
@@ -123,6 +123,8 @@ async def list_findings(target_version_id: str):
              "description": r.description, "original_text": r.original_text,
              "suggested_text": r.suggested_text, "status": r.status,
              "model": r.model, "final_text": r.final_text,
+             "final_text_reason": (final_text_reason(r.suggested_text, r.final_text)
+                                   if r.status == "approved" else None),
              # 검수자가 실제로 review-action/pick을 눌렀는지 구분하는 값 — 이게
              # None이면 status가 "approved"여도 사람이 아니라 파이프라인이
              # 자동으로 승인한 것이다(예: Claude+GPT 합의 자동 적용, 안전망
