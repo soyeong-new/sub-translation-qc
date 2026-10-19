@@ -54,7 +54,7 @@ def test_build_verification_checklist_default_has_five_steps_no_glossary_item():
     checklist = build_verification_checklist("스페인어", BATCH_SKIP_CLEAN_LINE)
     assert "[5단계 순차 검증 체크리스트]" in checklist
     assert 'category: "glossary"' not in checklist
-    assert "위 1~4번 문제를 고치기 위해" in checklist
+    assert "오직 위 1~4번 문제만 고쳐라" in checklist
 
 
 def test_build_verification_checklist_with_glossary_block_has_six_steps():
@@ -63,8 +63,8 @@ def test_build_verification_checklist_with_glossary_block_has_six_steps():
     assert "[6단계 순차 검증 체크리스트]" in checklist
     assert '5. 고유명사 표기 일관성 (category: "glossary"):' in checklist
     assert "아래 [작품 용어집]에 등록된 한국어 용어" in checklist
-    assert "6. 이미 반영된 성별/격식 형태 보존:" in checklist
-    assert "위 1~5번 문제를 고치기 위해" in checklist
+    assert "6. 확정된 성별/격식 확인:" in checklist
+    assert "오직 위 1~5번 문제만 고쳐라" in checklist
 
 
 def test_category_enum_includes_glossary():
@@ -74,3 +74,13 @@ def test_category_enum_includes_glossary():
 def test_build_findings_schema_instruction_includes_glossary_category():
     instruction = build_findings_schema_instruction("lead in text")
     assert '"glossary"(작품 용어집에 등록된 고유명사 표기와 다르게 번역된 경우)' in instruction
+
+
+def test_register_step_asks_to_report_mismatch_with_minimal_fix_and_names_no_language():
+    checklist = build_verification_checklist("대상언어", BATCH_SKIP_CLEAN_LINE)
+    step = checklist.split("5. 확정된 성별/격식 확인:")[1]
+    assert "gender_groups" in step and "formality" in step
+    assert "다른 형태" in step and "그 단어" in step and "문장 전체를 다시 쓰지" in step
+    assert "되돌리지 마라" in step
+    for name in ("스페인어", "포르투갈어", "프랑스어", "영어", "tú", "usted", "você"):
+        assert name not in step

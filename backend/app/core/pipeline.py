@@ -1,8 +1,10 @@
 """STT부터 검수용 findings 생성까지 전체 QC 파이프라인을 조율하는 오케스트레이터."""
 
 import asyncio
+import json
 import logging
 import os
+import re
 from pathlib import Path
 from statistics import median
 from typing import Optional
@@ -27,6 +29,22 @@ from app.core.grammar_necessity import (
 from app.schemas import SegmentText, AlignedPair, Finding
 
 logger = logging.getLogger(__name__)
+
+# 개발용 기록: 성별·격식 반영 직후(AI 검증 직전)의 문장을 target_version_id별 JSONL로 남긴다
+# (media는 git 제외). 사용자 화면에는 아무 영향이 없고, 기록 실패가 분석을 깨지 않도록
+# 모든 예외를 삼킨다. 테스트는 conftest가 None으로 끈다.
+TRACE_DIR: Optional[Path] = Path(__file__).resolve().parents[2] / "media" / "qc_trace"
+
+
+def _trace(target_version_id: str, stage: str, **fields) -> None:
+    if TRACE_DIR is None or not target_version_id:
+        return
+    try:
+        TRACE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(TRACE_DIR / f"{target_version_id}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"stage": stage, **fields}, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.debug("기록 실패(무시)", exc_info=True)
 
 # gpt-4o-mini-transcribe(OpenAI 오디오 API)는 25MB/약 1500초(25분) 제한이
 # 있다. 16kHz mono 16bit PCM WAV는 초당 32KB라 25MB는 약 781초(≈13분)에
@@ -443,7 +461,7 @@ async def _run_grammar_necessity_check(
                 if isinstance(resolve_result, Exception):
                     raise resolve_result
                 llm_results = resolve_result
-                llm_groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results)
+                llm_groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results, profile)
                 # _build_gender_groups_from_llm은 응답에 실제로 포함된 id만
                 # 키로 넣는다(빈 리스트 포함 가능 — "전부 사람 아님"이라는
                 # 유효한 판단) — 응답에서 아예 빠진 id만 폴백으로 채운다.
@@ -574,7 +592,8 @@ async def _run_grammar_necessity_check(
     return segment_resolutions, warnings
 
 
-def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
+def _build_gender_groups_from_llm(llm_items: list, llm_results: list,
+                                  profile: Optional[dict] = None) -> dict:
     """resolve_gender_from_context의 후보 단어별 판단(words: [{"index",
     "is_person","group_id","gender","referent"}, ...])을, 검수자에게
     보여주고 DB에 저장할 인물별 그룹 형태로 묶는다. is_person이 false인
@@ -650,10 +669,32 @@ def _build_gender_groups_from_llm(llm_items: list, llm_results: list) -> dict:
                 elif new_name != entry["character_name"]:
                     entry["character_name"] = None
                     entry["gender"] = None
+        for entry in by_group.values():
+            entry["referent"] = _correct_speaker_referent(
+                entry["referent"], item.get("target_text"), profile)
         groups_by_id[item_id] = [
             {"group_index": i, **by_group[gid]} for i, gid in enumerate(order)
         ]
     return groups_by_id
+
+
+def _correct_speaker_referent(referent: Optional[str], target_text: Optional[str],
+                              profile: Optional[dict]) -> Optional[str]:
+    """설명이 "화자 자신"인데 번역문에 2인칭 표지만 있고 1인칭 표지가 없으면 "듣고 있는
+    상대방"으로 바로잡는다. 사용자는 이 설명을 보고 성별을 고르므로, 틀린 대상을 가리키면
+    틀린 값이 확정된다. 언어별 인칭 표지는 프로파일(first/second_person_markers)에서만
+    읽고, 없는 언어는 건드리지 않는다."""
+    markers2 = (profile or {}).get("second_person_markers") or []
+    markers1 = (profile or {}).get("first_person_markers") or []
+    if not (referent and target_text and markers2 and markers1):
+        return referent
+    if "화자 자신" not in referent and referent.strip() != "화자":
+        return referent
+    # 아포스트로피로 끝나는 축약("m'as" → "m'", "as")도 표지로 비교할 수 있게 나눈다.
+    words = set(re.findall(r"\w+'|\w+", _strip_html_tags(target_text).lower()))
+    if words & {m.lower() for m in markers2} and not words & {m.lower() for m in markers1}:
+        return "듣고 있는 상대방"
+    return referent
 
 
 def _dedupe_by_segment_id(corrections: list) -> dict:
@@ -1181,9 +1222,9 @@ async def _run_dual_verification_pass(
             "korean_text": p.korean.text if p.korean else "",
             "target_text": p.target.text,
             "gender": reg.get("gender"),
+            "gender_groups": reg.get("gender_groups"),
             "formality": reg.get("formality"),
         }
-
 
     korean_text_by_id = {p.id: (p.korean.text if p.korean else "") for p in filtered_pairs}
     warnings: list = []
@@ -1390,6 +1431,12 @@ def _gender_groups_for_ai(groups: Optional[list]) -> Optional[list]:
     전용이라 더 이상 필요 없다). male/female이 하나도 없으면 None."""
     if not groups:
         return None
+    # AI가 채웠을 뿐 사용자가 확정하지 않은 성별은 문장에 반영하지 않는다 — 틀린 값이
+    # 확정으로 굳으면 AI 검증도 되돌리지 못한다. 사용자 확정값과, 이전 회차 확정값에서
+    # 온 값(suggested_gender와 같음)만 반영한다.
+    # human_confirmed 키가 없는 예전 데이터는 확정으로 본다(명시적 False만 제외).
+    groups = [g for g in groups if g.get("human_confirmed") is not False
+              or (g.get("suggested_gender") and g.get("suggested_gender") == g.get("gender"))]
     result = [
         {"words": g.get("words") or [], "referent": g.get("referent"),
          "gender": _normalize_gender_for_ai(g.get("gender"))}
@@ -1650,20 +1697,22 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
 
 async def _apply_resolved_registers(
     pairs: list, provider: ModelProvider, profile: dict, resolved_registers: dict,
+    target_version_id: str = "",
 ) -> None:
-    """확정된 성별·격식을 한 번의 전담 LLM 호출로 문장에 반영한다."""
+    """확정된 격식을 한 번의 전담 LLM 호출로 문장에 반영한다. 성별은 문장에 반영하지 않는다 —
+    성별을 AI가 다시 쓰게 하면 사람이 아닌 단어나 성별 불변 형태까지 바뀌는 오류가 반복됐다
+    (실측). 확정된 성별은 AI 검증에 정보로만 넘기고, 어긋나면 파인딩으로 올린다."""
     items = [
         {
             "id": p.id,
             "target_text": p.target.text,
-            "gender": resolved_registers[p.id].get("gender"),
-            "gender_groups": resolved_registers[p.id].get("gender_groups"),
+            "gender": None,
+            "gender_groups": None,
             "formality": resolved_registers[p.id].get("formality"),
         }
         for p in pairs
         if p.target is not None and resolved_registers.get(p.id)
-        and any(resolved_registers[p.id].get(key)
-                for key in ("gender", "gender_groups", "formality"))
+        and resolved_registers[p.id].get("formality")
     ]
     if not items:
         return
@@ -1671,7 +1720,16 @@ async def _apply_resolved_registers(
     corrected_by_id = {r["id"]: r["corrected_text"] for r in results}
     for pair in pairs:
         if pair.id in corrected_by_id:
-            pair.target.text = corrected_by_id[pair.id]
+            new_text = corrected_by_id[pair.id]
+            before = pair.target.text
+            reg = resolved_registers.get(pair.id) or {}
+            pair.target.text = new_text
+            if before != new_text:
+                _trace(target_version_id, "apply_registers", segment_id=pair.id,
+                       outcome="applied",
+                       korean=pair.korean.text if pair.korean else None,
+                       before=before, after=new_text,
+                       formality=reg.get("formality"))
 
 
 async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dict,
@@ -1682,7 +1740,8 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
     필요한 줄이 모두 확정된 뒤에만 호출된다. 이중검증 전에 확정된 성별,
     성별 그룹, 격식을 통합 전담 LLM 호출 한 번으로 pair.target.text에
     반영하고, 이중검증은 그 결과를 기준으로 다른 문제를 찾는다."""
-    await _apply_resolved_registers(pairs, provider, profile, resolved_registers)
+    await _apply_resolved_registers(
+        pairs, provider, profile, resolved_registers, target_version_id)
 
     format_constraint = f"줄당 {MAX_LINE_CHARS}자 이내, 세그먼트당 최대 {MAX_LINES}줄을 지켜서 제안할 것."
 

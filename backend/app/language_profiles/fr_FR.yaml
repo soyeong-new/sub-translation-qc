@@ -4,3 +4,6 @@ display_name: 프랑스어 (프랑스)
 formality_instruction: >
   informal이면 tu 활용형(2인칭 단수 반말)으로, formal이면 vous 활용형(2인칭 복수 활용
   기반 존댓말)으로.
+# 번역문의 인칭 표지 — 카드 설명이 "화자 자신"인데 2인칭 표지만 있으면 청자로 바로잡는 데 쓴다.
+second_person_markers: [tu, vous, "t'"]
+first_person_markers: [je, "j'", "m'"]

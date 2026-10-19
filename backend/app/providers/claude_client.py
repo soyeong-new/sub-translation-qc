@@ -1,6 +1,7 @@
 """Claude API로 1차 교정(rewrite)과 안전망 축약을 수행하는 얇은 SDK 래퍼."""
 
 import json
+from app.core import llm_trace
 import re
 from typing import List, Optional
 from anthropic import AsyncAnthropic
@@ -144,6 +145,15 @@ def _language_label(profile: dict) -> str:
     return f"{language}({variant})" if variant else language
 
 
+
+def _claude_usage(response) -> Optional[dict]:
+    u = getattr(response, "usage", None)
+    if u is None:
+        return None
+    return {"input_tokens": getattr(u, "input_tokens", None),
+            "output_tokens": getattr(u, "output_tokens", None)}
+
+
 class ClaudeClient:
     def __init__(self, api_key: str, model: str, light_model: str = None):
         self._model = model
@@ -171,6 +181,7 @@ class ClaudeClient:
         )
 
         text = self._extract_text(response)
+        llm_trace.record("claude", "claude._call_array", target_model, system, user, text, _claude_usage(response))
         try:
             parsed = json.loads(_strip_code_fence(text))
             if not isinstance(parsed, list):
@@ -190,6 +201,7 @@ class ClaudeClient:
             messages=[{"role": "user", "content": user}], **kwargs,
         )
         text = self._extract_text(response)
+        llm_trace.record("claude", "claude._call_object", target_model, system, user, text, _claude_usage(response))
         try:
             parsed = json.loads(_strip_code_fence(text))
             if not isinstance(parsed, dict):

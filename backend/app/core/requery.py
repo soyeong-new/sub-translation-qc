@@ -183,7 +183,7 @@ async def flag_new_gender_ambiguity(
               "korean_text": llm_item["korean_text"], "candidate_words": candidate_words}],
             profile)
         groups_by_id = _build_gender_groups_from_llm(
-            [{**llm_item, "candidate_word_lemmas": candidate_lemmas}], llm_results)
+            [{**llm_item, "candidate_word_lemmas": candidate_lemmas}], llm_results, profile)
     except Exception:
         # LLM 호출 자체의 실패든(네트워크/타임아웃), 스키마는 지켰지만
         # 그룹핑이 불가능한 응답(예: group_id가 해시 불가능한 타입)이든

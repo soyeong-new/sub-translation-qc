@@ -25,3 +25,15 @@ async def _run_analysis_inline(monkeypatch):
     # 테스트 중 background_tasks set 초기화
     monkeypatch.setattr(app.state, "background_tasks", set(), raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _disable_qc_trace_file(monkeypatch):
+    """개발용 반영 기록(qc_trace)이 테스트 중 실제 media 폴더에 파일을 쓰지 않게 끈다."""
+    monkeypatch.setattr("app.core.pipeline.TRACE_DIR", None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_llm_trace_file(monkeypatch):
+    """모델 입출력 원문 기록(llm_trace)이 테스트 중 실제 media 폴더에 파일을 쓰지 않게 끈다."""
+    monkeypatch.setattr("app.core.llm_trace.TRACE_DIR", None)

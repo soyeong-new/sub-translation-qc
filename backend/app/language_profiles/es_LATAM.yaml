@@ -4,3 +4,6 @@ display_name: 스페인어 (중남미)
 formality_instruction: >
   informal이면 tú 활용형(2인칭 단수 반말)으로, formal이면 usted 활용형(3인칭 단수 활용
   기반 존댓말)으로.
+# 번역문의 인칭 표지 — 카드 설명이 "화자 자신"인데 2인칭 표지만 있으면 청자로 바로잡는 데 쓴다.
+second_person_markers: [tú, usted, ustedes, vos]
+first_person_markers: [yo, soy, estoy]

@@ -1255,7 +1255,9 @@ async def test_pipeline_applies_resolved_gender_and_formality_before_dual_verifi
             cached_video_proxy_path="/fake/proxy.mp4",
         )
 
-    assert captured["pairs"][0]["target_text"] == "[informal] [male] Está cansada."
+    # 성별(male)은 문장에 반영하지 않는다 — 단어는 그대로이고 격식 표시만 붙는다. 성별은 정보로 남는다.
+    assert captured["pairs"][0]["target_text"] == "[informal] Está cansada."
+    assert captured["pairs"][0]["gender"] == "male"
 
 
 def test_resolved_registers_treat_not_applicable_gender_as_no_gender_info():
@@ -1423,7 +1425,7 @@ async def test_pipeline_applies_confirmed_gender_groups_to_correct_referent_befo
         results = []
         for item in items:
             text = item["target_text"]
-            for group in item["gender_groups"]:
+            for group in (item["gender_groups"] or []):
                 for word in group["words"]:
                     if group["gender"] == "female" and word.endswith("o"):
                         text = text.replace(word, word[:-1] + "a")
@@ -1452,6 +1454,7 @@ async def test_pipeline_applies_confirmed_gender_groups_to_correct_referent_befo
     # 인물은 여성, "enojado" 쪽 인물은 남성으로 확정.
     for group in groups:
         group["gender"] = "female" if "cansado" in group["words"] else "male"
+        group["human_confirmed"] = True  # 실제 화면에서도 사용자가 답하면 켜진다
     resolved_registers = _build_resolved_registers(phase1["segment_resolutions"])
 
     profile = load_profile("es", "LATAM")
@@ -1465,7 +1468,11 @@ async def test_pipeline_applies_confirmed_gender_groups_to_correct_referent_befo
 
     # "cansado"만 여성형(cansada)으로 바뀌고, "enojado"는 이미 확정된 남성과
     # 일치하므로 그대로다 — 각자의 인물에만 정확히 반영됐다는 뜻이다.
-    assert captured["pairs"][0]["target_text"] == "[informal] Él está cansada y ella está enojado."
+    # 성별 그룹은 문장에 반영되지 않는다 — 단어는 원문 그대로이고 격식만 붙는다.
+    assert captured["pairs"][0]["target_text"] == "[informal] Él está cansado y ella está enojado."
+    # 대신 확정된 인물별 성별은 검증 입력에 그대로 전달된다.
+    sent = {g["words"][0]: g["gender"] for g in captured["pairs"][0]["gender_groups"]}
+    assert sent == {"cansado": "female", "enojado": "male"}
 
 
 @pytest.mark.asyncio
@@ -2137,9 +2144,10 @@ async def test_phase2_applies_confirmed_gender_and_formality_in_one_llm_call(mon
         pairs, provider, {"language": "pt", "variant": "BR"}, {}, "tv1",
         {"p1": {"gender": "female", "formality": "formal"}})
 
+    # 성별은 반영 호출에 보내지 않는다(격식만).
     assert calls == [[{
         "id": "p1", "target_text": "Você está cansado.",
-        "gender": "female", "gender_groups": None, "formality": "formal",
+        "gender": None, "gender_groups": None, "formality": "formal",
     }]]
     assert result["pairs"][0].target.text == "A senhora está cansada."
 
@@ -2785,3 +2793,138 @@ def test_run_pipeline_phase2_passes_glossary_entries_to_correct_primary_and_retu
     assert captured["correct_primary_glossary_entries"] == glossary_entries
     assert result["glossary_extractions"] == [
         {"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+
+
+def test_gender_groups_for_ai_drops_values_the_user_did_not_confirm():
+    """AI가 채웠을 뿐 사용자가 확정하지 않은 성별은 문장에 반영하지 않는다. 이전 회차 확정값에서
+    온 것(suggested_gender와 같음)과 사용자 확정값은 유지한다."""
+    from app.core.pipeline import _gender_groups_for_ai
+    groups = [
+        {"words": ["bom"], "referent": "x", "gender": "female", "human_confirmed": False, "suggested_gender": None},
+        {"words": ["irmã"], "referent": "y", "gender": "female", "human_confirmed": True},
+        {"words": ["pai"], "referent": "z", "gender": "male", "human_confirmed": False, "suggested_gender": "male"},
+    ]
+    out = _gender_groups_for_ai(groups)
+    assert [g["words"] for g in out] == [["irmã"], ["pai"]]
+    assert _gender_groups_for_ai(groups[:1]) is None
+
+
+
+
+
+def _group_for(target_text, referent, profile):
+    from app.core.pipeline import _build_gender_groups_from_llm
+    item = {"id": "p1", "target_text": target_text, "candidate_words": ["x"], "candidate_word_lemmas": ["x"]}
+    res = {"id": "p1", "words": [{"index": 0, "is_person": True, "group_id": 1, "gender": None,
+                                  "referent": referent, "character_name": None}]}
+    return _build_gender_groups_from_llm([item], [res], profile)["p1"][0]
+
+
+def test_referent_speaker_is_corrected_to_listener_when_only_second_person_markers():
+    """회귀(2026-10): 번역문에 2인칭 표지(você)만 있는데 설명이 '화자 자신'이면 사용자가 틀린 대상의
+    성별을 고르게 된다 — 문장 근거로 '듣고 있는 상대방'으로 바로잡는다."""
+    prof = {"language": "pt", "second_person_markers": ["você", "vocês"], "first_person_markers": ["eu"]}
+    g = _group_for("Você está bravo comigo?", "화자 자신", prof)
+    assert g["referent"] == "듣고 있는 상대방"
+
+
+def test_referent_speaker_kept_when_first_person_marker_also_present():
+    prof = {"language": "pt", "second_person_markers": ["você"], "first_person_markers": ["eu"]}
+    assert _group_for("Você quer que eu seja pega?", "화자 자신", prof)["referent"] == "화자 자신"
+
+
+def test_referent_not_touched_without_profile_markers_or_for_other_referents():
+    assert _group_for("Você está bravo?", "화자 자신", {"language": "fr"})["referent"] == "화자 자신"
+    prof = {"language": "pt", "second_person_markers": ["você"], "first_person_markers": ["eu"]}
+    assert _group_for("Você está bravo?", "탄", prof)["referent"] == "탄"
+
+
+@pytest.mark.parametrize("lang,variant,text,expected", [
+    ("es", "LATAM", "Estoy enamorada de usted, señor.", "화자 자신"),      # 1인칭 동사는 yaml 표지
+    ("fr", "FR", "Oh non, tu m'as eue.", "화자 자신"),                     # 목적어 m'(화자)
+    ("fr", "FR", "Tu es folle !", "듣고 있는 상대방"),                     # 청자가 주어인데 화자로 표시된 경우
+    ("pt", "BR", "Você está bravo comigo?", "듣고 있는 상대방"),
+    ("pt", "BR", "Estou atrasada para o trabalho.", "화자 자신"),
+])
+def test_speaker_referent_correction_uses_each_language_profile_markers(lang, variant, text, expected):
+    from app.core.pipeline import _correct_speaker_referent
+    from app.language_profiles.loader import load_profile
+    assert _correct_speaker_referent("화자 자신", text, load_profile(lang, variant)) == expected
+
+
+def _read_trace(tmp_path, tv="tv1"):
+    import json
+    f = tmp_path / f"{tv}.jsonl"
+    return [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines()] if f.exists() else []
+
+
+@pytest.mark.asyncio
+async def test_apply_registers_sends_only_formality_and_never_gender(tmp_path, monkeypatch):
+    """성별은 문장에 반영하지 않는다(정보로만 보관해 AI 검증에 넘긴다). 격식이 있는 줄만 반영 호출에 보내고,
+    그 항목에는 성별 값이 들어가지 않는다. 격식으로 바뀐 줄은 반영 전/후를 기록한다."""
+    from app.core.pipeline import _apply_resolved_registers
+    from app.schemas import AlignedPair, SegmentText
+    monkeypatch.setattr("app.core.pipeline.TRACE_DIR", tmp_path)
+    sent = {}
+
+    class _P:
+        @staticmethod
+        async def apply_registers(items, profile):
+            sent["items"] = items
+            return [{"id": i["id"], "corrected_text": i["target_text"].replace("Você", "O senhor")} for i in items]
+
+    mk = lambda i, t: AlignedPair(id=i, korean=SegmentText(start=0, end=1, text="한국어"),
+                                  target=SegmentText(start=0, end=1, text=t))
+    pairs = [mk("p0", "Você está bravo?"), mk("p1", "Ela é bonita."), mk("p2", "Você é rica?")]
+    regs = {"p0": {"gender_groups": [{"words": ["bravo"], "gender": "female"}], "formality": "formal"},
+            "p1": {"gender": "male"},
+            "p2": {"gender": "female", "formality": "formal"}}
+    await _apply_resolved_registers(pairs, _P(), {"language": "pt"}, regs, target_version_id="tv1")
+
+    assert [i["id"] for i in sent["items"]] == ["p0", "p2"]
+    assert all(i["gender"] is None and i["gender_groups"] is None for i in sent["items"])
+    assert pairs[0].target.text == "O senhor está bravo?" and pairs[1].target.text == "Ela é bonita."
+    rows = {r["segment_id"]: r for r in _read_trace(tmp_path) if r["stage"] == "apply_registers"}
+    assert set(rows) == {"p0", "p2"} and rows["p0"]["before"] == "Você está bravo?"
+    assert rows["p0"]["formality"] == "formal"
+
+
+@pytest.mark.asyncio
+async def test_trace_failure_never_breaks_apply_registers(tmp_path, monkeypatch):
+    from app.core.pipeline import _apply_resolved_registers
+    from app.schemas import AlignedPair, SegmentText
+    blocker = tmp_path / "f"; blocker.write_text("x")
+    monkeypatch.setattr("app.core.pipeline.TRACE_DIR", blocker)
+
+    class _P:
+        @staticmethod
+        async def apply_registers(items, profile):
+            return [{"id": "p1", "corrected_text": "O senhor está bem?"}]
+
+    p = AlignedPair(id="p1", korean=SegmentText(start=0, end=1, text="k"),
+                    target=SegmentText(start=0, end=1, text="Você está bem?"))
+    await _apply_resolved_registers([p], _P(), {"language": "pt"}, {"p1": {"formality": "formal"}}, target_version_id="tv1")
+    assert p.target.text == "O senhor está bem?"
+
+
+@pytest.mark.asyncio
+async def test_dual_verification_receives_confirmed_gender_groups_per_line():
+    """검증 입력에는 줄 단위 성별뿐 아니라 인물별 그룹(단어·대상·성별)도 들어가야 어긋남을 판단할 수 있다."""
+    from app.core.pipeline import _run_dual_verification_pass
+    from app.schemas import AlignedPair, SegmentText
+    captured = {}
+
+    class _P(MockProvider):
+        async def correct_primary(self, pairs, *a, **k):
+            captured["pairs"] = pairs
+            return []
+        async def verify_and_refine(self, pairs, *a, **k):
+            return []
+
+    mk = lambda i, t: AlignedPair(id=i, korean=SegmentText(start=0, end=1, text="한국어"),
+                                  target=SegmentText(start=0, end=1, text=t))
+    groups = [{"words": ["bravo"], "referent": "듣고 있는 상대방", "gender": "male"}]
+    await _run_dual_verification_pass(
+        [mk("p0", "Você está bravo?")], _P(), {"language": "pt"}, {}, "줄당 50자",
+        "tv1", {"p0": {"gender_groups": groups, "formality": "formal"}})
+    assert captured["pairs"][0]["gender_groups"] == groups

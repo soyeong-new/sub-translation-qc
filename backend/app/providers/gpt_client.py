@@ -1,6 +1,7 @@
 """GPT API로 2차 검증(원문 대조 verify+rewrite)을 수행하는 얇은 SDK 래퍼."""
 
 import json
+from app.core import llm_trace
 from typing import List, Optional
 from openai import AsyncOpenAI
 
@@ -388,6 +389,14 @@ def _language_label(profile: dict) -> str:
     return f"{language}({variant})" if variant else language
 
 
+def _gpt_usage(response) -> Optional[dict]:
+    u = getattr(response, "usage", None)
+    if u is None:
+        return None
+    return {"input_tokens": getattr(u, "prompt_tokens", None),
+            "output_tokens": getattr(u, "completion_tokens", None)}
+
+
 # findings을 만드는 호출들의 재실행 변동을 줄이기 위한 고정 seed(재현성용,
 # temperature를 못 쓰는 모델의 대체 수단) — 값 자체엔 의미 없음.
 _SEED = 42
@@ -398,7 +407,9 @@ class GptClient:
         self._model = model
         self._light_model = light_model or model
         self._transcribe_model = transcribe_model
-        self._sdk_client = AsyncOpenAI(api_key=api_key)
+        # 병렬 호출(asyncio.gather)이 몰리면 429가 나는데, SDK는 Retry-After를 읽어
+        # 대기 후 재시도한다. 기본값(2회)으로는 부족해 늘렸다.
+        self._sdk_client = AsyncOpenAI(api_key=api_key, max_retries=6)
 
     async def _call(self, system: str, user: str, key: str = "findings", label: str = "",
                      model_override: str = None, seed: int = None,
@@ -420,6 +431,7 @@ class GptClient:
         if not response.choices:
             raise ValueError("GPT 응답이 비어 있음")
         text = response.choices[0].message.content
+        llm_trace.record("gpt", label or key, target_model, system, user, text, _gpt_usage(response))
         try:
             parsed = json.loads(text)
             items = parsed[key]
@@ -660,7 +672,7 @@ class GptClient:
         user = json.dumps(items, ensure_ascii=False)
         return await self._call(
             system, user, key="results", label="성별·격식 통합 반영",
-            model_override=self._model, seed=_SEED)
+            model_override=self._light_model, seed=_SEED)
 
     async def apply_gender(self, items: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
@@ -710,6 +722,7 @@ class GptClient:
         if not response.choices:
             raise ValueError("GPT 씬 분할 응답이 비어 있음")
         text = response.choices[0].message.content
+        llm_trace.record("gpt", "씬 분할", self._light_model, system, user, text, _gpt_usage(response))
         try:
             scenes = json.loads(text)["scenes"]
             if not isinstance(scenes, list):
@@ -731,7 +744,7 @@ class GptClient:
         )
         user = json.dumps(items, ensure_ascii=False)
         response = await self._sdk_client.chat.completions.create(
-            model=self._model,
+            model=self._light_model,
             response_format=_GENDER_RESOLUTION_SCHEMA,
             seed=_SEED,
             messages=[
@@ -742,6 +755,7 @@ class GptClient:
         if not response.choices:
             raise ValueError("GPT 성별 문맥 판단 응답이 비어 있음")
         text = response.choices[0].message.content
+        llm_trace.record("gpt", "성별 문맥 판단", self._light_model, system, user, text, _gpt_usage(response))
         try:
             results = json.loads(text)["results"]
             if not isinstance(results, list):

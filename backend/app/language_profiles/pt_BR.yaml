@@ -4,3 +4,6 @@ display_name: 포르투갈어 (브라질)
 formality_instruction: >
   informal이면 você 활용형(구어체 2인칭, 3인칭 단수 동사 활용)으로, formal이면
   o senhor/a senhora 활용형(3인칭 단수 활용 기반 존칭)으로.
+# 번역문의 인칭 표지 — 카드 설명이 "화자 자신"인데 2인칭 표지만 있으면 청자로 바로잡는 데 쓴다.
+second_person_markers: [você, vocês, o senhor, a senhora]
+first_person_markers: [eu, sou, estou]

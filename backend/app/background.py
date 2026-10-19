@@ -22,6 +22,7 @@ from app.repositories import (
     get_glossary_prompt_entries, upsert_glossary_extraction,
 )
 from app.providers.base import get_provider, ModelProvider
+from app.core import llm_trace
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
 
@@ -52,6 +53,7 @@ async def analyze_and_save(target_version_id: str, target_srt_path: str) -> None
     전에 S2(AI 검증)를 돌리면 그 줄의 성별/격식을 추측 없이는 정확히 검증할
     수 없기 때문이다. 확인이 필요 없으면(전부 자동 판정됐거나 애초에 성별/
     격식 표시가 없는 줄뿐이면) 곧장 이어서 S2까지 실행한다."""
+    llm_trace.trace_id.set(target_version_id)
     try:
         async with async_session() as session:
             tv = await session.get(TargetVersion, target_version_id)
@@ -162,6 +164,7 @@ async def _run_phase2_and_save(target_version_id: str, provider: ModelProvider) 
     analyze_and_save가 확인이 필요 없다고 판단했을 때 곧바로 이어 부르거나,
     POST /target-versions/{id}/confirm-registers가 사람 확인이 끝난 뒤에
     새 백그라운드 태스크로 부른다 — 두 경로 모두 이 함수 하나로 수렴한다."""
+    llm_trace.trace_id.set(target_version_id)
     try:
         async with async_session() as session:
             tv = await session.get(TargetVersion, target_version_id)
