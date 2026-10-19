@@ -24,7 +24,7 @@
 ```mermaid
 flowchart TD
     A["작품·회차·언어판 등록<br/>영상 + 번역 SRT + 선택적 한국어 SRT"]
-    B["1단계 분석<br/>대사 정렬 · 전처리 · 성별/격식 판단"]
+    B["1단계 분석<br/>대사 정렬 · 성별/격식 판단"]
     C{"미확정 성별/격식이 있는가?"}
     D["검수자가 영상과 대사를 보고 확정"]
     E["2단계 분석<br/>Claude·GPT 독립 검증 · 교정안과 역번역 생성"]
@@ -52,13 +52,11 @@ flowchart TD
    - 한국어 SRT가 있으면 이를 기준으로 OpenAI 임베딩 유사도와 시간 겹침을 이용한 DP 정렬을 수행합니다. 전체 영상 STT는 생략하지만, 영상과 자막의 동기화를 확인하기 위해 앞부분의 짧은 STT를 실행할 수 있습니다.
    - 한국어 SRT가 없으면 같은 회차의 사용 가능한 STT 캐시와 영상 프록시를 재사용합니다. 재사용할 수 없으면 ffmpeg로 오디오를 추출하고 600초 단위로 나눠 GPT STT를 병렬 실행한 뒤 단어 타이밍으로 정렬합니다.
    - 검수용 480p 영상 프록시를 생성하거나 재사용합니다. 한국어 대사만 있거나 번역만 있는 미매칭 줄도 결과에 남깁니다.
-2. **규칙 기반 전처리**
-   - 연속 온점, CTA 문구, 비속어 사전 등을 처리합니다. 현재 비속어 사전은 비어 있으며, 용어집 전체를 일괄 치환하는 단계는 없습니다.
-3. **성별·격식 판단**
+2. **성별·격식 판단**
    - spaCy로 대상 언어를, kiwipiepy로 한국어 어미·호칭 등을 분석해 후보를 찾고 판단 가능한 값은 결정합니다. 영어 프로필은 격식 확인을 사용하지 않습니다.
    - 미해결 성별 후보는 GPT 경량 모델이 주변 대사를 보고 인물·지칭 대상별 그룹으로 묶어 추정합니다. 확인에 필요한 단어의 한국어 뜻도 생성합니다.
    - 같은 작품에서 저장한 `CharacterGenderFact`는 해당 인물의 성별을 자동으로 채우는 데 사용합니다. 여전히 불확실한 항목만 사람이 확인합니다.
-4. **저장과 확인 관문**
+3. **저장과 확인 관문**
    - 결과·캐시·프록시 경로를 DB에 커밋한 뒤 원본 영상 삭제를 시도합니다.
    - 미확정 항목이 있으면 `awaiting_confirmation`, 없으면 `verifying` 상태로 이동합니다.
    - `confirm-registers`는 모든 필수 확인이 끝났는지 검사합니다. 사람이 확정한 이름 있는 인물의 성별은 충돌 여부를 확인해 작품 단위로 저장하고 Phase 2를 시작합니다.
@@ -67,7 +65,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["확정된 성별·격식을 GPT 경량 모델로 반영"]
+    A["확정된 격식을 GPT 경량 모델로 반영<br/>성별은 문장에 쓰지 않고 검증에 정보로만 전달"]
     B["장면 분할<br/>실패 시 시간 간격 기반 분할"]
     C["Claude 독립 검증"]
     D["GPT 독립 검증"]
@@ -147,15 +145,15 @@ flowchart LR
 | `backend/app/core/pipeline.py` | Phase 1·2 분석 흐름과 모델 결과 통합 |
 | `backend/app/core/ingest.py` | SRT 파싱·조립, 오디오 추출·분할, 영상 프록시 생성 |
 | `backend/app/core/alignment.py`, `embedding_dp_alignment.py`, `stt_srt_matching.py`, `time_overlap.py` | STT·한국어 SRT·번역 자막의 정렬과 타이밍 계산 |
-| `backend/app/core/pretreatment.py` | CTA 제거와 비속어 사전 전처리 |
 | `backend/app/core/grammar_necessity.py` | spaCy·kiwipiepy 기반 성별·격식 후보 탐지와 판단 |
 | `backend/app/core/format_rules.py`, `safety_net.py` | 온점·줄 길이 규칙과 최종 형식 보정 |
 | `backend/app/core/glossary_guard.py` | 교정·승인 시 용어집 표기 보호 |
 | `backend/app/core/requery.py`, `export.py` | 교정 재질의, 최종 SRT 조립·통계 |
+| `backend/app/core/llm_trace.py` | 개발용 모델 호출 기록(프롬프트·응답 원문). 분석 실행별 JSONL로 `backend/media/qc_trace/`에 저장하며 화면·DB에는 영향 없음 |
 | `backend/app/core/uploads.py`, `validation.py` | 업로드 저장, 한국어 SRT 등록 경로 검증 |
 | `backend/app/providers/base.py` | 모델 인터페이스, 공통 검증 프롬프트, 프로바이더 생성 |
 | `backend/app/providers/live.py`, `claude_client.py`, `gpt_client.py`, `mock.py` | 실제 모델 연동과 테스트용 구현 |
-| `backend/app/language_profiles/`, `knowledge/` | 언어별 YAML 설정, CTA·비속어·민감어·호칭·관용구 자료. 작품별 용어집은 DB에 저장 |
+| `backend/app/language_profiles/`, `knowledge/` | 언어별 YAML 설정, 호칭·관용구 자료. 작품별 용어집은 DB에 저장 |
 | `backend/alembic/`, `backend/tests/` | DB 마이그레이션, 백엔드 회귀 테스트 |
 | `frontend/src/App.jsx` | `titles`·`confirm`·`review` 화면 전환과 화면 상태 복원 |
 | `frontend/src/views/TitleListView.jsx` | 아카이브 화면의 헤더와 레이아웃 |
