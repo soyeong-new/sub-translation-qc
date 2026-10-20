@@ -60,7 +60,7 @@ const CONFIRM_TOUR_STEPS = [
 // 자막 타이밍이 실제 발화와 살짝 안 맞거나 씬이 잘리는 경우가 있어,
 // 재생 구간 앞뒤로 여유를 준다. 뒤쪽이 실제로 더 많이 어긋나는 경우가
 // 있어 앞뒤를 다르게 둔다.
-export const PREVIEW_PAD_START_SECONDS = 1;
+export const PREVIEW_PAD_START_SECONDS = 0;
 export const PREVIEW_PAD_END_SECONDS = 0.5;
 
 const binaryBtnClass =
