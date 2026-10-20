@@ -572,3 +572,17 @@ async def test_judge_improvement_returns_is_improvement_per_id():
         texts=[{"id": "p1", "text": "hola"}], profile={"language": "es", "variant": "LATAM"},
     )
     assert result == payload["results"]
+
+
+@pytest.mark.asyncio
+async def test_get_embeddings_splits_requests_over_api_limit():
+    client = GptClient(api_key="fake", model="gpt-test")
+
+    async def fake_create(input, model):
+        return SimpleNamespace(data=[SimpleNamespace(embedding=[float(t)]) for t in input])
+
+    client._sdk_client.embeddings.create = AsyncMock(side_effect=fake_create)
+    texts = [str(i) for i in range(2500)]
+    actual = await client.get_embeddings(texts)
+    assert actual == [[float(i)] for i in range(2500)]
+    assert all(len(c.kwargs["input"]) <= 2048 for c in client._sdk_client.embeddings.create.call_args_list)

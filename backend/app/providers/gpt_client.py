@@ -797,11 +797,15 @@ class GptClient:
         """OpenAI text-embedding-3-small 모델로 문장 배치 임베딩 벡터 목록을 반환한다."""
         if not texts:
             return []
-        response = await self._sdk_client.embeddings.create(
-            input=texts,
-            model=model,
-        )
-        return [item.embedding for item in response.data]
+        # OpenAI 임베딩은 요청당 입력 2048개 제한이라 1000개씩 나눠 보낸다.
+        vectors: List[List[float]] = []
+        for i in range(0, len(texts), 1000):
+            response = await self._sdk_client.embeddings.create(
+                input=texts[i:i + 1000],
+                model=model,
+            )
+            vectors.extend(item.embedding for item in response.data)
+        return vectors
 
     async def realign_subtitles(self, korean: List[dict], target: List[dict],
                                 baseline: List[dict]) -> List[dict]:
