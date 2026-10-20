@@ -881,6 +881,7 @@ async def _back_translate_proposals(
     provider: ModelProvider, profile: dict,
     agreed: list, claude_only: list, gpt_only: list, target_version_id: str,
     pairs: list, prepare_survivors=None,
+    glossary_entries: Optional[list] = None, resolved_registers: Optional[dict] = None,
 ) -> tuple[dict, dict, set, list]:
     """제안된 문구가 교정 전 원문보다 실제로 나아졌는지를 반대쪽 모델이 먼저
     판단하고(judge_improvement), 개선으로 인정된 문구만 한국어로
@@ -958,13 +959,43 @@ async def _back_translate_proposals(
     def _without_reference_korean(items: list) -> list:
         return [{k: v for k, v in item.items() if k != "reference_korean"} for item in items]
 
+    # 역번역 모델은 한국어 원문 없이 대상언어 문장만 보므로, 주어·성별·고유명사를
+    # 추측하다 틀린다. 앞뒤 1줄과 이 줄에 해당하는 용어집·확정된 성별/격식만
+    # 힌트로 붙인다(한국어 문장 자체는 여전히 안 준다 — 위 베끼기 문제).
+    # judge_improvement에는 안 붙인다: 판정 입력·비용을 바꾸지 않으려고.
+    pair_index = {p.id: i for i, p in enumerate(pairs)}
+
+    def _with_hints(items: list) -> list:
+        out = []
+        for item in items:
+            item = _without_reference_korean([item])[0]
+            i = pair_index.get(item["id"])
+            if i is not None:
+                for key, j in (("context_before", i - 1), ("context_after", i + 1)):
+                    if 0 <= j < len(pairs) and pairs[j].target:
+                        item[key] = _strip_html_tags(pairs[j].target.text)
+                korean = korean_text_by_id.get(item["id"], "")
+                glossary = [
+                    {"korean_term": e["korean_term"], "canonical": e["canonical"]}
+                    for e in (glossary_entries or [])
+                    if e.get("korean_term") and e.get("canonical") and e["korean_term"] in korean
+                ]
+                if glossary:
+                    item["glossary"] = glossary
+                reg = (resolved_registers or {}).get(item["id"]) or {}
+                hints = {k: reg[k] for k in ("gender", "formality") if reg.get(k)}
+                if hints:
+                    item["speaker_hints"] = hints
+            out.append(item)
+        return out
+
     claude_authored_backtranslated, gpt_authored_backtranslated = await asyncio.gather(
         _back_translate_all(
-            _without_reference_korean(claude_authored_survivors), profile,
+            _with_hints(claude_authored_survivors), profile,
             provider.back_translate_with_gpt,
             "Claude 제안 역번역", target_version_id, warnings),
         _back_translate_all(
-            _without_reference_korean(gpt_authored_survivors), profile,
+            _with_hints(gpt_authored_survivors), profile,
             provider.back_translate_with_claude,
             "GPT 제안 역번역", target_version_id, warnings),
     )
@@ -1357,7 +1388,8 @@ async def _run_dual_verification_pass(
     (backtranslation_by_id, original_backtranslation_by_id, not_improved,
      backtranslation_warnings) = await _back_translate_proposals(
         provider, profile, true_agreed, filtered_claude_only, filtered_gpt_only,
-        target_version_id, pairs, _prepare_surviving_proposals)
+        target_version_id, pairs, _prepare_surviving_proposals,
+        glossary_entries=glossary_entries, resolved_registers=resolved_registers)
     warnings.extend(backtranslation_warnings)
 
     findings: list = []

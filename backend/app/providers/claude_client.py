@@ -343,6 +343,10 @@ class ClaudeClient:
             "추측해서 채워넣거나 미화하지 마라. 중의적이거나 문맥 없이는 "
             "뜻이 불분명한 단어·표현은 배열의 다른 항목들(앞뒤 세그먼트)을 "
             "참고해 실제로 어떤 의미로 쓰였는지 판별한 뒤 역번역하라.\n"
+            "항목에 context_before/context_after(앞뒤 줄), glossary(이 줄의 고유명사·"
+            "용어 표기), speaker_hints(확정된 화자 성별·격식)가 있으면 의미·주어·"
+            "고유명사 판별에만 쓰고, 힌트에 없는 내용을 지어내지 마라. "
+            "context_*는 번역 대상이 아니다.\n"
             + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         )
         user = json.dumps(texts, ensure_ascii=False)

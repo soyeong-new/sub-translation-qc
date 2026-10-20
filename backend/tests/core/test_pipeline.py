@@ -2942,3 +2942,38 @@ async def test_dual_verification_receives_confirmed_gender_groups_per_line():
         [mk("p0", "Você está bravo?")], _P(), {"language": "pt"}, {}, "줄당 50자",
         "tv1", {"p0": {"gender_groups": groups, "formality": "formal"}})
     assert captured["pairs"][0]["gender_groups"] == groups
+
+
+@pytest.mark.asyncio
+async def test_back_translate_proposals_sends_hints_but_not_korean():
+    """역번역 입력에 앞뒤 줄·용어집·확정 성별/격식은 붙고, 한국어 원문은 안 붙는다."""
+    from types import SimpleNamespace as NS
+    from app.core.pipeline import _back_translate_proposals
+
+    seen = []
+
+    async def _bt(texts, profile):
+        seen.extend(texts)
+        return [{"id": t["id"], "korean_text": "x", "original_korean_text": "y"} for t in texts]
+
+    async def _judge(texts, profile):
+        return [{"id": t["id"], "is_improvement": True} for t in texts]
+
+    provider = NS(back_translate_with_gpt=_bt, back_translate_with_claude=_bt,
+                  judge_improvement_with_gpt=_judge, judge_improvement_with_claude=_judge)
+    pairs = [NS(id=f"p{i}", korean=NS(text=k), target=NS(text=t)) for i, (k, t) in
+             enumerate([("a", "uno"), ("강옥이 왔다", "Llegó Kang-ok"), ("c", "tres")])]
+
+    await _back_translate_proposals(
+        provider, {"language": "es"}, agreed=[],
+        claude_only=[{"segment_id": "p1", "corrected_text": "Llegó Kang-ok."}], gpt_only=[],
+        target_version_id="tv1", pairs=pairs,
+        glossary_entries=[{"korean_term": "강옥", "canonical": "Kang-ok"},
+                          {"korean_term": "없음", "canonical": "Nope"}],
+        resolved_registers={"p1": {"gender": "male", "formality": None}})
+
+    item = next(t for t in seen if t["id"] == "p1")
+    assert item["context_before"] == "uno" and item["context_after"] == "tres"
+    assert item["glossary"] == [{"korean_term": "강옥", "canonical": "Kang-ok"}]
+    assert item["speaker_hints"] == {"gender": "male"}
+    assert "reference_korean" not in item
