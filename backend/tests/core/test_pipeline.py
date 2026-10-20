@@ -981,17 +981,17 @@ async def test_pipeline_auto_corrects_constant_offset_with_korean_srt_path(tmp_p
 
 def test_median_offset_from_stt_matches_ignores_cues_beyond_clip_and_outliers():
     raw_cues = [
-        SegmentText(start=0.0, end=1.0, text="a"),
-        SegmentText(start=10.0, end=11.0, text="b"),
-        SegmentText(start=20.0, end=21.0, text="c"),
+        SegmentText(start=0.0, end=1.0, text="aa"),
+        SegmentText(start=10.0, end=11.0, text="bb"),
+        SegmentText(start=20.0, end=21.0, text="cc"),
         SegmentText(start=999.0, end=1000.0, text="far away, outside transcribed clip"),
     ]
     matched_words = [
-        {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "a", "confirmed": True},   # +20
-        {"cue_index": 1, "start": 30.5, "end": 31.0, "text": "b", "confirmed": True},   # +20.5
-        {"cue_index": 2, "start": 61.0, "end": 61.5, "text": "c", "confirmed": True},   # +41 (outlier)
+        {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "aa", "confirmed": True},   # +20
+        {"cue_index": 1, "start": 30.5, "end": 31.0, "text": "bb", "confirmed": True},   # +20.5
+        {"cue_index": 2, "start": 61.0, "end": 61.5, "text": "cc", "confirmed": True},   # +41 (outlier)
         # cue_index 3은 clip_duration(=30.0) 밖(시작 시각 999.0)이라 무시돼야 한다.
-        {"cue_index": 3, "start": 5000.0, "end": 5000.5, "text": "z", "confirmed": True},
+        {"cue_index": 3, "start": 5000.0, "end": 5000.5, "text": "zz", "confirmed": True},
     ]
     offset = _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=30.0)
     assert offset == pytest.approx(20.5)
@@ -1012,17 +1012,31 @@ def test_median_offset_from_stt_matches_ignores_unconfirmed_interpolated_words()
     하면 match_stt_words_to_korean_srt가 confirmed=False인 추정값을
     돌려준다 — 이걸 실측처럼 오프셋 계산에 넣으면 안 된다."""
     raw_cues = [
-        SegmentText(start=0.0, end=1.0, text="a"),
-        SegmentText(start=10.0, end=11.0, text="b"),
+        SegmentText(start=0.0, end=1.0, text="aa"),
+        SegmentText(start=10.0, end=11.0, text="bb"),
     ]
     matched_words = [
-        {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "a", "confirmed": True},
+        {"cue_index": 0, "start": 20.0, "end": 20.5, "text": "aa", "confirmed": True},
         # cue 1은 보간(추정)값뿐이라 근거에서 빠져야 한다 — 이게 안 빠지면
         # 아래 기대값(20.0)이 아니라 둘의 중앙값이 나온다.
-        {"cue_index": 1, "start": 999.0, "end": 999.5, "text": "b", "confirmed": False},
+        {"cue_index": 1, "start": 999.0, "end": 999.5, "text": "bb", "confirmed": False},
     ]
     offset = _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=30.0)
     assert offset == pytest.approx(20.0)
+
+
+def test_median_offset_from_stt_matches_ignores_single_char_words_from_hallucinated_stt():
+    """회귀(실제 사례, TheGossip): 음악/효과음 구간에서 STT가 지어낸 "이 영상은
+    유료광고를..."의 "이" 5개가 엉뚱한 큐에 확정 매칭돼 오프셋이 -217.5초로
+    나왔다. 한 글자 단어만 근거인 경우엔 탐지 실패(None)여야 한다."""
+    cue_starts = {44: 224.6, 60: 272.4, 62: 279.8, 67: 293.1, 89: 362.3}
+    raw_cues = [SegmentText(start=cue_starts.get(i, 1000.0 + i), end=1001.0 + i, text="x") for i in range(90)]
+    stt_start = {44: 6.4, 60: 58.6, 62: 60.0, 67: 116.1, 89: 144.8}
+    matched_words = [
+        {"cue_index": i, "start": t, "end": t + 0.3, "text": "이", "confirmed": True}
+        for i, t in stt_start.items()
+    ]
+    assert _median_offset_from_stt_matches(matched_words, raw_cues, clip_duration=372.0) is None
 
 
 def test_median_offset_from_stt_matches_ignores_cue_index_out_of_range():

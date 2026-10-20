@@ -204,6 +204,11 @@ def _median_offset_from_stt_matches(matched_words: list, raw_cues: list,
         idx = w["cue_index"]
         if idx >= len(raw_cues) or idx in offset_by_cue_index or not w.get("confirmed"):
             continue
+        # 한 글자 단어("이" 등)는 아무 큐에나 붙을 수 있어 근거로 못 쓴다 — STT가
+        # 음악/효과음 구간에서 지어낸 문구("이 영상은 유료광고를...")의 "이" 5개가
+        # 엉뚱한 큐에 확정 매칭돼 오프셋이 +216.5초로 나온 사례가 있었다.
+        if len(re.sub(r"\W", "", w.get("text", ""))) < 2:
+            continue
         if raw_cues[idx].start >= clip_duration:
             continue
         offset_by_cue_index[idx] = w["start"] - raw_cues[idx].start
