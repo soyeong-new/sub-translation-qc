@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import QQLogo from "../components/QQLogo.jsx";
-import { btnBase } from "../utils/buttonStyles.js";
+import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
 import { runTour, autoRunTour } from "../tour.js";
 
 const CONFIRM_TOUR_KEY = "confirm-v1";
@@ -70,10 +70,6 @@ const binaryBtnClass =
 const selectedBtnClass = `${btnBase} border border-primary bg-primary/15 text-primary`;
 const navBtnClass =
   `${btnBase} border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground`;
-const primaryBtnClass =
-  `${btnBase} bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2`;
-const ghostBtnClass =
-  `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
 
 // 성별/격식 각각의 확인 상태를 판단하는 단일 기준점. isSegmentResolved와
 // 컴포넌트 렌더 로직(genderResolved/formalityResolved) 모두 이 두 함수를
@@ -120,7 +116,7 @@ export function GenderQuestion({
         <p className="mb-3 text-sm text-foreground">
           {words.map((w) => (
             <span key={w} className="mr-1.5 whitespace-nowrap">
-              <span className="rounded bg-accent/20 px-1.5 py-0.5 font-mono text-accent-foreground">
+              <span className="rounded bg-accent/20 px-1.5 py-0.5 font-medium text-accent-foreground">
                 {w}
               </span>
               {wordMeanings?.[w] && (
@@ -366,7 +362,7 @@ export default function FlaggedSegmentStepper({
           지켜, 헤더 폭이 들썩이지 않게 한다. */}
       <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-card/90 px-6 backdrop-blur">
         <QQLogo className="h-5 w-auto shrink-0" />
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-4">
+        <div className="mx-auto flex w-full max-w-[1360px] items-center gap-4">
           <div className="flex shrink-0 items-center gap-3">
             {onExit && (
               <button
@@ -407,7 +403,7 @@ export default function FlaggedSegmentStepper({
             <span className="whitespace-nowrap text-xs text-muted-foreground">확인 중인 줄</span>
             <div className="h-1.5 w-28 overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-muted-foreground/50"
+                className="h-full rounded-full bg-primary"
                 style={{ width: `${((currentIndex + 1) / segments.length) * 100}%` }}
               />
             </div>
@@ -439,7 +435,7 @@ export default function FlaggedSegmentStepper({
         </button>
       </div>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1360px] px-6 py-8">
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(300px,38%)_1fr]">
           <div className="space-y-3 lg:sticky lg:top-20 lg:self-start">
             <div className="rounded-xl border border-border bg-card p-3 shadow-sm">
@@ -471,8 +467,8 @@ export default function FlaggedSegmentStepper({
               onClick={replayCurrentSegment}
               className="cursor-pointer rounded-lg border border-border bg-card p-4 shadow-sm transition-colors hover:border-primary/40"
             >
-              <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">한국어 원문</p>
-              <p className="whitespace-pre-wrap text-sm text-foreground">{currentSegment.korean_text}</p>
+              <p className="mb-1.5 text-xs font-semibold text-muted-foreground">한국어 원문</p>
+              <p className="whitespace-pre-wrap text-base font-medium leading-relaxed text-foreground">{currentSegment.korean_text}</p>
 
               {currentSegment.gender_check_needed && (
                 <section
@@ -481,7 +477,7 @@ export default function FlaggedSegmentStepper({
                   className="mt-4 rounded-md border border-border bg-muted p-3"
                 >
                   <div className="mb-3 flex items-center gap-2">
-                    <h3 id="stepper-gender-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">성별</h3>
+                    <h3 id="stepper-gender-heading" className="text-xs font-semibold text-muted-foreground">성별</h3>
                     {genderResolved && <span className="text-xs text-muted-foreground">확인됨</span>}
                   </div>
                   <div className="space-y-4">
@@ -492,7 +488,7 @@ export default function FlaggedSegmentStepper({
                     )}
                     {genderGroups.length > 0 ? (
                       genderGroups.map((group, index) => (
-                        <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border/60 bg-card p-3" : ""}>
+                        <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border bg-card p-3" : ""}>
                           <GenderQuestion
                             heading={
                               genderGroups.length > 1
@@ -527,7 +523,7 @@ export default function FlaggedSegmentStepper({
                   className="mt-3 rounded-md border border-border bg-muted/40 p-3"
                 >
                   <div className="mb-3 flex items-center gap-2">
-                    <h3 id="stepper-formality-heading" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">격식</h3>
+                    <h3 id="stepper-formality-heading" className="text-xs font-semibold text-muted-foreground">격식</h3>
                     {formalityResolved && <span className="text-xs text-muted-foreground">확인됨</span>}
                   </div>
                   <div className="flex gap-2">
@@ -558,7 +554,7 @@ export default function FlaggedSegmentStepper({
       </main>
 
       <footer className="sticky bottom-0 z-20 border-t border-border bg-card/90 px-6 py-4 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
+        <div className="mx-auto flex max-w-[1360px] items-center justify-between">
           <button
             disabled={pending || currentIndex === 0}
             onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}

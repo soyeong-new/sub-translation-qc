@@ -25,7 +25,7 @@ import {
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 import QQLogo from "../components/QQLogo.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
-import { btnBase } from "../utils/buttonStyles.js";
+import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
 
 // 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
 // 아니다(backend/app/core/requery.py의 requery_finding 참고) — 검수자가
@@ -143,11 +143,9 @@ const labelClass = "mb-1.5 block text-sm font-medium text-foreground";
 
 // 승인/거부/수정 버튼은 색으로만 구분하지 않고(라벨 텍스트 병기) 채움/윤곽 스타일까지
 // 다르게 하여 시각적으로 뚜렷이 구분되도록 한다 (ui-ux-pro-max 가이드).
-const approveBtnClass = `${btnBase} border border-success/40 bg-success/10 text-success hover:bg-success/20`;
+const approveBtnClass = `${btnBase} border border-success bg-success text-success-foreground hover:bg-success/90`;
 const rejectBtnClass = `${btnBase} border border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20`;
 const modifyBtnClass = `${btnBase} border border-input bg-background text-foreground hover:bg-accent hover:text-accent-foreground`;
-const ghostBtnClass = `${btnBase} text-muted-foreground hover:bg-accent hover:text-accent-foreground`;
-const primaryBtnClass = `${btnBase} bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2`;
 
 // 투어 내용을 바꿀 때는 이 키의 버전을 올린다("review-v2" 등) — 이미 한 번
 // 본 사람에게도 바뀐 안내가 다시 한 번 뜨게 하기 위해서다.
@@ -390,13 +388,13 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
       className="mb-3 rounded-md border border-warning/40 bg-warning/10 p-3"
       onClick={(e) => e.stopPropagation()}
     >
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-warning">
+      <p className="mb-2 text-xs font-semibold text-warning-foreground">
         성별 확인 필요 (STT 재검증으로 새로 생긴 표현)
       </p>
       {groups && groups.length > 0 ? (
         <div className="space-y-3">
           {groups.map((group, index) => (
-            <div key={index} className="rounded-md border border-border/60 bg-background p-2">
+            <div key={index} className="rounded-md border border-border bg-background p-2">
               <GenderQuestion
                 heading={group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`}
                 words={group.words}
@@ -463,26 +461,15 @@ function FindingCard({
         )}
       </div>
 
-      {requeryInstruction && (
-        <div className="mb-3 border-t border-primary/30 pt-2">
-          <p className="text-xs font-semibold text-primary">
-            재질문 결과 — 검토 후 승인/거부해주세요
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">지시: {requeryInstruction}</p>
-        </div>
-      )}
-
-      <p className="mb-3 max-w-prose whitespace-pre-line text-sm leading-relaxed text-foreground">
-        {breakBySentence(description)}
-      </p>
-
+      {/* 한국어 원문 띠 — 아래 원본/제안을 판단할 맥락 */}
+      <div className="mb-3 space-y-2 rounded-md bg-muted/60 p-3">
       {/* STT 한국어 원문 — 오역처럼 보이는 finding이 사실은 STT가 잘못 알아들은
           결과일 수 있다. 검수자가 별도 STT 사이드바를 뒤지지 않고 그 자리에서
           바로 "번역이 틀렸나, STT가 틀렸나"를 가늠할 수 있게 참고용으로 붙인다. */}
       {koreanText && (
-        <div className="mb-3 border-t border-border/60 pt-2">
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <div>
+          <div className="mb-0.5 flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-muted-foreground">
               한국어 원문
             </p>
             {/* STT가 잘못 알아들은 게 원인이면, 검수자가 그 자리에서 바로
@@ -499,7 +486,7 @@ function FindingCard({
               </button>
             )}
           </div>
-          <p className="whitespace-pre-wrap text-sm text-foreground">{koreanText}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{koreanText}</p>
           {sttEditing && (
             <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
               <Field id={`stt-${segment.id}`} label="수정된 한국어 원문">
@@ -525,7 +512,7 @@ function FindingCard({
                   취소
                 </button>
                 {sttError && (
-                  <span role="status" aria-live="polite" className="text-xs text-destructive">
+                  <span role="status" aria-live="polite" className="text-sm font-medium text-destructive">
                     {sttError}
                   </span>
                 )}
@@ -534,6 +521,7 @@ function FindingCard({
           )}
         </div>
       )}
+      </div>
 
       <InlineGenderQuestion
         segment={segment}
@@ -546,22 +534,22 @@ function FindingCard({
       {/* 원본/제안 대비: 데스크톱에서 나란히(2열), 좁은 화면에서는 세로로 쌓임 */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="rounded-md border border-border bg-muted/60 p-3">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
-          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.original_text}</p>
+          <p className="mb-1 text-xs font-semibold text-muted-foreground">원본</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{finding.original_text}</p>
           {originalBackTranslation && (
-            <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+            <p className="mt-0.5 whitespace-pre-wrap text-xs leading-snug text-muted-foreground">
               번역: {originalBackTranslation}
             </p>
           )}
         </div>
         <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-primary">제안</p>
+            <p className="text-xs font-semibold text-primary">제안</p>
             <CharCount text={finding.suggested_text} />
           </div>
-          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.suggested_text}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
-            <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+            <p className="mt-0.5 whitespace-pre-wrap text-xs leading-snug text-muted-foreground">
               번역: {proposalBackTranslation || backTranslation}
             </p>
           )}
@@ -573,13 +561,28 @@ function FindingCard({
           줄었거나) 다를 때만 별도로 보여준다 (export 시 실제 반영되는 텍스트). */}
       {finding.final_text && finding.final_text !== finding.suggested_text && (
         <div className="mt-3 border-t border-warning/30 pt-2">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-warning">
+          <p className="mb-1 text-xs font-semibold text-warning-foreground">
             저장된 최종 텍스트
             {FINAL_TEXT_REASON_LABEL[finding.final_text_reason] ?? (finding.status === "approved" ? " (승인할 때 자동으로 조정됨)" : "")}
           </p>
-          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.final_text}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{finding.final_text}</p>
         </div>
       )}
+
+      {requeryInstruction && (
+        <div className="mb-1">
+          <p className="text-xs font-semibold text-primary">
+            재질문 결과 — 검토 후 승인/거부해주세요
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">지시: {requeryInstruction}</p>
+        </div>
+      )}
+
+      <div className="mt-3">
+      <p className="max-w-prose whitespace-pre-line text-[13px] leading-relaxed text-foreground">
+        {breakBySentence(description)}
+      </p>
+      </div>
 
       <div data-tour="finding-actions" className="mt-3 flex flex-wrap items-center gap-2">
         <button disabled={!canAct} onClick={onApprove} className={approveBtnClass}>
@@ -599,7 +602,7 @@ function FindingCard({
           </button>
         )}
         {error && (
-          <span role="status" aria-live="polite" className="text-xs text-destructive">
+          <span role="status" aria-live="polite" className="text-sm font-medium text-destructive">
             {error}
           </span>
         )}
@@ -614,7 +617,7 @@ function FindingCard({
               onChange={(e) => onEditTextChange(e.target.value)}
               rows={3}
               disabled={busy}
-              className={`${inputClass} font-mono`}
+              className={inputClass}
             />
           </Field>
           <div className="flex gap-2">
@@ -703,32 +706,34 @@ function PairedFindingCard({
     const canAct = Boolean(reviewerName.trim()) && !busy;
 
     return (
-      <div className={`rounded-md border bg-muted/20 p-3 ${cardBorderClass(finding)}`}>
-        {requeryInstruction && (
-          <div className="mb-2 border-t border-primary/30 pt-1.5">
-            <p className="text-xs font-semibold text-primary">재질문 결과</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">지시: {requeryInstruction}</p>
-          </div>
-        )}
-
-        <p className="mb-2 max-w-prose whitespace-pre-line text-xs leading-relaxed text-foreground">
-          {breakBySentence(description)}
-        </p>
-
+      <div className={`flex flex-col rounded-md border bg-muted/20 p-3 ${cardBorderClass(finding)}`}>
         <div className="rounded-md border border-primary/30 bg-primary/5 p-2">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-primary">제안</p>
+            <p className="text-xs font-semibold text-primary">제안</p>
             <CharCount text={finding.suggested_text} />
           </div>
-          <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{finding.suggested_text}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{finding.suggested_text}</p>
           {(proposalBackTranslation || backTranslation) && (
-            <p className="mt-1.5 whitespace-pre-wrap text-xs text-muted-foreground">
+            <p className="mt-1.5 whitespace-pre-wrap text-xs leading-snug text-muted-foreground">
               번역: {proposalBackTranslation || backTranslation}
             </p>
           )}
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div className="mt-2">
+        {requeryInstruction && (
+          <div className="mb-1">
+            <p className="text-xs font-semibold text-primary">재질문 결과</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">지시: {requeryInstruction}</p>
+          </div>
+        )}
+
+        <p className="max-w-prose whitespace-pre-line text-[13px] leading-relaxed text-foreground">
+          {breakBySentence(description)}
+        </p>
+        </div>
+
+        <div className="mt-auto flex flex-wrap items-center gap-2 pt-2">
           <button
             disabled={!canAct}
             onClick={() => onPick(finding.id)}
@@ -778,7 +783,7 @@ function PairedFindingCard({
                 onChange={(e) => onEditTextChange(e.target.value)}
                 rows={3}
                 disabled={busy}
-                className={`${inputClass} font-mono`}
+                className={inputClass}
               />
             </Field>
             <div className="flex gap-2">
@@ -858,10 +863,12 @@ function PairedFindingCard({
         </span>
       </div>
 
-      {koreanText && (
-        <div className="mb-3 border-t border-border/60 pt-2">
+      {/* 맥락 띠: 한국어 원문과 원본(두 후보 공통) — 아래 후보 제안과 비교할 기준 */}
+      <div className="mb-3 space-y-2 rounded-md bg-muted/60 p-3">
+        {koreanText && (
+      <div>
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-semibold text-muted-foreground">
               한국어 원문
             </p>
             {segment && !sttEditing && (
@@ -875,7 +882,7 @@ function PairedFindingCard({
               </button>
             )}
           </div>
-          <p className="whitespace-pre-wrap text-sm text-foreground">{koreanText}</p>
+          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{koreanText}</p>
           {sttEditing && (
             <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
               <Field id={`stt-${segment.id}`} label="수정된 한국어 원문">
@@ -901,7 +908,7 @@ function PairedFindingCard({
                   취소
                 </button>
                 {sttError && (
-                  <span role="status" aria-live="polite" className="text-xs text-destructive">
+                  <span role="status" aria-live="polite" className="text-sm font-medium text-destructive">
                     {sttError}
                   </span>
                 )}
@@ -909,19 +916,10 @@ function PairedFindingCard({
             </div>
           )}
         </div>
-      )}
-
-      <InlineGenderQuestion
-        segment={segment}
-        pending={genderPending}
-        error={genderError}
-        onResolveGender={onResolveGender}
-        onResolveGenderGroup={onResolveGenderGroup}
-      />
-
-      <div className="mb-3 border-t border-border/60 pt-2">
+        )}
+      <div className="border-t border-border pt-2">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">원본</p>
+          <p className="text-xs font-semibold text-muted-foreground">원본</p>
           {/* 둘 다 원본보다 못한 제안일 때 — 개별 카드를 하나씩 거부하지
               않아도 여기서 한 번에 원본을 유지할 수 있게 한다. */}
           <button
@@ -934,13 +932,22 @@ function PairedFindingCard({
             원본 유지
           </button>
         </div>
-        <p className="whitespace-pre-wrap font-mono text-xs text-foreground">{a.original_text}</p>
+        <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{a.original_text}</p>
         {originalBackTranslation && (
-          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+          <p className="mt-1 whitespace-pre-wrap text-xs leading-snug text-muted-foreground">
             번역: {originalBackTranslation}
           </p>
         )}
       </div>
+      </div>
+
+      <InlineGenderQuestion
+        segment={segment}
+        pending={genderPending}
+        error={genderError}
+        onResolveGender={onResolveGender}
+        onResolveGenderGroup={onResolveGenderGroup}
+      />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr]">
         {renderCandidate(a)}
@@ -1072,7 +1079,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
           >
             &#9664; 이전 구간
           </button>
-          <span className="text-[11px] text-muted-foreground">방향키(&larr;/&rarr;)로 이동</span>
+          <span className="text-xs text-muted-foreground">방향키(&larr;/&rarr;)로 이동</span>
           <button
             type="button"
             onClick={() => goToOffset(1)}
@@ -1927,7 +1934,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-20 flex h-16 items-center gap-4 border-b border-border bg-card/90 px-6 backdrop-blur">
         <QQLogo className="h-5 w-auto shrink-0" />
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-4">
+        <div className="mx-auto flex w-full max-w-[1360px] items-center gap-4">
           <div className="flex shrink-0 items-center gap-3">
             <button
               onClick={onBack}
@@ -2009,8 +2016,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       </div>
 
       {pipelineWarnings.length > 0 && (
-        <div className="mx-auto max-w-6xl px-6 pt-4">
-          <div className="flex gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
+        <div className="mx-auto max-w-[1360px] px-6 pt-4">
+          <div className="flex gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning-foreground">
             <svg
               aria-hidden="true"
               viewBox="0 0 20 20"
@@ -2096,9 +2103,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           같이 비례해서 줄어들게 한다 — 고정폭이면 창이 좁아질수록 영상
           열이 상대적으로 커 보이다가 md 미만에서 갑자기 전체 폭으로
           튀어 화면을 다 차지하는 것처럼 보였다. */}
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-[1360px] px-6 py-8">
         <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(280px,30%)_1fr]">
-          <div className="space-y-3 md:sticky md:top-6 md:self-start">
+          <div className="space-y-3 md:sticky md:top-24 md:self-start">
             <VideoPreviewPanel
               ref={srtPanelRef}
               videoProxyUrl={videoProxyUrl}
@@ -2148,10 +2155,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               return (
                 <div className="pointer-events-none fixed inset-0 z-40 flex items-center">
                   {/* Findings 컬럼과 가로 위치를 맞추려고 페이지 그리드(mx-auto
-                      max-w-6xl px-6 + md:grid-cols-[minmax(280px,30%)_1fr])를
+                      max-w-[1360px] px-6 + md:grid-cols-[minmax(280px,30%)_1fr])를
                       그대로 복제한다 — 세로 스크롤과 무관하게 가로 정렬은
                       뷰포트 폭에만 달려 있어 JS 없이도 항상 일치한다. */}
-                  <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-8 px-6 md:grid-cols-[minmax(280px,30%)_1fr]">
+                  <div className="mx-auto grid w-full max-w-[1360px] grid-cols-1 gap-8 px-6 md:grid-cols-[minmax(280px,30%)_1fr]">
                     <div />
                     <div className="pointer-events-auto flex justify-center">
                       <div className="max-h-[85vh] w-full max-w-md overflow-y-auto space-y-4 rounded-xl border border-border bg-card p-4 shadow-xl">
@@ -2494,7 +2501,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                     )}
                     {hasTarget ? (
                       <div className="flex items-end justify-between gap-3">
-                        <p className="whitespace-pre-wrap font-mono text-sm text-foreground">{seg.target_text}</p>
+                        <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{seg.target_text}</p>
                         <div className="flex shrink-0 items-center gap-2">
                           <button
                             disabled={pending}
@@ -2505,7 +2512,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                             {seg.excluded ? "제외 취소" : "제외"}
                           </button>
                           {excludeErrors[seg.id] && (
-                            <span role="status" aria-live="polite" className="text-xs text-destructive">
+                            <span role="status" aria-live="polite" className="text-sm font-medium text-destructive">
                               {excludeErrors[seg.id]}
                             </span>
                           )}
