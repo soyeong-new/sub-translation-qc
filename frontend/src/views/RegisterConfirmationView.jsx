@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getFlaggedSegments, getTargetVersion, resolveGender, resolveGenderGroup,
-  resolveFormality, confirmRegisters,
+  resolveFormality, confirmRegisters, setVideoOffset,
 } from "../api.js";
 import FlaggedSegmentStepper, { isSegmentResolved } from "./FlaggedSegmentStepper.jsx";
 
@@ -70,6 +70,11 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
       cancelled = true;
     };
   }, [targetVersionId]);
+
+  async function handleChangeVideoOffset(next) {
+    await setVideoOffset(targetVersionId, next);
+    setVideoOffsetSeconds(next);
+  }
 
   async function handleComplete() {
     setCompletePending(true);
@@ -148,6 +153,7 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
         segments={segments}
         videoProxyUrl={videoProxyUrl}
         videoOffsetSeconds={videoOffsetSeconds}
+        onChangeVideoOffset={handleChangeVideoOffset}
         titleName={titleName}
         episodeNo={episodeNo}
         versionDisplayName={versionDisplayName}

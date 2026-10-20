@@ -8,10 +8,21 @@
 
 import { useEffect, useRef, useState } from "react";
 import QQLogo from "../components/QQLogo.jsx";
+import VideoSyncControl from "../components/VideoSyncControl.jsx";
 import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
 import { runTour, autoRunTour } from "../tour.js";
 
 const CONFIRM_TOUR_KEY = "confirm-v1";
+// 영상 싱크 맞추기 기능을 기존 사용자에게 알리는 미니 투어(전체 투어를 이미 본 경우만).
+const SYNC_FEATURE_KEY = "feature-video-sync-v1";
+const SYNC_FEATURE_STEP = {
+  element: '[data-tour="video-sync"]',
+  popover: {
+    title: "영상 싱크 맞추기",
+    description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+    popoverClass: "tour-popover-feature",
+  },
+};
 const CONFIRM_TOUR_STEPS = [
   {
     element: '[data-tour="stepper-question-card"]',
@@ -42,16 +53,23 @@ const CONFIRM_TOUR_STEPS = [
     },
   },
   {
+    element: '[data-tour="video-sync"]',
+    popover: {
+      title: "④ 영상 싱크 맞추기",
+      description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+    },
+  },
+  {
     element: '[data-tour="stepper-progress"]',
     popover: {
-      title: "④ 진행 상황",
+      title: "⑤ 진행 상황",
       description: "지금 몇 번째 줄까지 확인했는지 보여줘요. 한 번에 한 줄씩, 답하면 자동으로 다음 줄로 넘어가요.",
     },
   },
   {
     element: '[data-tour="stepper-complete-button"]',
     popover: {
-      title: "⑤ AI 검증 시작하기",
+      title: "⑥ AI 검증 시작하기",
       description: "모든 줄에 답을 선택하면 눌러서 AI 검증을 시작해요.",
     },
   },
@@ -174,7 +192,7 @@ export function GenderQuestion({
 // 눌러 답을 바꿀 수도 있어야 하기 때문이다(바꾸면 최신 답으로 그대로
 // 덮어써서 저장된다).
 export default function FlaggedSegmentStepper({
-  segments, videoProxyUrl, videoOffsetSeconds = 0,
+  segments, videoProxyUrl, videoOffsetSeconds = 0, onChangeVideoOffset,
   titleName, episodeNo, versionDisplayName,
   onResolveGender, onResolveGenderGroup, onResolveFormality, onComplete, completePending, onExit,
 }) {
@@ -193,7 +211,12 @@ export default function FlaggedSegmentStepper({
   // 이 화면은 확인할 줄이 있을 때만 그려지므로(없으면 부모가 건너뜀), 마운트
   // 시 한 번만 이 브라우저(컴퓨터) 기준으로 안내 투어를 띄운다.
   useEffect(() => {
+    const sawFullTourBefore = Boolean(localStorage.getItem(`qc_tour_seen:${CONFIRM_TOUR_KEY}`));
     autoRunTour(CONFIRM_TOUR_KEY, CONFIRM_TOUR_STEPS);
+    // 전체 투어를 이미 본 사용자에게만 새 기능 하나를 알린다 — 신규 사용자는
+    // 전체 투어에 싱크 설명이 들어 있어 건너뛴다.
+    if (sawFullTourBefore) autoRunTour(SYNC_FEATURE_KEY, [SYNC_FEATURE_STEP]);
+    else localStorage.setItem(`qc_tour_seen:${SYNC_FEATURE_KEY}`, "1");
   }, []);
 
   // 줄이 바뀔 때마다 그 줄의 구간으로 seek하고 재생하며, 구간 끝에 도달하면
@@ -453,6 +476,13 @@ export default function FlaggedSegmentStepper({
                 </div>
               )}
             </div>
+            {videoProxyUrl && onChangeVideoOffset && (
+              <VideoSyncControl
+                segmentStart={currentSegment.start}
+                videoRef={videoRef}
+                onChange={onChangeVideoOffset}
+              />
+            )}
           </div>
 
           <div className="space-y-3">

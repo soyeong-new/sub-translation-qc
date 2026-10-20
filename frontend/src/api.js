@@ -35,6 +35,12 @@ async function request(path, options = {}) {
 
 export const listLanguageProfiles = () => request("/language-profiles");
 
+export const setVideoOffset = (targetVersionId, videoOffsetSeconds) =>
+  request(`/target-versions/${targetVersionId}/video-offset`, {
+    method: "PATCH",
+    body: JSON.stringify({ video_offset_seconds: videoOffsetSeconds }),
+  });
+
 export const createTitle = (name, type) =>
   request("/titles", { method: "POST", body: JSON.stringify({ name, type }) });
 

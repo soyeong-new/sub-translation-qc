@@ -21,10 +21,12 @@ import {
   resolveGenderGroup,
   excludeSegment,
   getTitleGlossary,
+  setVideoOffset,
 } from "../api.js";
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 import QQLogo from "../components/QQLogo.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
+import VideoSyncControl from "../components/VideoSyncControl.jsx";
 import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
 
 // 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
@@ -165,6 +167,17 @@ const SPLIT_FEATURE_STEP = {
   },
 };
 
+// 영상 싱크 맞추기 기능을 기존 사용자에게 알리는 미니 투어(분할 기능과 같은 방식).
+const SYNC_FEATURE_KEY = "feature-video-sync-v1";
+const SYNC_FEATURE_STEP = {
+  element: '[data-tour="video-sync"]',
+  popover: {
+    title: "영상 싱크 맞추기",
+    description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+    popoverClass: "tour-popover-feature",
+  },
+};
+
 function buildReviewTourSteps(hasFindings) {
   const steps = [
     {
@@ -182,9 +195,16 @@ function buildReviewTourSteps(hasFindings) {
       },
     },
     {
+      element: '[data-tour="video-sync"]',
+      popover: {
+        title: "③ 영상 싱크 맞추기",
+        description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+      },
+    },
+    {
       element: '[data-tour="subtitle-list"]',
       popover: {
-        title: "③ 전체 자막",
+        title: "④ 전체 자막",
         description:
           "타임코드나 텍스트를 클릭하면 그 자리에서 바로 고칠 수 있고, 수정한 내용이 최종 자막에 그대로 반영돼요. 대사가 길어서 타임코드를 벗어날 때는 그 줄을 선택했을 때 오른쪽 위에 뜨는 '분할' 버튼으로 둘로 나눌 수 있어요.",
       },
@@ -192,14 +212,14 @@ function buildReviewTourSteps(hasFindings) {
     {
       element: '[data-tour="glossary-tab"]',
       popover: {
-        title: "④ 용어집",
+        title: "⑤ 용어집",
         description: "인명·고유명사 등 번역 일관성이 필요한 용어들이에요. 열어서 언어별 표기를 확인하거나 직접 수정할 수 있어요.",
       },
     },
     {
       element: '[data-tour="findings-section"]',
       popover: {
-        title: "⑤ Findings 목록",
+        title: "⑥ Findings 목록",
         description: "번역 중 AI가 확인이 필요하다고 표시한 부분이 여기 나열돼요. 위 탭으로 대기중/승인/거부/수정 등 상태별로 걸러 볼 수 있어요.",
       },
     },
@@ -208,7 +228,7 @@ function buildReviewTourSteps(hasFindings) {
     steps.push({
       element: '[data-tour="finding-actions"]',
       popover: {
-        title: "⑥ 항목 처리하기",
+        title: "⑦ 항목 처리하기",
         description: `
           <div style="display:flex;flex-direction:column;gap:6px">
             <div><b>승인</b> — AI 제안을 그대로 반영해요</div>
@@ -222,14 +242,14 @@ function buildReviewTourSteps(hasFindings) {
     steps.push({
       element: '[data-tour="stt-edit-button"]',
       popover: {
-        title: "⑦ 한국어 수정",
+        title: "⑧ 한국어 수정",
         description: "음성인식(STT)이 원문을 잘못 알아들은 경우, 한국어 원문을 직접 고치고 재검증을 다시 실행할 수 있어요.",
       },
     });
     steps.push({
       element: '[data-tour="reject-both-button"]',
       popover: {
-        title: "⑧ 원본 유지",
+        title: "⑨ 원본 유지",
         description: "Claude와 GPT의 제안이 서로 다를 때(이견 카드) 보이는 버튼이에요. 둘 다 원본보다 별로면, 각각 거부하지 않고 한 번에 원본 번역을 그대로 유지할 수 있어요.",
       },
     });
@@ -237,7 +257,7 @@ function buildReviewTourSteps(hasFindings) {
   steps.push({
     element: '[data-tour="export-button"]',
     popover: {
-      title: hasFindings ? "⑨ 내보내기" : "⑥ 내보내기",
+      title: hasFindings ? "⑩ 내보내기" : "⑦ 내보내기",
       description: "모든 항목을 처리했으면 여기서 최종 자막(SRT) 파일을 내보낼 수 있어요. 지금까지 고친 내용이 전부 반영된 상태로 나가요.",
     },
   });
@@ -967,7 +987,7 @@ function PairedFindingCard({
 // 앞뒤 줄과의 관계를 알아채기 어려워 앞뒤 줄까지 항상 같이 보이게 한다.
 // 현재 줄은 진하게, 멀어질수록 흐리게(아이폰 타이머 다이얼과 비슷한 느낌).
 const SrtSyncPanel = forwardRef(function SrtSyncPanel({
-  videoSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
+  videoSlot, syncSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
   srtTimingErrors, onSaveSrtTiming, onSplitSegment,
   boundaryClearedRef, showSplitBadge, onDismissSplitBadge,
@@ -1090,6 +1110,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
           </button>
         </div>
       </div>
+      {syncSlot && <div className="mt-3">{syncSlot}</div>}
       <div data-tour="subtitle-list" className="mt-3 rounded-xl border border-border bg-card p-3 shadow-sm">
         <div className="mb-1.5 flex items-center gap-1.5">
           <p className="text-xs font-medium text-muted-foreground">전체 자막</p>
@@ -1226,7 +1247,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
 });
 
 const VideoPreviewPanel = forwardRef(function VideoPreviewPanel({
-  videoProxyUrl, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
+  videoProxyUrl, syncSlot, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
   srtTimingErrors, onSaveSrtTiming, onSplitSegment,
   boundaryClearedRef, showSplitBadge, onDismissSplitBadge,
@@ -1255,6 +1276,7 @@ const VideoPreviewPanel = forwardRef(function VideoPreviewPanel({
         <SrtSyncPanel
           ref={ref}
           videoSlot={video}
+          syncSlot={syncSlot}
           segments={segments}
           videoRef={videoRef}
           videoOffsetSeconds={videoOffsetSeconds}
@@ -1274,7 +1296,10 @@ const VideoPreviewPanel = forwardRef(function VideoPreviewPanel({
           onDismissSplitBadge={onDismissSplitBadge}
         />
       ) : (
-        <div className="rounded-xl border border-border bg-card p-3 shadow-sm">{video}</div>
+        <>
+          <div className="rounded-xl border border-border bg-card p-3 shadow-sm">{video}</div>
+          {syncSlot}
+        </>
       )}
     </aside>
   );
@@ -1421,9 +1446,22 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     const sawFullTourBefore = Boolean(localStorage.getItem(`qc_tour_seen:${TOUR_KEY}`));
     autoRunTour(TOUR_KEY, buildReviewTourSteps(findings.length > 0));
     if (sawFullTourBefore) {
-      srtPanelRef.current?.selectFirstSegment();
-      autoRunTour(SPLIT_FEATURE_KEY, [SPLIT_FEATURE_STEP]);
+      // 아직 못 본 새 기능 안내를 한 번에 묶어서 띄운다(투어가 겹쳐 뜨지 않게).
+      const featureSteps = [];
+      if (!localStorage.getItem(`qc_tour_seen:${SPLIT_FEATURE_KEY}`)) {
+        srtPanelRef.current?.selectFirstSegment();
+        featureSteps.push(SPLIT_FEATURE_STEP);
+        localStorage.setItem(`qc_tour_seen:${SPLIT_FEATURE_KEY}`, "1");
+      }
+      if (!localStorage.getItem(`qc_tour_seen:${SYNC_FEATURE_KEY}`)) {
+        featureSteps.push(SYNC_FEATURE_STEP);
+        localStorage.setItem(`qc_tour_seen:${SYNC_FEATURE_KEY}`, "1");
+      }
+      if (featureSteps.length > 0) runTour(featureSteps);
       setShowSplitBadge(false);
+    } else {
+      // 신규 사용자는 전체 투어에 싱크 설명이 이미 들어 있어 미니 투어를 건너뛴다.
+      localStorage.setItem(`qc_tour_seen:${SYNC_FEATURE_KEY}`, "1");
     }
   }, [findings, segments]);
 
@@ -2107,6 +2145,16 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(280px,30%)_1fr]">
           <div className="space-y-3 md:sticky md:top-24 md:self-start">
             <VideoPreviewPanel
+              syncSlot={videoProxyUrl && (
+                <VideoSyncControl
+                  segmentStart={previewSegment?.start}
+                  videoRef={previewVideoRef}
+                  onChange={async (next) => {
+                    await setVideoOffset(targetVersionId, next);
+                    setVideoOffsetSeconds(next);
+                  }}
+                />
+              )}
               ref={srtPanelRef}
               videoProxyUrl={videoProxyUrl}
               videoRef={previewVideoRef}
