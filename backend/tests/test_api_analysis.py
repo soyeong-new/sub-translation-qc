@@ -595,3 +595,25 @@ async def test_get_target_version_includes_title_id(monkeypatch):
         r = await client.get(f"/target-versions/{tv_id}")
     assert r.status_code == 200
     assert r.json()["title_id"] == title_id
+
+
+@pytest.mark.asyncio
+async def test_set_video_offset_saves_and_get_returns_it():
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="review", video_offset_seconds=216.5); session.add(tv)
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.patch(f"/target-versions/{tv_id}/video-offset",
+                               json={"video_offset_seconds": -0.2})
+        assert r.status_code == 200
+        assert (await client.get(f"/target-versions/{tv_id}")).json()["video_offset_seconds"] == -0.2
+        for bad in ({"video_offset_seconds": 99999}, {"video_offset_seconds": "x"}, {}):
+            assert (await client.patch(f"/target-versions/{tv_id}/video-offset", json=bad)).status_code == 422
+        assert (await client.patch("/target-versions/nope/video-offset",
+                                   json={"video_offset_seconds": 1})).status_code == 404

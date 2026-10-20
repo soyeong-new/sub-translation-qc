@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 from app.db import async_session
@@ -30,6 +30,12 @@ class TargetVersionIn(BaseModel):
 
 class RunAnalysisIn(BaseModel):
     target_srt_path: str
+
+
+class VideoOffsetIn(BaseModel):
+    # 영상 파일 시계와 SRT 시계의 차이(초). 유한한 값만, 자르고 올린 영상도
+    # 감안해 넉넉히 ±1시간까지 허용한다 — nan/inf는 Field가 거부한다.
+    video_offset_seconds: float = Field(allow_inf_nan=False, ge=-3600, le=3600)
 
 
 @router.post("/episodes/{episode_id}/target-versions")
@@ -58,6 +64,19 @@ async def delete_target_version(target_version_id: str):
         tv.deleted_at = datetime.now(timezone.utc)
         await session.commit()
     return {"deleted": True}
+
+
+@router.patch("/target-versions/{target_version_id}/video-offset")
+async def set_video_offset(target_version_id: str, body: VideoOffsetIn):
+    """검수자가 화면에서 영상-자막 싱크를 직접 맞춘 값을 저장한다 — 업로드 때
+    자동 감지한 값이 틀렸거나(음성 인식 오탐) 자막이 발화보다 늦게 뜰 때 쓴다."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None or tv.deleted_at is not None:
+            raise HTTPException(404, "target version not found")
+        tv.video_offset_seconds = body.video_offset_seconds
+        await session.commit()
+    return {"video_offset_seconds": body.video_offset_seconds}
 
 
 @router.get("/target-versions/{target_version_id}")
