@@ -46,18 +46,26 @@ async def _load_export_context(session, target_version_id: str):
     return tv, episode, title, segments, findings
 
 
-@router.get("/target-versions/{target_version_id}/export/reassemble")
-async def reassemble_export(target_version_id: str):
-    """검수자가 (LLM 검사 포함) export 팝업을 띄워둔 채로 findings/segments를
-    더 고쳤을 때, 그 수정만 최종 SRT에 반영해 다시 받아온다 — 용어집/포맷
-    경고는 재검사하지 않는다(비용 큰 LLM 호출 없이). 팝업에 뜬 경고 목록은
-    최초 검사 시점 그대로 남는다 — 검수자가 명시적으로 "최신 내용으로 반영"을
-    눌렀을 때만 이 엔드포인트를 탄다."""
-    async with async_session() as session:
-        tv, episode, title, segments, findings = await _load_export_context(
-            session, target_version_id)
+async def _check_warnings(session, tv, episode, segments, findings):
+    """줄 길이 안전망 + 용어집 일치 검사. 첫 검사와 재조립이 같이 쓴다.
+    용어집은 호출 시점에 새로 읽는다 — 검수 중 추가된 용어도 잡히도록."""
+    glossary_entries = await get_glossary_prompt_entries(
+        session, episode.title_id, tv.target_language, tv.variant)
+    # 안전망 (design §5-1의 3번 지점): assemble_final_srt와 동일한 최종 텍스트를
+    # 대상으로 줄 길이를 마지막으로 한 번 더 검사한다. 위반이 있어도 내보내기
+    # 자체는 막지 않고 참고용 경고로만 응답에 포함한다 (non-blocking).
+    warnings = safety_net_check(segments, findings)
+    profile = load_profile(tv.target_language, tv.variant)
+    warnings += await glossary_consistency_check(
+        segments, findings, glossary_entries, get_provider(), profile)
+    return warnings
+
+
+def _export_payload(srt, title, episode, tv, findings, warnings):
     return {
-        "srt": assemble_final_srt(segments, findings),
+        "srt": srt,
+        "stats": compute_stats(findings).model_dump(),
+        "format_warnings": [w.model_dump() for w in warnings],
         "filename": build_export_filename(
             title.name, episode.episode_no, tv.target_language, tv.variant
         ),
@@ -69,27 +77,17 @@ async def export_target_version(target_version_id: str):
     async with async_session() as session:
         tv, episode, title, segments, findings = await _load_export_context(
             session, target_version_id)
-        glossary_entries = await get_glossary_prompt_entries(
-            session, episode.title_id, tv.target_language, tv.variant)
+        warnings = await _check_warnings(session, tv, episode, segments, findings)
+    return _export_payload(
+        assemble_final_srt(segments, findings), title, episode, tv, findings, warnings)
 
-    srt = assemble_final_srt(segments, findings)
-    stats = compute_stats(findings)
-    # 안전망 (design §5-1의 3번 지점): assemble_final_srt와 동일한 최종 텍스트를
-    # 대상으로 줄 길이를 마지막으로 한 번 더 검사한다. 위반이 있어도 export
-    # 자체는 막지 않고 참고용 경고로만 응답에 포함한다 (non-blocking).
-    warnings = safety_net_check(segments, findings)
-    profile = load_profile(tv.target_language, tv.variant)
-    warnings += await glossary_consistency_check(
-        segments, findings, glossary_entries, get_provider(), profile)
 
-    return {
-        "srt": srt,
-        "stats": stats.model_dump(),
-        "format_warnings": [w.model_dump() for w in warnings],
-        "filename": build_export_filename(
-            title.name, episode.episode_no, tv.target_language, tv.variant
-        ),
-    }
+@router.get("/target-versions/{target_version_id}/export/reassemble")
+async def reassemble_export(target_version_id: str):
+    """검수자가 export 팝업을 띄워둔 채로 findings/segments/용어집을 더 고쳤을 때,
+    "최신 내용으로 반영"을 누르면 SRT를 다시 조립하고 전체 세그먼트에 대해
+    용어집/포맷 검사도 다시 돌린다(LLM 호출 포함)."""
+    return await export_target_version(target_version_id)
 
 
 @router.post("/target-versions/{target_version_id}/export/confirm")

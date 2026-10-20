@@ -1884,13 +1884,14 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     exportStatus.kind === "checked" &&
     (exportStatus.checkedFindings !== findings || exportStatus.checkedSegments !== segments);
 
-  // LLM 재검사 없이 SRT만 최신 findings/segments로 다시 조립한다 — 경고 목록은
-  // 최초 검사 시점 그대로 둔다.
+  // SRT를 최신 findings/segments/용어집으로 다시 조립하고, 전체 세그먼트에 대한
+  // 용어집/포맷 검사도 다시 돌려 경고 목록을 새로 받는다(LLM 호출 포함).
   async function handleReassemble() {
     const result = await reassembleExport(targetVersionId);
     setExportStatus((prev) => ({
       ...prev,
-      result: { ...prev.result, srt: result.srt, filename: result.filename },
+      result,
+      warnings: result.format_warnings ?? [],
       checkedFindings: findings,
       checkedSegments: segments,
     }));
