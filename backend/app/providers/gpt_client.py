@@ -467,7 +467,7 @@ class GptClient:
             skip_clean_line = BATCH_SKIP_CLEAN_LINE
 
         system = (
-            f"너는 한국어-{language_label} 미디어(영화·드라마) 자막 전문 번역 검수자다. "
+            f"너는 한국어-{language_label} 미디어(영화·시리즈) 자막 전문 번역 검수자다. "
             "korean_text(한국어 원문)를 절대 기준(Source of Truth)으로 삼아 target_text(대상언어 번역문)를 검증하라. "
             + scope_intro +
             build_verification_priority_paragraph(glossary_block) +

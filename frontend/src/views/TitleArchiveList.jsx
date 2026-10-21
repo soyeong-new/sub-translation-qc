@@ -127,9 +127,9 @@ function glossaryLanguageColumns(title) {
   return Array.from(keys);
 }
 
-// 사이드바 목록 항목의 보조 설명 줄 — "드라마 · 8화 · 2개 언어" 같은 요약.
+// 사이드바 목록 항목의 보조 설명 줄 — "시리즈 · 8화 · 2개 언어" 같은 요약.
 function titleSubtitle(title) {
-  const parts = [title.type === "movie" ? "영화" : "드라마"];
+  const parts = [title.type === "movie" ? "영화" : "시리즈"];
   if (title.type === "series") parts.push(`${title.episodes.length}화`);
   const langCount = glossaryLanguageColumns(title).length;
   if (langCount > 0) parts.push(`${langCount}개 언어`);
@@ -184,7 +184,7 @@ const STATUS_LEGEND = [
 const TYPE_TABS = [
   { key: "all", label: "전체" },
   { key: "movie", label: "영화" },
-  { key: "series", label: "드라마" },
+  { key: "series", label: "시리즈" },
 ];
 
 const STATUS_STYLES = {
@@ -641,7 +641,7 @@ function NewTitleForm({ languageProfiles, isMountedRef, onCreated, onCancel }) {
               className={formInputClass}
             >
               <option value="movie">영화</option>
-              <option value="series">드라마</option>
+              <option value="series">시리즈</option>
             </select>
           </Field>
 
@@ -1201,7 +1201,7 @@ export default function TitleArchiveList({ onOpen }) {
                     className="shrink-0 rounded-md border-none bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <option value="movie">영화</option>
-                    <option value="series">드라마</option>
+                    <option value="series">시리즈</option>
                   </select>
                 </div>
                 <div
