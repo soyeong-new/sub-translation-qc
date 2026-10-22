@@ -4,7 +4,7 @@ import logging
 import re
 from typing import List, Optional
 from app.core.ingest import build_srt
-from app.core.format_rules import check_line_length
+from app.core.format_rules import check_line_length, normalize_speaker_dash
 from app.providers.base import ModelProvider
 from app.schemas import AlignedPair, SegmentText, ExportStats, FormatViolation
 
@@ -71,7 +71,8 @@ def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
         text = final_by_segment.get(seg["id"], seg["text"])
         if not text.strip():
             continue
-        entries.append({"start": seg["start"], "end": seg["end"], "text": text})
+        entries.append({"start": seg["start"], "end": seg["end"],
+                        "text": normalize_speaker_dash(text)})
     return build_srt(entries)
 
 

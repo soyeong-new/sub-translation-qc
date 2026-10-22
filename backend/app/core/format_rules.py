@@ -18,6 +18,8 @@ _ELLIPSIS_RE = re.compile(r"\.{4,}")
 # 끊기는 걸 막기 위함(온점 하나하나가 아니라 연속된 덩어리를 한 지점으로 봄).
 _SENTENCE_END_RE = re.compile(r"[.!?]+\s*")
 _COMMA_RE = re.compile(r",\s*")
+# 줄 첫머리의 대사 대시 — "--"(말 끊김)는 제외하려고 뒤에 "-"가 아닐 것을 요구한다.
+_SPEAKER_DASH_RE = re.compile(r"^-(?!-)[ \t]*", re.MULTILINE)
 
 
 def _best_punct_split(flat: str, max_chars: int, pattern: "re.Pattern") -> Optional[str]:
@@ -134,6 +136,13 @@ def check_reading_speed(pairs: List[AlignedPair]) -> List[FormatViolation]:
                 original_text=pair.target.text,
             ))
     return violations
+
+
+def normalize_speaker_dash(text: str) -> str:
+    """2인 대사의 줄 첫머리 "-" 뒤 공백을 "- "로 통일한다. 대시가 없는 줄은
+    그대로 둔다. 언어 무관 — 모든 대상언어에 공백을 두기로 정함(넷플릭스
+    영어 가이드는 공백 없음이지만 프로젝트 기준을 우선한다)."""
+    return _SPEAKER_DASH_RE.sub("- ", text)
 
 
 def fix_ellipsis(text: str) -> Tuple[str, bool]:

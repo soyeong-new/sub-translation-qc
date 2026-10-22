@@ -17,7 +17,7 @@ from app.core.embedding_dp_alignment import align_by_embedding_dp, _clean_text_f
 from app.core.alignment_review import review_ambiguous_alignment
 
 from app.core.format_rules import (
-    check_line_length, check_ellipsis, fix_ellipsis, MAX_LINE_CHARS, MAX_LINES,
+    check_line_length, check_ellipsis, fix_ellipsis, normalize_speaker_dash, MAX_LINE_CHARS, MAX_LINES,
 )
 from app.core.safety_net import shrink_violating_lines, enforce_line_length
 from app.core.glossary_guard import revert_canonical_regression
@@ -1376,6 +1376,7 @@ async def _run_dual_verification_pass(
             entries, provider, profile, resolved_registers)
 
         for correction, _status, _model_label, _applies, _source in entries:
+            correction["corrected_text"] = normalize_speaker_dash(correction["corrected_text"])
             fixed, changed = fix_ellipsis(correction["corrected_text"])
             if changed:
                 correction["corrected_text"] = fixed
@@ -1424,6 +1425,8 @@ async def _run_final_safety_net(
     for pair in pairs:
         if pair.id in final_fixed_by_segment:
             pair.target.text = final_fixed_by_segment[pair.id]
+        if pair.target is not None:
+            pair.target.text = normalize_speaker_dash(pair.target.text)
 
     line_length_violations = check_line_length(pairs)
     # Claude/GPT가 갈려서 아직 사람이 못 고른 pending 세그먼트는 여기서

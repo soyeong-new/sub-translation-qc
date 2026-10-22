@@ -1,6 +1,6 @@
 from app.schemas import AlignedPair, SegmentText
 from app.core.format_rules import (
-    check_line_length, check_ellipsis, fix_ellipsis, rewrap_line, check_reading_speed,
+    check_line_length, check_ellipsis, fix_ellipsis, normalize_speaker_dash, rewrap_line, check_reading_speed,
 )
 
 
@@ -127,3 +127,9 @@ def test_rewrap_line_falls_back_to_word_boundary_without_punctuation():
     result = rewrap_line(text)
     assert "\n" in result
     assert "." not in result and "," not in result
+
+
+def test_normalize_speaker_dash_adds_space_only_to_dash_lines():
+    assert normalize_speaker_dash("-¿Eres el nuevo?\n-Sí.") == "- ¿Eres el nuevo?\n- Sí."
+    assert normalize_speaker_dash("- Sí.\nHola Lim Ho-young") == "- Sí.\nHola Lim Ho-young"
+    assert normalize_speaker_dash("--Espera") == "--Espera"
