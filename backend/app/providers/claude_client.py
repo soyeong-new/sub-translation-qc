@@ -158,7 +158,9 @@ class ClaudeClient:
     def __init__(self, api_key: str, model: str, light_model: str = None):
         self._model = model
         self._light_model = light_model or model
-        self._sdk_client = AsyncAnthropic(api_key=api_key)
+        # 병렬 호출이 몰리면 429가 나는데, SDK 기본 재시도(2회)로는 부족해
+        # GptClient와 같은 값으로 늘렸다.
+        self._sdk_client = AsyncAnthropic(api_key=api_key, max_retries=6)
 
     def _extract_text(self, response) -> str:
         # Sonnet 5 이상은 thinking 파라미터를 안 주면 적응형 사고가 기본으로
