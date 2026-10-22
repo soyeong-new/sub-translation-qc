@@ -26,8 +26,11 @@ def _clean_text_for_embedding(text: str) -> str:
     for line in cleaned.split('\n'):
         line = re.sub(r'^[가-힣A-Za-z0-9_\s]{1,12}\s*[:：]', '', line)
         lines.append(line.strip())
-    cleaned_str = "\n".join(l for l in lines if l)
-    return cleaned_str.strip()
+    cleaned_str = "\n".join(l for l in lines if l).strip()
+    # "- [효과음]\n- [숨소리]"처럼 지문만 있던 큐는 대사 줄머리 "-"만 남는다 —
+    # 글자(문자·숫자)가 하나도 없으면 대사가 아니므로 빈 문자열로 돌려, 호출부가
+    # 지문 큐로 버리게 한다(안 버리면 엉뚱한 번역 큐와 짝지어진다).
+    return cleaned_str if re.search(r"\w", cleaned_str) else ""
 
 
 def _ends_with_terminal_punctuation(text: str) -> bool:

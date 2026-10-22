@@ -14,6 +14,14 @@ def test_clean_text_for_embedding():
     assert _clean_text_for_embedding("김우택: 안녕하세요 [음악]") == "안녕하세요"
 
 
+def test_clean_text_for_embedding_drops_dash_only_cue_after_removing_stage_directions():
+    """회귀: "- [효과음]\n- [숨소리]"는 지문을 지우면 대사 줄머리 "-"만 남는다 —
+    글자가 없으니 빈 문자열이어야 호출부가 이 큐를 버린다(안 버리면 엉뚱한
+    번역 큐와 짝지어졌다)."""
+    assert _clean_text_for_embedding("- [이빨의 놀래는 소리]\n- [놀란 숨소리]") == ""
+    assert _clean_text_for_embedding("- 아, 진짜요?\n- [숨소리] 진짜라니까?") != ""
+
+
 def test_cosine_similarity():
 
     v1 = [1.0, 0.0, 0.0]

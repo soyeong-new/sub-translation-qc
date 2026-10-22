@@ -1624,12 +1624,14 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
                 provider, video_proxy_path, korean_srt_path, raw_cues, target_version_id, warnings)
 
         korean_cues = []
+        kept_raw_cues = []  # korean_cues와 1:1 — align_by_embedding_dp의 korean_raw_cues 계약
         for c in raw_cues:
             cleaned = _clean_text_for_embedding(c.text)
             # cleaned가 빈 문자열이면 지문/효과음뿐인 큐다(순수 대사가 없음) —
             # 원본을 그대로 되살리면 브라켓 지문이 그대로 노출되므로 버린다.
             if cleaned:
                 korean_cues.append(SegmentText(start=c.start, end=c.end, text=cleaned))
+                kept_raw_cues.append(c)
 
         # 한국어 SRT 경로는 정렬용으로는 STT(실측 오디오 타이밍)를 안
         # 거치므로, 한국어 SRT와 대상언어 SRT가 각자 스스로 적어놓은
@@ -1668,7 +1670,7 @@ async def run_pipeline_phase1(video_path: str, target_srt_path: str,
 
         korean_raw = [{"start": c.start, "end": c.end, "text": c.text} for c in korean_cues]
         pairs = await align_by_embedding_dp(
-            korean_cues, target_segments, provider, korean_raw_cues=raw_cues)
+            korean_cues, target_segments, provider, korean_raw_cues=kept_raw_cues)
         if os.getenv("ALIGNMENT_CONTEXT_REVIEW", "0").lower() in ("1", "true", "yes"):
             pairs = await review_ambiguous_alignment(
                 korean_cues, target_segments, pairs, provider, warnings=warnings)
