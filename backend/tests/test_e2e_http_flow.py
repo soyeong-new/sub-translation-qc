@@ -50,7 +50,7 @@ async def _transcribe_with_extra_korean_word(self, audio_path):
     세그먼트 커버리지를 유지한다."""
     return [
         {"start": 0.0, "end": 2.0, "text": "안녕하세요"},
-        {"start": 3.0, "end": 4.0, "text": "hola"},
+        {"start": 3.0, "end": 4.0, "text": "괜찮아요"},
     ]
 
 
@@ -138,7 +138,9 @@ async def test_full_http_flow_from_title_creation_to_export(tmp_path, monkeypatc
             assert "mistranslation" in by_category
             assert len(formatting_findings) == 1
             assert formatting_findings[0]["status"] == "approved"
-            assert formatting_findings[0]["final_text"] == "BAD_TRANSLATION aquí..."
+            # 한국어 원문 "괜찮아요"의 어말어미로 격식(formal)이 자동 확정되어 목
+            # 프로바이더가 [formal] 접두어를 붙인다.
+            assert formatting_findings[0]["final_text"] == "[formal] BAD_TRANSLATION aquí..."
             # mistranslation은 Claude/GPT 둘 다 BAD_TRANSLATION 마커를 지적해
             # 합의(model="claude+gpt")됐지만, 스페인어를 모르는 검수자가 최종
             # 판단해야 하므로 사람 승인 전에는 pending으로 남는다.
