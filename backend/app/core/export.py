@@ -3,6 +3,7 @@
 import logging
 import re
 from typing import List, Optional
+from app.core.glossary_guard import term_in
 from app.core.ingest import build_srt
 from app.core.format_rules import check_line_length, normalize_speaker_dash
 from app.providers.base import ModelProvider
@@ -110,7 +111,7 @@ def _find_glossary_candidates(segments: List[dict], findings: List[dict],
             canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
             if not canonical or not korean_term:
                 continue
-            if korean_term in korean_text and canonical not in text:
+            if term_in(korean_term, korean_text) and canonical not in text:
                 candidates.append({
                     "id": f"{seg['id']}:{entry.get('entry_id')}",
                     "segment_id": seg["id"], "korean_term": korean_term,
@@ -170,6 +171,26 @@ async def glossary_consistency_check(segments: List[dict], findings: List[dict],
             detail=detail, original_text=c["text"], matched_text=matched,
             matched_meaning=meaning, text_gloss=gloss,
         ))
+    return violations
+
+
+def unconfirmed_amount_check(segments: List[dict], unconfirmed_terms: List[str]) -> list:
+    """표기가 아직 비어 있는 금액(amount) 용어가 이 회차의 한국어 원문에 쓰였는지
+    확인한다 — 빈 항목은 검증·승인·내보내기 비교의 기준이 없어 아무 보호도 하지
+    않으므로, 사용자가 용어집에서 채우도록 알린다. LLM 호출 없음, 참고용 경고.
+    더 긴 숫자의 일부는 일치로 보지 않는다(term_in)."""
+    violations = []
+    for term in unconfirmed_terms:
+        if not term:
+            continue
+        for seg in segments:
+            if seg.get("excluded") or not term_in(term, seg.get("korean_text", "")):
+                continue
+            violations.append(FormatViolation(
+                segment_id=seg["id"], rule="glossary_mismatch",
+                detail=f"'{term}' 표기가 용어집에 아직 비어 있음",
+                original_text=seg.get("text", ""),
+            ))
     return violations
 
 

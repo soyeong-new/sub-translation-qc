@@ -346,6 +346,9 @@ async def get_glossary_prompt_entries(session: AsyncSession, title_id: str,
     ]
 
 
+_MAX_CANDIDATES = 5   # 언어(열)마다의 참고 후보 상한
+
+
 async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
                                       language: str, variant: str, extractions: list) -> None:
     """자동 추출된 후보(extract_glossary_terms의 결과)를 title 단위로
@@ -364,13 +367,31 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
         select(GlossarySuppression.korean_term).where(
             GlossarySuppression.title_id == title_id)
     )).scalars().all())
+    # 이 언어판에 이미 표기가 있었던 작품에서만(= 두 번째 회차부터) 이번에 새로
+    # 만든 표기를 "신규"로 표시한다. 첫 분석과 새 언어 추가의 첫 회차는 표시하지
+    # 않는다 — 호출 시작 시점에 한 번만 계산해야 같은 호출 안에서 첫 항목이 나머지를
+    # 신규로 만들지 않는다.
+    language_already_had_spellings = (await session.execute(
+        select(GlossarySpelling.id)
+        .join(GlossaryEntry, GlossaryEntry.id == GlossarySpelling.entry_id)
+        .where(GlossaryEntry.title_id == title_id,
+               GlossarySpelling.language == language, GlossarySpelling.variant == variant)
+        .limit(1)
+    )).first() is not None
 
     for extraction in extractions:
         term = extraction.get("korean_term")
         canonical = extraction.get("canonical")
-        if not term or not canonical or term in suppressed_terms:
+        # amount는 모델이 정한 표기(자릿수·통화 오류가 확인됨)를 자동 확정하지 않는다
+        # — 항목만 만들고 표기는 사람이 채운다(표기 행이 없으면 프롬프트에서도 빠진다).
+        if not term or term in suppressed_terms:
             continue
         entry = entry_by_term.get(term)
+        # 이미 있는 항목은 저장된 카테고리를 따른다 — 모델이 같은 용어를 다른
+        # 카테고리로 라벨링해도 amount 항목에 표기가 자동 확정되면 안 된다.
+        is_amount = (entry.category if entry is not None else extraction.get("category")) == "amount"
+        if not canonical and not is_amount:
+            continue
         if entry is None:
             entry = GlossaryEntry(title_id=title_id, korean_term=term,
                                    category=extraction.get("category", "person"), aliases=[])
@@ -378,6 +399,15 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
             await session.flush()
             entry_by_term[term] = entry
 
+        if is_amount:
+            # 표기는 확정하지 않고, 번역문에서 쓰인 표기만 후보로 모은다(중복 제외, 최대 5개).
+            col_key = _language_variant_key(language, variant)
+            by_col = dict(entry.candidates or {})
+            col_list = by_col.get(col_key, [])
+            if canonical and canonical not in col_list and len(col_list) < _MAX_CANDIDATES:
+                by_col[col_key] = col_list + [canonical]
+                entry.candidates = by_col   # 새 dict를 대입해야 JSON 변경이 감지된다
+            continue
         existing_spelling = (await session.execute(
             select(GlossarySpelling).where(
                 GlossarySpelling.entry_id == entry.id,
@@ -388,9 +418,38 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
         if existing_spelling is None:
             session.add(GlossarySpelling(
                 entry_id=entry.id, language=language, variant=variant,
-                canonical=canonical,
+                canonical=canonical, is_new=language_already_had_spellings,
             ))
     await session.flush()
+
+
+async def set_spelling_new(session: AsyncSession, spelling_ids: list, value: bool) -> int:
+    """용어집 표기 칸의 신규 표시를 켜거나 끈다(확인 완료 / 다시 표시). 바뀐 행 수."""
+    if not spelling_ids:
+        return 0
+    rows = (await session.execute(
+        select(GlossarySpelling).where(GlossarySpelling.id.in_(spelling_ids))
+    )).scalars().all()
+    for row in rows:
+        row.is_new = value
+    await session.flush()
+    return len(rows)
+
+
+async def get_unconfirmed_amount_terms(session: AsyncSession, title_id: str,
+                                        language: str, variant: str) -> list:
+    """이 (language, variant)에 아직 표기가 채워지지 않은 금액(amount) 항목의
+    한국어 용어를 가나다순으로 돌려준다 — 내보내기 경고와 용어집 화면이 쓴다."""
+    confirmed = select(GlossarySpelling.entry_id).where(
+        GlossarySpelling.language == language, GlossarySpelling.variant == variant)
+    rows = (await session.execute(
+        select(GlossaryEntry.korean_term).where(
+            GlossaryEntry.title_id == title_id,
+            GlossaryEntry.category == "amount",
+            GlossaryEntry.id.not_in(confirmed),
+        ).order_by(GlossaryEntry.korean_term)
+    )).scalars().all()
+    return list(rows)
 
 
 async def create_glossary_entry(session: AsyncSession, title_id: str, korean_term: str,
@@ -437,6 +496,7 @@ async def update_glossary_entry(session: AsyncSession, entry_id: str,
                 continue
             if spelling is not None:
                 spelling.canonical = canonical
+                spelling.is_new = False
             else:
                 session.add(GlossarySpelling(
                     entry_id=entry_id, language=language, variant=variant, canonical=canonical))

@@ -1,5 +1,6 @@
 from app.providers.base import (
     build_glossary_block,
+    build_glossary_extraction_system,
     build_batch_scope_intro,
     build_requery_scope_intro,
     build_verification_checklist,
@@ -84,3 +85,13 @@ def test_register_step_asks_to_report_mismatch_with_minimal_fix_and_names_no_lan
     assert "되돌리지 마라" in step
     for name in ("스페인어", "포르투갈어", "프랑스어", "영어", "tú", "usted", "você"):
         assert name not in step
+
+
+def test_glossary_extraction_prompt_has_amount_category_and_no_language_or_currency_names():
+    label = "es(LATAM)"
+    system = build_glossary_extraction_system(label)
+    assert '"amount"' in system
+    assert label in system
+    body = system.replace(label, "")
+    for forbidden in ("wones", "won", "dólar", "달러", "원화", "USD", "LATAM", "es-"):
+        assert forbidden not in body

@@ -17,7 +17,9 @@ from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
 from app.core.uploads import MEDIA_ROOT
 from app.language_profiles.loader import list_profiles
-from app.repositories import create_glossary_entry, update_glossary_entry, delete_glossary_entry
+from app.repositories import (
+    create_glossary_entry, update_glossary_entry, delete_glossary_entry, set_spelling_new,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +51,28 @@ class CharacterGenderCreateIn(BaseModel):
     gender: str
 
 
-GlossaryCategory = Literal["person", "place", "business", "title"]
+def _glossary_entry_json(entry, spelling_rows) -> dict:
+    """용어집 항목 한 건의 응답 모양 — 세 군데(GET /titles, GET glossary, PATCH)가
+    같은 모양을 쓰도록 모았다. new는 신규 표시가 켜진 칸만 {열 키: spelling id}."""
+    return {
+        "id": entry.id, "korean_term": entry.korean_term, "category": entry.category,
+        "aliases": entry.aliases, "candidates": entry.candidates or {},
+        "spellings": {f"{s.language}_{s.variant}": s.canonical for s in spelling_rows},
+        "new": {f"{s.language}_{s.variant}": s.id for s in spelling_rows if s.is_new},
+    }
+
+
+GlossaryCategory = Literal["person", "place", "business", "title", "amount"]
 
 
 class GlossaryEntryIn(BaseModel):
     korean_term: str
     category: GlossaryCategory
     aliases: list[str] = []
+
+
+class SpellingIdsIn(BaseModel):
+    spelling_ids: list[str]
 
 
 class GlossaryEntryUpdateIn(BaseModel):
@@ -165,15 +182,13 @@ async def list_titles():
         glossary_spelling_rows = (await session.execute(
             select(GlossarySpelling)
         )).scalars().all()
-        spellings_by_entry: dict = {}
+        spelling_rows_by_entry: dict = {}
         for s in glossary_spelling_rows:
-            spellings_by_entry.setdefault(s.entry_id, {})[f"{s.language}_{s.variant}"] = s.canonical
+            spelling_rows_by_entry.setdefault(s.entry_id, []).append(s)
         glossary_by_title: dict = {}
         for e in glossary_entry_rows:
-            glossary_by_title.setdefault(e.title_id, []).append({
-                "id": e.id, "korean_term": e.korean_term, "category": e.category,
-                "aliases": e.aliases, "spellings": spellings_by_entry.get(e.id, {}),
-            })
+            glossary_by_title.setdefault(e.title_id, []).append(
+                _glossary_entry_json(e, spelling_rows_by_entry.get(e.id, [])))
 
         display_names = {
             (p["language"], p["variant"]): p["display_name"] for p in list_profiles()
@@ -280,14 +295,10 @@ async def get_title_glossary(title_id: str):
             select(GlossarySpelling).where(
                 GlossarySpelling.entry_id.in_([e.id for e in entry_rows]))
         )).scalars().all()
-        spellings_by_entry: dict = {}
+        spelling_rows_by_entry: dict = {}
         for s in spelling_rows:
-            spellings_by_entry.setdefault(s.entry_id, {})[f"{s.language}_{s.variant}"] = s.canonical
-        return [
-            {"id": e.id, "korean_term": e.korean_term, "category": e.category,
-             "aliases": e.aliases, "spellings": spellings_by_entry.get(e.id, {})}
-            for e in entry_rows
-        ]
+            spelling_rows_by_entry.setdefault(s.entry_id, []).append(s)
+        return [_glossary_entry_json(e, spelling_rows_by_entry.get(e.id, [])) for e in entry_rows]
 
 
 @router.post("/titles/{title_id}/glossary")
@@ -303,8 +314,7 @@ async def create_glossary_entry_route(title_id: str, payload: GlossaryEntryIn):
         except IntegrityError:
             await session.rollback()
             raise HTTPException(409, "이미 등록된 용어입니다")
-        return {"id": entry.id, "korean_term": entry.korean_term, "category": entry.category,
-                "aliases": entry.aliases, "spellings": {}}
+        return _glossary_entry_json(entry, [])
 
 
 @router.patch("/glossary/{entry_id}")
@@ -325,9 +335,25 @@ async def update_glossary_entry_route(entry_id: str, payload: GlossaryEntryUpdat
         spellings_rows = (await session.execute(
             select(GlossarySpelling).where(GlossarySpelling.entry_id == entry_id)
         )).scalars().all()
-        return {"id": entry.id, "korean_term": entry.korean_term, "category": entry.category,
-                "aliases": entry.aliases,
-                "spellings": {f"{s.language}_{s.variant}": s.canonical for s in spellings_rows}}
+        return _glossary_entry_json(entry, spellings_rows)
+
+
+@router.post("/glossary/confirm-new")
+async def confirm_new_spellings(payload: SpellingIdsIn):
+    """신규 표시를 끈다(확인 완료)."""
+    async with async_session() as session:
+        count = await set_spelling_new(session, payload.spelling_ids, False)
+        await session.commit()
+        return {"count": count}
+
+
+@router.post("/glossary/mark-new")
+async def mark_new_spellings(payload: SpellingIdsIn):
+    """방금 끈 신규 표시를 되돌린다(다시 표시)."""
+    async with async_session() as session:
+        count = await set_spelling_new(session, payload.spelling_ids, True)
+        await session.commit()
+        return {"count": count}
 
 
 @router.delete("/glossary/{entry_id}")

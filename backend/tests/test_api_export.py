@@ -356,3 +356,32 @@ async def test_export_keeps_video_proxy_file(tmp_path):
     async with async_session() as session:
         tv = await session.get(TargetVersion, tv_id)
         assert tv.video_proxy_path == str(proxy_path)
+
+
+@pytest.mark.asyncio
+async def test_export_warns_about_unconfirmed_amount_until_spelling_is_filled(monkeypatch):
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM")
+        session.add(tv); await session.flush()
+        entry = GlossaryEntry(title_id=title.id, korean_term="100억", category="amount", aliases=[])
+        session.add(entry); await session.flush()
+        seg = Segment(target_version_id=tv.id, index=0, start=0.0, end=5.0,
+                      korean_text="대신 100억", target_text="A cambio de dinero")
+        session.add(seg); await session.flush()
+        await session.commit()
+        tv_id, seg_id, entry_id = tv.id, seg.id, entry.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        warned = [w for w in body["format_warnings"]
+                  if w["rule"] == "glossary_mismatch" and w["segment_id"] == seg_id]
+        assert len(warned) == 1 and "100억" in warned[0]["detail"]
+
+        await client.patch(f"/glossary/{entry_id}",
+                           json={"spellings": {"es_LATAM": "10 mil millones de wones"}})
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        assert not any("아직 비어 있음" in w["detail"] for w in body["format_warnings"])

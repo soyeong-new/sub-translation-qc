@@ -231,3 +231,26 @@ async def test_glossary_consistency_check_surfaces_text_gloss_when_no_trace_foun
     assert len(violations) == 1
     assert violations[0].matched_text == ""
     assert violations[0].text_gloss == "그냥 비행기를 타고 있을 거라고만 되어 있음"
+
+
+def test_unconfirmed_amount_check_flags_segment_using_the_term():
+    from app.core.export import unconfirmed_amount_check
+    segs = [{"id": "s1", "korean_text": "대신 100억", "excluded": False},
+            {"id": "s2", "korean_text": "안녕", "excluded": False}]
+    v = unconfirmed_amount_check(segs, ["100억"])
+    assert [x.segment_id for x in v] == ["s1"]
+    assert v[0].rule == "glossary_mismatch" and "100억" in v[0].detail
+
+
+def test_unconfirmed_amount_check_ignores_longer_number_containing_the_term():
+    from app.core.export import unconfirmed_amount_check
+    segs = [{"id": "s1", "korean_text": "110억 짜리", "excluded": False}]
+    assert unconfirmed_amount_check(segs, ["10억"]) == []
+
+
+def test_unconfirmed_amount_check_skips_excluded_segments_and_empty_terms():
+    from app.core.export import unconfirmed_amount_check
+    segs = [{"id": "s1", "korean_text": "100억", "excluded": True}]
+    assert unconfirmed_amount_check(segs, ["100억"]) == []
+    assert unconfirmed_amount_check(
+        [{"id": "s1", "korean_text": "x", "excluded": False}], []) == []

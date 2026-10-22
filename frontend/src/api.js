@@ -297,3 +297,9 @@ export const patchGlossaryEntry = (entryId, data) =>
 
 export const deleteGlossaryEntry = (entryId) =>
   request(`/glossary/${entryId}`, { method: "DELETE" });
+
+export const confirmNewSpellings = (spellingIds) =>
+  request("/glossary/confirm-new", { method: "POST", body: JSON.stringify({ spelling_ids: spellingIds }) });
+
+export const markNewSpellings = (spellingIds) =>
+  request("/glossary/mark-new", { method: "POST", body: JSON.stringify({ spelling_ids: spellingIds }) });

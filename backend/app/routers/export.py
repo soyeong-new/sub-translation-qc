@@ -6,11 +6,11 @@ from app.db import async_session
 from app.models import TargetVersion, FindingRow, Segment, ExportRow, Episode, Title
 from app.core.export import (
     assemble_final_srt, compute_stats, safety_net_check, build_export_filename,
-    glossary_consistency_check,
+    glossary_consistency_check, unconfirmed_amount_check,
 )
 from app.language_profiles.loader import load_profile
 from app.providers.base import get_provider
-from app.repositories import get_glossary_prompt_entries
+from app.repositories import get_glossary_prompt_entries, get_unconfirmed_amount_terms
 
 router = APIRouter()
 
@@ -58,6 +58,9 @@ async def _check_warnings(session, tv, episode, segments, findings):
     profile = load_profile(tv.target_language, tv.variant)
     warnings += await glossary_consistency_check(
         segments, findings, glossary_entries, get_provider(), profile)
+    warnings += unconfirmed_amount_check(
+        segments, await get_unconfirmed_amount_terms(
+            session, episode.title_id, tv.target_language, tv.variant))
     return warnings
 
 

@@ -20,7 +20,7 @@ from app.core.format_rules import (
     check_line_length, check_ellipsis, fix_ellipsis, normalize_speaker_dash, MAX_LINE_CHARS, MAX_LINES,
 )
 from app.core.safety_net import shrink_violating_lines, enforce_line_length
-from app.core.glossary_guard import revert_canonical_regression
+from app.core.glossary_guard import revert_canonical_regression, term_in
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
 from app.core.grammar_necessity import (
@@ -978,7 +978,7 @@ async def _back_translate_proposals(
                 glossary = [
                     {"korean_term": e["korean_term"], "canonical": e["canonical"]}
                     for e in (glossary_entries or [])
-                    if e.get("korean_term") and e.get("canonical") and e["korean_term"] in korean
+                    if e.get("korean_term") and e.get("canonical") and term_in(e["korean_term"], korean)
                 ]
                 if glossary:
                     item["glossary"] = glossary

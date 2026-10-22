@@ -44,3 +44,22 @@ def test_find_canonical_overrides_empty_when_matches_canonical():
     overrides = find_canonical_overrides(
         "야, 강오크.", "Oye, Kang Hulk.", "Oye, Kang-ok.", _ENTRIES)
     assert overrides == []
+
+
+def test_term_in_respects_number_boundaries_but_not_for_names():
+    from app.core.glossary_guard import term_in
+    assert term_in("10억", "10억을 줘")
+    assert not term_in("10억", "110억 짜리")
+    assert not term_in("100억", "1,100억")
+    assert not term_in("100억", "1.100억")
+    assert term_in("100억", "네,100억")            # 쉼표 앞이 숫자가 아니면 일치
+    assert not term_in("200", "2000원") and not term_in("200", "200.5원")
+    assert term_in("200", "일주일에 200 맞아요")
+    assert term_in("김현", "야,김현이 왔어")         # 이름은 구두점 뒤에서도 일치
+    assert not term_in("김현", "")
+
+
+def test_patch_and_overrides_do_not_fire_on_longer_number_containing_the_term():
+    entries = [{"korean_term": "10억", "canonical": "mil millones de wones", "entry_id": "e1"}]
+    assert patch_missing_canonical("110억 짜리", "Cuesta Mil", "Cuesta Mil", entries) == "Cuesta Mil"
+    assert find_canonical_overrides("110억 짜리", "x", "y", entries) == []

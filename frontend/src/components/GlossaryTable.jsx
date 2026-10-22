@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { postGlossaryEntry, patchGlossaryEntry, deleteGlossaryEntry } from "../api.js";
+import {
+  postGlossaryEntry, patchGlossaryEntry, deleteGlossaryEntry, confirmNewSpellings, markNewSpellings,
+} from "../api.js";
+import { collectNewIds } from "./glossaryNew.js";
+import { orderGlossaryEntries } from "./glossaryOrder.js";
 
 const deleteBtnClass =
   "inline-flex h-6 w-6 items-center justify-center text-muted-foreground leading-none " +
@@ -8,22 +12,43 @@ const deleteBtnClass =
 
 // 용어집 표기 셀 — 클릭하면 입력창으로 바뀌고, blur 시 값이 바뀌었을 때만
 // PATCH를 보낸다(불필요한 요청 방지).
-function GlossarySpellingCell({ entry, columnKey, onSaved, onError }) {
+function GlossarySpellingCell({ entry, columnKey, onSaved, onError, onConfirmNew }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(entry.spellings[columnKey] || "");
+  const newId = entry.new?.[columnKey];
 
   if (!editing) {
     return (
       <span
-        className="-mx-1.5 -my-0.5 block cursor-pointer rounded px-1.5 py-0.5 text-foreground transition-colors hover:bg-accent/60"
+        className="-mx-1.5 -my-0.5 flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-foreground transition-colors hover:bg-accent/60"
         onClick={() => setEditing(true)}
       >
+        {newId && (
+          <button
+            type="button"
+            aria-label="새로 추가된 표기 확인"
+            onClick={(e) => {
+              e.stopPropagation();
+              onConfirmNew([newId]);
+            }}
+            className="h-2 w-2 shrink-0 rounded-full bg-primary"
+          />
+        )}
         {entry.spellings[columnKey] || <span className="text-muted-foreground">—</span>}
       </span>
     );
   }
+  const candidates = entry.candidates?.[columnKey] ?? [];
+  const listId = `cand-${entry.id}-${columnKey}`;
   return (
+    <>
+    {candidates.length > 0 && (
+      <datalist id={listId}>
+        {candidates.map((c) => <option key={c} value={c} />)}
+      </datalist>
+    )}
     <input
+      list={candidates.length > 0 ? listId : undefined}
       className="w-full rounded border border-input bg-background px-1 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       autoFocus
       value={value}
@@ -40,6 +65,7 @@ function GlossarySpellingCell({ entry, columnKey, onSaved, onError }) {
         }
       }}
     />
+    </>
   );
 }
 
@@ -51,6 +77,31 @@ function GlossarySpellingCell({ entry, columnKey, onSaved, onError }) {
 export default function GlossaryTable({ titleId, entries, columns, onChanged, onError }) {
   const [newTerm, setNewTerm] = useState("");
   const [newTermError, setNewTermError] = useState(null);
+  const { pending, rest } = orderGlossaryEntries(entries, columns);
+  const newIds = collectNewIds(entries);
+  // 직전에 "확인 완료"한 칸들 — 실수로 눌렀을 때 "다시 표시"로 되돌린다. 화면을
+  // 열어 둔 동안만 유지된다(새로고침하면 사라짐).
+  const [justConfirmed, setJustConfirmed] = useState([]);
+
+  async function confirmNew(ids) {
+    try {
+      await confirmNewSpellings(ids);
+      setJustConfirmed(ids);
+      onChanged();
+    } catch (err) {
+      onError?.(err.message ?? "신규 표시 확인 중 오류가 발생했습니다.");
+    }
+  }
+
+  async function restoreNew() {
+    try {
+      await markNewSpellings(justConfirmed);
+      setJustConfirmed([]);
+      onChanged();
+    } catch (err) {
+      onError?.(err.message ?? "신규 표시 복원 중 오류가 발생했습니다.");
+    }
+  }
 
   async function submitNewTerm() {
     const koreanTerm = newTerm.trim();
@@ -77,6 +128,29 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
 
   return (
     <div className="overflow-x-auto">
+      {(newIds.length > 0 || justConfirmed.length > 0) && (
+        <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+          {newIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => confirmNew(newIds)}
+              className="inline-flex items-center gap-1.5 rounded border border-input px-2 py-1 text-foreground hover:bg-accent/60"
+            >
+              <span className="h-2 w-2 rounded-full bg-primary" />
+              {newIds.length}건 확인 완료
+            </button>
+          )}
+          {justConfirmed.length > 0 && (
+            <button
+              type="button"
+              onClick={restoreNew}
+              className="rounded border border-input px-2 py-1 text-foreground hover:bg-accent/60"
+            >
+              다시 표시
+            </button>
+          )}
+        </div>
+      )}
       <table className="w-full border-collapse text-xs">
         <thead>
           <tr className="divide-x divide-border/30 border-b border-border bg-card text-foreground">
@@ -90,14 +164,24 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           </tr>
         </thead>
         <tbody className="divide-y divide-border/40">
-          {[...entries].sort((a, b) => a.korean_term.localeCompare(b.korean_term, "ko")).map((entry) => (
+          {pending.length > 0 && (
+            <tr>
+              <td className="bg-muted/50 px-4 py-1.5 text-muted-foreground" colSpan={columns.length + 2}>
+                표기를 정해야 하는 금액 {pending.length}건
+              </td>
+            </tr>
+          )}
+          {[...pending, ...rest].map((entry) => (
             <tr key={entry.id} className="group divide-x divide-border/30 even:bg-muted/30 hover:bg-accent/40">
               <td className="sticky left-0 z-10 bg-card px-4 py-2 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
                 {entry.korean_term}
+                {entry.category === "amount" && (
+                  <span className="ml-1.5 rounded bg-muted px-1 text-[10px] font-normal text-muted-foreground">금액</span>
+                )}
               </td>
               {columns.map((col) => (
                 <td key={col} className="px-4 py-2">
-                  <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onChanged} onError={onError} />
+                  <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onChanged} onError={onError} onConfirmNew={confirmNew} />
                 </td>
               ))}
               <td className="px-4 py-2">

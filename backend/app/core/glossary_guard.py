@@ -17,6 +17,20 @@ _TRAILING_PUNCT_RE = re.compile(r"[.,!?;:\"')\]]*$")
 _MAX_SPAN_WORDS = 3
 
 
+def term_in(term: str, text: str) -> bool:
+    """용어가 text에 들어 있는지 — 숫자로 시작/끝나는 용어(금액)는 더 긴 숫자의 일부로
+    걸리지 않게 한다("10억"이 "110억"·"1,100억"에, "200"이 "2000원"에 걸리면 안 됨).
+    이름 같은 일반 용어는 단순 부분 문자열 일치를 그대로 쓴다."""
+    if not term or not text:
+        return False
+    pattern = re.escape(term)
+    if term[0].isdigit():
+        pattern = r"(?<!\d)(?<!\d[.,])" + pattern
+    if term[-1].isdigit():
+        pattern = pattern + r"(?!\d)(?![.,]\d)"
+    return re.search(pattern, text) is not None
+
+
 def _split_preserve_ws(text: str) -> list:
     return _TOKEN_RE.findall(text)
 
@@ -68,7 +82,7 @@ def patch_missing_canonical(korean_text: str, original_text: str,
     patched = candidate_text
     for entry in glossary_entries:
         canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
-        if not canonical or not korean_term or korean_term not in korean_text:
+        if not canonical or not korean_term or not term_in(korean_term, korean_text):
             continue
         if canonical in patched:
             continue
@@ -90,7 +104,7 @@ def find_canonical_overrides(korean_text: str, original_text: str,
     for entry in glossary_entries:
         canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
         entry_id = entry.get("entry_id")
-        if not entry_id or not korean_term or korean_term not in korean_text:
+        if not entry_id or not korean_term or not term_in(korean_term, korean_text):
             continue
         if canonical and canonical in final_text:
             continue
@@ -184,7 +198,7 @@ def revert_canonical_regression(korean_text: str, original_text: str,
     patched = candidate_text
     for entry in glossary_entries:
         canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
-        if not canonical or not korean_term or korean_term not in korean_text:
+        if not canonical or not korean_term or not term_in(korean_term, korean_text):
             continue
         if canonical in patched:
             continue

@@ -180,6 +180,38 @@ def build_naturalness_instruction_line(naturalness_instruction: str) -> str:
     return f"자연스러움 지침: {naturalness_instruction}\n"
 
 
+def build_glossary_extraction_system(language_label: str) -> str:
+    """작품 용어집 자동 추출 시스템 프롬프트. 고유명사 외에 화폐 금액 표현도
+    뽑되("amount"), 언어·통화·작품 이름은 프롬프트에 넣지 않는다 — 어떤 언어판에서도
+    같은 문구를 쓰기 위함이다(language_label은 호출부가 채우는 언어 표시일 뿐).
+    amount의 canonical은 번역문에 쓰인 표기를 그대로 담은 참고값이며, 표기를
+    확정하는 건 사람이다(저장 단계에서 amount는 표기 행을 만들지 않는다)."""
+    return (
+        f"다음은 한국어 원문(korean_text)과 그 {language_label} 번역문"
+        "(target_text) 목록이다. 각 대사에서 사람 이름, 장소, 상호(가게·회사 "
+        "이름), 직함/호칭 중 다른 회차·다른 언어판에서도 표기가 일관되게 "
+        "유지되어야 하는 고유명사를 찾아라. 흔한 일반명사(엄마, 오빠, 사장님 "
+        "같은 관계/역할 호칭 그 자체)는 특정 인물을 가리키는 고유한 이름이 "
+        "아니면 뽑지 마라.\n"
+        "고유명사 외에, 화폐 가치를 나타내는 금액 표현도 뽑아라(시간·길이·온도·"
+        "개수·비율 같은 일반 수치는 뽑지 마라). 이런 항목은 category를 "
+        '"amount"로 하고, korean_term은 한국어 원문에 쓰인 금액 표현 그대로 '
+        "적어라. 한국어에 화폐 단위가 명시되지 않았더라도 문맥상 금액이 분명하면 "
+        "뽑아라. 같은 금액 표현은 한 번만 뽑아라.\n"
+        "고유명사도 금액 표현도 없는 대사는 결과에서 빼라.\n"
+        '반드시 {"results": [...]} 형태의 JSON 객체만 출력하라. results 배열의 '
+        "각 항목은 정확히 다음 키를 가진 JSON 객체여야 한다: "
+        "korean_term (문자열, 고유명사는 이름/장소/상호/직함 등의 기본형으로 "
+        "축약형·호격형이 아니라 성+이름 전체 같은 완전한 형태, 금액은 위 규칙대로), "
+        'category (문자열, 반드시 다음 중 하나: "person", "place", "business", '
+        '"title", "amount"), '
+        "canonical (문자열, target_text에서 실제로 쓰인 이 용어의 대상언어 표기). "
+        "이미 다른 회차에서 등록된 표기와 겹치는 인물이면 canonical은 그 대상언어 "
+        "문장에서 실제로 쓰인 표기 그대로 적어라(추측해서 통일하지 마라 — 통일 "
+        "여부 판단은 저장 단계에서 따로 한다)."
+    )
+
+
 def build_glossary_block(entries: List[dict]) -> str:
     """작품 용어집을 검증 프롬프트에 주입할 [작품 용어집] 블록으로 만든다.
     entries가 비어 있으면(첫 회차·첫 언어라 아직 확정된 표기가 없으면) 빈
@@ -346,7 +378,7 @@ class ModelProvider(ABC):
         가 title 단위로 upsert하며, 이미 확정된 표기는 절대 덮어쓰지 않는다 —
         이 호출은 후보만 뽑고 최종 결정은 하지 않는다. 입력은
         [{"id": str, "korean_text": str, "target_text": str}, ...], 반환값은
-        [{"korean_term": str, "category": "person"|"place"|"business"|"title",
+        [{"korean_term": str, "category": "person"|"place"|"business"|"title"|"amount",
         "canonical": str}, ...] — 고유명사가 없는 항목은 응답에서 빠진다."""
         ...
 

@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.db import async_session, engine
 from app.models import (
     Base, Title, Episode, TargetVersion, Segment, FindingRow, SttCorrection,
-    GlossaryEntry,
+    GlossaryEntry, GlossarySpelling,
 )
 from app.repositories import (
     save_pipeline_result, save_phase1_result, save_phase2_result,
@@ -851,3 +851,217 @@ async def test_manual_glossary_creation_allows_a_deleted_term_to_be_extracted_ag
         entries = await get_glossary_prompt_entries(session, title_id, "es", "LATAM")
         assert len(entries) == 1
         assert entries[0]["canonical"] == "Kim Hyun"
+
+
+async def _new_title() -> str:
+    async with async_session() as session:
+        title = Title(name="Amount Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        await session.commit()
+        return title.id
+
+
+@pytest.mark.asyncio
+async def test_amount_extraction_creates_entry_without_spelling():
+    from app.repositories import get_unconfirmed_amount_terms
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "100억", "category": "amount", "canonical": "10 millones de dólares"}])
+        await session.commit()
+    async with async_session() as session:
+        assert await get_glossary_prompt_entries(session, title_id, "es", "LATAM") == []
+        assert await get_unconfirmed_amount_terms(session, title_id, "es", "LATAM") == ["100억"]
+
+
+@pytest.mark.asyncio
+async def test_amount_entry_leaves_unconfirmed_list_once_spelling_is_filled():
+    from app.repositories import get_unconfirmed_amount_terms, update_glossary_entry
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "100억", "category": "amount", "canonical": "x"}])
+        await session.commit()
+        entry_id = (await session.execute(
+            select(GlossaryEntry.id).where(GlossaryEntry.title_id == title_id))).scalar_one()
+        await update_glossary_entry(session, entry_id, spellings={"es_LATAM": "10 mil millones de wones"})
+        await session.commit()
+    async with async_session() as session:
+        assert await get_unconfirmed_amount_terms(session, title_id, "es", "LATAM") == []
+        assert await get_unconfirmed_amount_terms(session, title_id, "fr", "FR") == ["100억"]
+
+
+@pytest.mark.asyncio
+async def test_deleted_amount_term_is_not_readded_and_person_behavior_unchanged():
+    from app.repositories import delete_glossary_entry
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "100억", "category": "amount", "canonical": ""},
+             {"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"},
+             {"korean_term": "빈표기", "category": "person", "canonical": ""}])
+        await session.commit()
+        amount_id = (await session.execute(
+            select(GlossaryEntry.id).where(GlossaryEntry.korean_term == "100억"))).scalar_one()
+        await delete_glossary_entry(session, amount_id)
+        await session.commit()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "100억", "category": "amount", "canonical": ""}])
+        await session.commit()
+        terms = set((await session.execute(
+            select(GlossaryEntry.korean_term).where(GlossaryEntry.title_id == title_id))).scalars().all())
+        assert terms == {"김현"}   # 삭제된 금액은 재등록 안 됨, 빈 표기 person은 여전히 건너뜀
+        prompt = await get_glossary_prompt_entries(session, title_id, "es", "LATAM")
+        assert [e["canonical"] for e in prompt] == ["Kim Hyun"]
+
+
+@pytest.mark.asyncio
+async def test_empty_extraction_changes_nothing():
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(session, title_id, "es", "LATAM", [])
+        await session.commit()
+        assert (await session.execute(
+            select(GlossaryEntry).where(GlossaryEntry.title_id == title_id))).scalars().all() == []
+
+
+async def _spellings(title_id, language="es", variant="LATAM"):
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(GlossaryEntry.korean_term, GlossarySpelling.is_new)
+            .join(GlossarySpelling, GlossarySpelling.entry_id == GlossaryEntry.id)
+            .where(GlossaryEntry.title_id == title_id,
+                   GlossarySpelling.language == language, GlossarySpelling.variant == variant)
+        )).all()
+        return dict(rows)
+
+
+@pytest.mark.asyncio
+async def test_first_analysis_of_a_language_marks_nothing_new_but_later_episodes_do():
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}])
+        await session.commit()
+    assert await _spellings(title_id) == {"김현": False}          # 첫 분석: 신규 아님
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyeon"},
+             {"korean_term": "세나", "category": "person", "canonical": "Sena"}])
+        await session.commit()
+    assert await _spellings(title_id) == {"김현": False, "세나": True}   # 기존은 그대로, 새 것만
+
+
+@pytest.mark.asyncio
+async def test_new_language_first_analysis_is_not_new_even_if_other_language_exists():
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}])
+        await session.commit()
+        await upsert_glossary_extraction(
+            session, title_id, "fr", "FR",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}])
+        await session.commit()
+    assert await _spellings(title_id, "fr", "FR") == {"김현": False}
+
+
+@pytest.mark.asyncio
+async def test_editing_a_spelling_clears_its_new_flag_and_set_spelling_new_round_trips():
+    from app.repositories import set_spelling_new, update_glossary_entry
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}])
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "세나", "category": "person", "canonical": "Sena"}])
+        await session.commit()
+        ids = (await session.execute(
+            select(GlossarySpelling.id).join(GlossaryEntry, GlossaryEntry.id == GlossarySpelling.entry_id)
+            .where(GlossaryEntry.title_id == title_id, GlossarySpelling.is_new.is_(True)))).scalars().all()
+        assert len(ids) == 1
+        assert await set_spelling_new(session, ids, False) == 1
+        assert await set_spelling_new(session, ids, True) == 1
+        await session.commit()
+        entry_id = (await session.execute(
+            select(GlossaryEntry.id).where(GlossaryEntry.korean_term == "세나"))).scalar_one()
+        await update_glossary_entry(session, entry_id, spellings={"es_LATAM": "Sena!"})
+        await session.commit()
+    assert (await _spellings(title_id))["세나"] is False
+
+
+@pytest.mark.asyncio
+async def test_amount_extraction_collects_distinct_candidates_in_order_capped_at_five():
+    title_id = await _new_title()
+    async with async_session() as session:
+        for canon in ["a", "b", "a", "c", "d", "e", "f", ""]:
+            await upsert_glossary_extraction(
+                session, title_id, "es", "LATAM",
+                [{"korean_term": "100억", "category": "amount", "canonical": canon}])
+        await session.commit()
+        entry = (await session.execute(
+            select(GlossaryEntry).where(GlossaryEntry.title_id == title_id))).scalar_one()
+        assert entry.candidates == {"es_LATAM": ["a", "b", "c", "d", "e"]}
+        assert await get_glossary_prompt_entries(session, title_id, "es", "LATAM") == []
+
+
+@pytest.mark.asyncio
+async def test_existing_amount_entry_never_gets_a_spelling_even_if_model_labels_it_person():
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "100억", "category": "amount", "canonical": ""}])
+        await session.commit()
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "100억", "category": "person", "canonical": "10 millones de dólares"}])
+        await session.commit()
+        assert await get_glossary_prompt_entries(session, title_id, "es", "LATAM") == []
+        entry = (await session.execute(
+            select(GlossaryEntry).where(GlossaryEntry.title_id == title_id))).scalar_one()
+        assert entry.category == "amount" and entry.candidates == {"es_LATAM": ["10 millones de dólares"]}
+
+
+@pytest.mark.asyncio
+async def test_existing_person_entry_labeled_amount_by_model_keeps_normal_spelling_behavior():
+    title_id = await _new_title()
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "만수", "category": "person", "canonical": "Man-su"}])
+        await session.commit()
+        await upsert_glossary_extraction(
+            session, title_id, "fr", "FR",
+            [{"korean_term": "만수", "category": "amount", "canonical": "Mansu"}])
+        await session.commit()
+        prompt_fr = await get_glossary_prompt_entries(session, title_id, "fr", "FR")
+        assert [e["canonical"] for e in prompt_fr] == ["Mansu"]
+
+
+@pytest.mark.asyncio
+async def test_candidates_are_kept_per_language_with_independent_cap():
+    title_id = await _new_title()
+    async with async_session() as session:
+        for canon in ["a", "b", "c", "d", "e", "f"]:
+            await upsert_glossary_extraction(
+                session, title_id, "es", "LATAM",
+                [{"korean_term": "100억", "category": "amount", "canonical": canon}])
+        await upsert_glossary_extraction(
+            session, title_id, "fr", "FR",
+            [{"korean_term": "100억", "category": "amount", "canonical": "dix milliards"}])
+        await session.commit()
+        entry = (await session.execute(
+            select(GlossaryEntry).where(GlossaryEntry.title_id == title_id))).scalar_one()
+        assert entry.candidates == {"es_LATAM": ["a", "b", "c", "d", "e"], "fr_FR": ["dix milliards"]}

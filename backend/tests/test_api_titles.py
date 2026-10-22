@@ -500,3 +500,55 @@ async def test_delete_glossary_entry_removes_it_from_listing():
         listed = await client.get("/titles")
     title = next(t for t in listed.json() if t["id"] == title_id)
     assert title["glossary"] == []
+
+
+@pytest.mark.asyncio
+async def test_glossary_entry_accepts_amount_category_and_rejects_unknown():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_id = (await client.post("/titles", json={"name": "T", "type": "series"})).json()["id"]
+        r = await client.post(f"/titles/{title_id}/glossary",
+                              json={"korean_term": "100억", "category": "amount", "aliases": []})
+        assert r.status_code == 200
+        listed = await client.get(f"/titles/{title_id}/glossary")
+        assert listed.json()[0]["category"] == "amount"
+        r = await client.post(f"/titles/{title_id}/glossary",
+                              json={"korean_term": "x", "category": "bogus", "aliases": []})
+        assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_glossary_lists_expose_new_candidates_and_confirm_mark_round_trip():
+    from app.repositories import upsert_glossary_extraction
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        title_id = (await client.post("/titles", json={"name": "T", "type": "series"})).json()["id"]
+        async with async_session() as session:
+            await upsert_glossary_extraction(session, title_id, "es", "LATAM",
+                [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}])
+            await upsert_glossary_extraction(session, title_id, "es", "LATAM",
+                [{"korean_term": "세나", "category": "person", "canonical": "Sena"},
+                 {"korean_term": "100억", "category": "amount", "canonical": "10 mil millones de wones"}])
+            await session.commit()
+
+        listed = (await client.get(f"/titles/{title_id}/glossary")).json()
+        by_term = {e["korean_term"]: e for e in listed}
+        assert by_term["김현"]["new"] == {}
+        assert list(by_term["세나"]["new"]) == ["es_LATAM"]
+        assert by_term["100억"]["candidates"] == {"es_LATAM": ["10 mil millones de wones"]}
+        assert by_term["100억"]["spellings"] == {}
+
+        ids = list(by_term["세나"]["new"].values())
+        r = await client.post("/glossary/confirm-new", json={"spelling_ids": ids})
+        assert r.json() == {"count": 1}
+        after = {e["korean_term"]: e for e in (await client.get(f"/titles/{title_id}/glossary")).json()}
+        assert after["세나"]["new"] == {}
+        r = await client.post("/glossary/mark-new", json={"spelling_ids": ids})
+        assert r.json() == {"count": 1}
+        listed_all = (await client.get("/titles")).json()
+        glossary = next(t for t in listed_all if t["id"] == title_id)["glossary"]
+        assert list(next(e for e in glossary if e["korean_term"] == "세나")["new"]) == ["es_LATAM"]
+
+        entry_id = by_term["세나"]["id"]
+        patched = await client.patch(f"/glossary/{entry_id}", json={"spellings": {"es_LATAM": "Sena!"}})
+        assert patched.json()["new"] == {}

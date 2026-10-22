@@ -162,11 +162,15 @@ class GlossaryEntry(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
     korean_term: Mapped[str] = mapped_column(String)
-    category: Mapped[str] = mapped_column(String)  # "person" | "place" | "business" | "title"
+    category: Mapped[str] = mapped_column(String)  # "person" | "place" | "business" | "title" | "amount"
     # 규칙으로 자동 유도되지 않는 별명만 담는다(예: 김현의 별명 "짱구") —
     # 축약형·호격형(예: 현, 현아)은 프롬프트 지침으로 이미 같은 대상으로
     # 처리되므로 여기 저장하지 않는다.
     aliases: Mapped[list] = mapped_column(JSON, default=list)
+    # amount 항목의 참고용 표기 후보 — {"{language}_{variant}": [번역문에서 쓰인 표기, 최대 5개]}.
+    # 표기가 아니라 프롬프트에도 들어가지 않는다. 사람이 용어집에서 고를 때 해당 언어 열의
+    # 자동완성으로만 보인다(언어마다 독립).
+    candidates: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class GlossarySpelling(Base):
@@ -180,6 +184,9 @@ class GlossarySpelling(Base):
     # 뜻 — 자동 추출은 이 행이 이미 있으면 절대 덮어쓰지 않는다("최초 확정
     # 우선", 사람의 PATCH만 덮어쓸 수 있다).
     canonical: Mapped[str] = mapped_column(String)
+    # 자동 추출이 (이미 표기가 있던 언어판에) 새로 만든 칸이면 True — 사용자가
+    # 확인하거나 직접 고치면 False. 한 번 False가 되면 자동 추출은 다시 켜지 않는다.
+    is_new: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class GlossarySuppression(Base):
