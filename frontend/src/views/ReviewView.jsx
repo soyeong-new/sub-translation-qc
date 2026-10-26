@@ -1198,7 +1198,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
                       disabled={pending}
                       onBlur={handleTimingBlur}
                       onClick={(e) => e.stopPropagation()}
-                      className="block w-full rounded-lg border border-transparent bg-transparent p-0 font-mono text-[11px] text-muted-foreground focus:border-input focus:bg-background disabled:opacity-50"
+                      className="block w-full border border-transparent bg-transparent px-1 py-0 font-mono text-[11px] text-muted-foreground focus:border-input focus:bg-background disabled:opacity-50"
                     />
                   </div>
                   {(localTimingErrors[seg.id] || srtTimingErrors[seg.id]) && (
@@ -1218,7 +1218,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
                     rows={Math.max(displayText.split("\n").length, 1)}
                     disabled={pending}
                     onBlur={handleBlur}
-                    className={`block w-full resize-none rounded-lg border border-transparent bg-transparent p-0 text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50 ${
+                    className={`block w-full resize-none border border-transparent bg-transparent px-1 py-0 text-xs leading-tight text-foreground focus:border-input focus:bg-background disabled:opacity-50 ${
                       distance === 0 ? "font-medium" : ""
                     }`}
                   />
