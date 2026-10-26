@@ -101,6 +101,7 @@ def _save_segments(session: AsyncSession, target_version_id: str,
             # 한 줄에 인물이 둘 이상이면 채워진다(design §인물별로 따로
             # 확인) — resolved_gender_raw는 이 경우 쓰지 않는다.
             resolved_gender_groups_raw=resolution.get("resolved_gender_groups"),
+            target_cues_raw=[c.model_dump() for c in pair.target_cues] if pair.target_cues else None,
         ))
 
 

@@ -69,6 +69,21 @@ def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
     for seg in sorted(segments, key=lambda s: s["start"]):
         if seg.get("excluded"):
             continue
+        cues = seg.get("target_cues")
+        # 정렬이 합친 큐인데 고친 내용이 없으면 원래 대상언어 큐 나눔 그대로
+        # 내보낸다. "고친 내용 없음"은 finding이 없다는 것만으론 부족하다 —
+        # 성별/격식 반영(save_phase2_result)과 전체 자막 직접 수정은 finding
+        # 없이 target_text를 바꾸므로, 텍스트가 원래 큐를 이어붙인
+        # 그대로(_merge_cues)인지도 본다. 검수자가 시간을 고쳤거나 큐를
+        # 쪼갰으면(시작·끝이 원래 큐와 달라짐) 그 판단이 우선이라 합친 큐로 둔다.
+        # ponytail: 고친 내용이 있는 합친 큐는 여전히 한 큐로 나간다 — 제안문을
+        # 큐 수만큼 줄로 받게 하면 이것도 나눌 수 있다(2단계).
+        if (cues and seg["id"] not in final_by_segment
+                and seg["text"] == " ".join(c["text"] for c in cues)
+                and cues[0]["start"] == seg["start"] and max(c["end"] for c in cues) == seg["end"]):
+            entries.extend({"start": c["start"], "end": c["end"],
+                            "text": normalize_speaker_dash(c["text"])} for c in cues)
+            continue
         text = final_by_segment.get(seg["id"], seg["text"])
         if not text.strip():
             continue

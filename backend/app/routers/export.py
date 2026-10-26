@@ -35,7 +35,8 @@ async def _load_export_context(session, target_version_id: str):
     )).scalars().all()
     segments = [
         {"id": s.id, "start": s.start, "end": s.end, "text": s.target_text,
-         "korean_text": s.korean_text, "excluded": s.excluded}
+         "korean_text": s.korean_text, "excluded": s.excluded,
+         "target_cues": s.target_cues_raw}
         for s in seg_rows
     ]
     # reviewed_at도 함께 넘긴다: 같은 세그먼트에 자동보정과 검수자 판단이 동시에

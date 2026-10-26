@@ -36,6 +36,30 @@ def test_assemble_final_srt_keeps_original_when_rejected():
     assert "texto original" in srt
 
 
+def test_assemble_final_srt_restores_original_cues_of_merged_segment():
+    """정렬이 합친 큐는 고친 내용이 없으면 원래 대상언어 큐 나눔으로 나가고,
+    고쳤거나 시간을 바꿨으면 합친 큐 하나로 나간다."""
+    cues = [{"start": 0.0, "end": 1.0, "text": "Hola, señor."},
+            {"start": 1.2, "end": 3.0, "text": "-Soy el mayordomo."}]
+    merged = {"id": "p1", "start": 0.0, "end": 3.0,
+              "text": "Hola, señor. -Soy el mayordomo.", "target_cues": cues}
+
+    srt = assemble_final_srt([merged], [])
+    assert srt.count("-->") == 2
+    assert "Hola, señor.\n" in srt
+
+    edited = assemble_final_srt([merged], [{"segment_id": "p1", "status": "modified",
+                                            "final_text": "Hola."}])
+    assert edited.count("-->") == 1
+
+    retimed = assemble_final_srt([{**merged, "end": 2.5}], [])
+    assert retimed.count("-->") == 1
+
+    # 격식 반영처럼 finding 없이 target_text만 바뀐 경우도 고친 것으로 본다.
+    rewritten = assemble_final_srt([{**merged, "text": "Hola, señor. -Soy su mayordomo."}], [])
+    assert rewritten.count("-->") == 1 and "su mayordomo" in rewritten
+
+
 def test_assemble_final_srt_skips_segments_with_empty_target_text():
     """정렬 실패로 대상언어 텍스트가 없는 한국어 전용 세그먼트는 빈 자막 큐가
     되어선 안 된다."""

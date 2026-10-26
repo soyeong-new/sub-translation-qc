@@ -22,6 +22,10 @@ class AlignedPair(BaseModel):
     target: Optional[SegmentText] = None
     gender: Optional[str] = None
     formality: Optional[str] = None
+    # 정렬이 대상언어 큐 여러 개를 target 하나로 합쳤을 때만 채워지는 원래 큐
+    # 목록 — 검증은 합친 문장으로 하고, 고치지 않은 줄은 export가 이 원래
+    # 큐 그대로 내보낸다(대상언어 큐 나눔 유지).
+    target_cues: Optional[list[SegmentText]] = None
 
 
 class Finding(BaseModel):

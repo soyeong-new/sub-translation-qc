@@ -289,7 +289,8 @@ async def align_by_embedding_dp(
             pairs.append(AlignedPair(
                 id=f"pair_{pair_count}",
                 korean=_merge_cues(korean_cues[prev_i:curr_i]) if curr_i > prev_i else None,
-                target=_merge_cues(target_segments[prev_j:curr_j]) if curr_j > prev_j else None
+                target=_merge_cues(target_segments[prev_j:curr_j]) if curr_j > prev_j else None,
+                target_cues=list(target_segments[prev_j:curr_j]) if curr_j - prev_j > 1 else None,
             ))
             pair_count += 1
 

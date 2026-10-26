@@ -109,6 +109,10 @@ class Segment(Base):
     # 대상언어가 없는 Segment는 원래도 최종 SRT에 안 나가므로, 이 값은
     # 검수 화면에서 "처리됨" 표시 용도로만 쓰인다.
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 정렬이 대상언어 큐 여러 개를 이 Segment 하나로 합쳤을 때의 원래 큐 목록
+    # ([{"start", "end", "text"}, ...]). 고친 내용이 없으면 export가 합친 큐
+    # 대신 이 원래 큐들을 내보낸다(AlignedPair.target_cues).
+    target_cues_raw: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class FindingRow(Base):
