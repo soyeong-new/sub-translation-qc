@@ -82,7 +82,8 @@ async def test_list_flagged_segments_includes_resolved_gender_groups_raw():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.get(f"/target-versions/{tv_id}/flagged-segments")
     assert r.status_code == 200
-    assert r.json()[0]["resolved_gender_groups_raw"] == groups
+    # 저장된 값은 그대로 실리고, 읽을 때 계산한 likely_not_person만 덧붙는다(referent가 없으면 False).
+    assert r.json()[0]["resolved_gender_groups_raw"] == [{**g, "likely_not_person": False} for g in groups]
 
 
 @pytest.mark.asyncio

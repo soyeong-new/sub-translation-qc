@@ -441,6 +441,33 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
   );
 }
 
+// 제안이 앞뒤 큐에 이미 있는 내용을 또 넣을 때 "제안" 옆에 붙는 작은 뱃지. 마우스를 올리거나
+// 키보드로 포커스하면 이웃 큐와 겹친 단어가 말풍선으로 뜬다.
+function NeighborWarningBadge({ warning }) {
+  const sideLabel = warning.side === "before" ? "앞" : "다음";
+  return (
+    <span className="group relative inline-flex">
+      <span
+        tabIndex={0}
+        role="note"
+        aria-label={`${sideLabel} 큐 중복 확인: 겹친 단어 ${warning.words.join(", ")}`}
+        className="inline-flex cursor-help items-center rounded-full border border-warning/50 bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {sideLabel} 큐 중복 확인
+      </span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-0 top-full z-20 mt-1 hidden w-64 rounded-md border border-border bg-card p-2.5 text-xs leading-snug text-foreground shadow-md group-focus-within:block group-hover:block"
+      >
+        <span className="mb-1 block font-semibold">{sideLabel} 큐에 이미 있는 내용이 제안에 들어 있습니다</span>
+        <span className="block">
+          겹친 단어: <span className="font-medium">{warning.words.join(", ")}</span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
 function FindingCard({
   finding, segment, isPreviewing, onPreview, reviewerName, pending, error, editing, editText, onEditTextChange, onApprove, onReject, onStartEdit, onCancelEdit, onSaveEdit,
   requerying, requeryText, requeryPending, onRequeryTextChange, onStartRequery, onCancelRequery, onSubmitRequery,
@@ -564,7 +591,15 @@ function FindingCard({
         </div>
         <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <p className="text-xs font-semibold text-primary">제안</p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs font-semibold text-primary">제안</p>
+              {/* 승인 전 알림(승인을 막지 않는다): 한국어와 번역은 큐를 끊는 지점이 달라, 제안이 앞뒤 큐에
+                  이미 번역된 내용을 또 넣을 수 있다(승인하면 같은 대사가 두 번 나옴). 상세는 말풍선으로만
+                  보여 카드를 길게 만들지 않는다. 검수자가 이미 판단한 카드에는 띄우지 않는다. */}
+              {finding.status === "pending" && finding.neighbor_warning && (
+                <NeighborWarningBadge warning={finding.neighbor_warning} />
+              )}
+            </div>
             <CharCount text={finding.suggested_text} />
           </div>
           <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">{finding.suggested_text}</p>
@@ -1344,6 +1379,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [exportStatus, setExportStatus] = useState({ kind: "idle" });
+  // "반영하기"(재조립)는 용어집 검사에 LLM을 쓸 수 있어 몇 초~수십 초 걸린다 — 진행 중에는 버튼을
+  // 잠가 중복 호출을 막고, 실패하면 이유를 팝업에 보여준다(안 보이면 눌러도 반응 없는 것처럼 보인다).
+  const [reassembling, setReassembling] = useState(false);
+  const [reassembleError, setReassembleError] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
   const [videoProxyUrl, setVideoProxyUrl] = useState(null);
   // 헤더 브레드크럼(타이틀/회차/언어)용 — findings와 별개로 target version
@@ -1836,6 +1875,12 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     URL.revokeObjectURL(url);
   }
 
+  // 용어집 내용의 서명 — 용어·카테고리·언어별 표기만 담는다. 목록을 다시 불러오기만 한 경우(신규 표시
+  // 확인 등)에는 값이 같아서 "수정됨"으로 오인하지 않는다.
+  const glossarySignature = JSON.stringify(
+    (glossary ?? []).map((e) => [e.id, e.korean_term, e.category, e.spellings ?? {}]),
+  );
+
   // 검사(export GET, LLM 호출 포함)와 실제 다운로드를 분리한다 — 경고가 있어
   // 취소했다가 재확인하려고 다시 누르면 그때마다 LLM을 또 타는 문제가 있었다.
   // 검사 결과는 "checked" 상태에 남겨 패널로 계속 보여주고, 재검사(=LLM
@@ -1848,6 +1893,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       setExportStatus({ ...exportStatus, kind: "checked" });
       return;
     }
+    setReassembleError(null);
     setExportStatus({ kind: "loading" });
     try {
       const result = await exportTargetVersion(targetVersionId);
@@ -1860,7 +1906,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       }
       setExportStatus({
         kind: "checked", result, warnings,
-        checkedFindings: findings, checkedSegments: segments,
+        checkedFindings: findings, checkedSegments: segments, checkedGlossary: glossarySignature,
       });
     } catch (err) {
       setExportStatus({ kind: "error", message: err.message ?? "내보내기 중 오류가 발생했습니다." });
@@ -1878,23 +1924,34 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     setExportStatus((prev) => ({ ...prev, kind: "dismissed" }));
   }
 
-  // 검사(위 handleExport) 이후 findings/segments가 바뀌었는지 — 참조 동일성으로
-  // 판단한다(approve/reject/edit은 항상 새 배열로 교체한다).
+  // 검사(위 handleExport) 이후 findings/segments/용어집이 바뀌었는지 — findings/segments는 참조
+  // 동일성으로 판단한다(approve/reject/edit은 항상 새 배열로 교체한다). 용어집은 내용 서명으로 비교한다.
   const exportOutOfDate =
     exportStatus.kind === "checked" &&
-    (exportStatus.checkedFindings !== findings || exportStatus.checkedSegments !== segments);
+    (exportStatus.checkedFindings !== findings || exportStatus.checkedSegments !== segments ||
+      exportStatus.checkedGlossary !== glossarySignature);
 
   // SRT를 최신 findings/segments/용어집으로 다시 조립하고, 전체 세그먼트에 대한
   // 용어집/포맷 검사도 다시 돌려 경고 목록을 새로 받는다(LLM 호출 포함).
   async function handleReassemble() {
-    const result = await reassembleExport(targetVersionId);
-    setExportStatus((prev) => ({
-      ...prev,
-      result,
-      warnings: result.format_warnings ?? [],
-      checkedFindings: findings,
-      checkedSegments: segments,
-    }));
+    if (reassembling) return;
+    setReassembling(true);
+    setReassembleError(null);
+    try {
+      const result = await reassembleExport(targetVersionId);
+      setExportStatus((prev) => ({
+        ...prev,
+        result,
+        warnings: result.format_warnings ?? [],
+        checkedFindings: findings,
+        checkedSegments: segments,
+        checkedGlossary: glossarySignature,
+      }));
+    } catch (err) {
+      setReassembleError(err.message ?? "반영하는 중 오류가 발생했습니다.");
+    } finally {
+      setReassembling(false);
+    }
   }
 
   const isExporting = exportStatus.kind === "loading";
@@ -2217,12 +2274,19 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                           <span>✎ 이후 수정된 내용이 있습니다</span>
                           <button
                             type="button"
+                            disabled={reassembling}
                             onClick={handleReassemble}
-                            className="shrink-0 rounded-lg border border-amber-400 bg-white px-2 py-1 font-medium hover:bg-amber-100"
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-400 bg-white px-2 py-1 font-medium hover:bg-amber-100 disabled:cursor-wait disabled:opacity-60"
                           >
-                            반영하기
+                            {reassembling && <Spinner />}
+                            {reassembling ? "반영 중…" : "반영하기"}
                           </button>
                         </div>
+                      )}
+                      {reassembleError && (
+                        <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                          반영하지 못했습니다: {reassembleError}
+                        </p>
                       )}
 
                       {formatWarnings.length > 0 && (

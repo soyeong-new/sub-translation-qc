@@ -20,6 +20,8 @@ from app.core.requery import (
 )
 from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length, final_text_reason
 from app.core.safety_net import enforce_line_length
+from app.core.neighbor_warning import compute_neighbor_warning
+from app.core.person_hint import likely_not_person
 from app.core.glossary_guard import patch_missing_canonical, find_canonical_overrides
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
@@ -118,6 +120,20 @@ class SplitSegmentIn(BaseModel):
 async def list_findings(target_version_id: str):
     async with async_session() as session:
         rows = await repo_get_findings(session, target_version_id)
+        # 이웃 큐 경고용: 영상 순서(index)로 앞뒤 세그먼트의 번역문을 찾는다.
+        ordered = (await session.execute(
+            select(Segment.id, Segment.target_text).where(Segment.target_version_id == target_version_id)
+            .order_by(Segment.index)
+        )).all()
+        position = {sid: i for i, (sid, _) in enumerate(ordered)}
+
+        def _neighbor_texts(segment_id: str):
+            i = position.get(segment_id)
+            if i is None:
+                return None, None
+            return (ordered[i - 1][1] if i > 0 else None,
+                    ordered[i + 1][1] if i + 1 < len(ordered) else None)
+
         return [
             {"id": r.id, "segment_id": r.segment_id, "category": r.category,
              "description": r.description, "original_text": r.original_text,
@@ -130,7 +146,11 @@ async def list_findings(target_version_id: str):
              # 자동으로 승인한 것이다(예: Claude+GPT 합의 자동 적용, 안전망
              # 자동 축약). 프론트가 카드 테두리 색을 "검수자가 판단했는지"로만
              # 표시하려면 status가 아니라 이 값을 봐야 한다.
-             "reviewed_at": r.reviewed_at}
+             "reviewed_at": r.reviewed_at,
+             # 승인 전 확인용 알림(지적을 막거나 지우지 않는다): 제안이 이웃 큐에 이미 있는
+             # 내용을 또 넣으면 neighbor_warning이 채워진다.
+             "neighbor_warning": compute_neighbor_warning(
+                 r.original_text, r.suggested_text, *_neighbor_texts(r.segment_id))}
             for r in rows
         ]
 
@@ -175,7 +195,12 @@ async def list_flagged_segments(target_version_id: str):
              "formality_check_needed": s.formality_check_needed,
              "resolved_gender_raw": s.resolved_gender_raw,
              "resolved_formality_raw": s.resolved_formality_raw,
-             "resolved_gender_groups_raw": s.resolved_gender_groups_raw,
+             # 읽을 때 계산해서 붙인다(저장하지 않음 — 이미 분석된 작품에도 적용되고, 확정 로직이 쓰는
+             # suggested_gender와 섞이지 않는다). 화면이 "사람 아님" 버튼을 미리 강조하는 데만 쓴다.
+             "resolved_gender_groups_raw": [
+                 {**g, "likely_not_person": likely_not_person(g.get("referent"))}
+                 for g in s.resolved_gender_groups_raw
+             ] if s.resolved_gender_groups_raw else s.resolved_gender_groups_raw,
              "excluded": s.excluded}
             for s in rows
         ]

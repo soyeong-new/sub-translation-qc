@@ -119,7 +119,7 @@ export function isSegmentResolved(segment) {
 // 있으면(LLM이 판단한, 이 그룹이 누구인지에 대한 짧은 설명) 위에 안내
 // 문구를 보여주고, 없으면 생략한다.
 export function GenderQuestion({
-  heading, words, wordMeanings, referent, resolvedGender, suggestedGender, pending, onSelect,
+  heading, words, wordMeanings, referent, resolvedGender, suggestedGender, likelyNotPerson, pending, onSelect,
 }) {
   // 아직 검수자가 답하지 않았는데(resolvedGender가 없는데) 이 title의
   // 다른 회차/언어판에서 이미 확인된 값이 있으면, 버튼 강조는 그 값을
@@ -127,6 +127,10 @@ export function GenderQuestion({
   // 눌러야만 일어난다 — 목록에서 자동으로 빠지지 않는다(design 원칙 5).
   const highlightGender = resolvedGender || suggestedGender || null;
   const isReused = !resolvedGender && !!suggestedGender;
+  // 서버가 "사람이 아닐 가능성이 높다"고 본 그룹(대상 설명이 상황·게임 같은 비사람 대상)은 "사람 아님"
+  // 버튼을 미리 강조해 보여준다. 다른 회차의 확정값이 있으면 그쪽이 우선이고, 확정은 마찬가지로
+  // 검수자가 버튼을 눌러야만 일어난다.
+  const preselectNotPerson = !resolvedGender && !suggestedGender && !!likelyNotPerson;
   return (
     <div>
       {heading && <p className="mb-2 text-xs font-semibold text-muted-foreground">{heading}</p>}
@@ -155,6 +159,12 @@ export function GenderQuestion({
           확인된 적이 있습니다 — 맞으면 아래 버튼으로 확인해주세요.
         </p>
       )}
+      {preselectNotPerson && (
+        <p className="mb-3 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning-foreground">
+          사람이 아닌 대상을 가리키는 것 같아 <strong>사람 아님</strong>을 미리 표시했습니다 — 맞으면
+          그 버튼을 눌러 확인하고, 사람이면 남성/여성을 골라주세요.
+        </p>
+      )}
       {/* 이미 확인된 줄이어도 버튼은 계속 눌러서 답을 바꿀 수 있다 — 지금
           저장된 값과 같은 버튼만 강조 표시한다. */}
       <div className="flex flex-wrap gap-2">
@@ -178,7 +188,7 @@ export function GenderQuestion({
         <button
           disabled={pending}
           onClick={() => onSelect("not_applicable")}
-          className={resolvedGender === "not_applicable" ? selectedBtnClass : binaryBtnClass}
+          className={resolvedGender === "not_applicable" || preselectNotPerson ? selectedBtnClass : binaryBtnClass}
         >
           사람 아님(해당 없음)
         </button>
@@ -530,6 +540,7 @@ export default function FlaggedSegmentStepper({
                             referent={genderGroups.length > 1 ? null : group.referent}
                             resolvedGender={group.gender}
                             suggestedGender={group.suggested_gender}
+                            likelyNotPerson={group.likely_not_person}
                             pending={pending}
                             onSelect={(gender) => handleResolveGenderGroup(index, gender)}
                           />

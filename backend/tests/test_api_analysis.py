@@ -617,3 +617,70 @@ async def test_set_video_offset_saves_and_get_returns_it():
             assert (await client.patch(f"/target-versions/{tv_id}/video-offset", json=bad)).status_code == 422
         assert (await client.patch("/target-versions/nope/video-offset",
                                    json={"video_offset_seconds": 1})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_findings_includes_neighbor_warning():
+    """제안이 다음 큐에 이미 있는 내용을 추가하면 neighbor_warning이 지적 목록에 실린다(지적 자체는 그대로 내려간다)."""
+    from app.models import FindingRow, Segment
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM", status="review")
+        session.add(tv); await session.flush()
+        texts = ["Un mayordomo cuida este lugar.", "-Hablaste con él por teléfono.\n-Cierto.", "Nada más."]
+        segs = [Segment(id=f"{tv.id}:s{i}", target_version_id=tv.id, index=i, start=float(i), end=i + 0.9,
+                        korean_text="한", target_text=t) for i, t in enumerate(texts)]
+        session.add_all(segs); await session.flush()
+        session.add_all([
+            FindingRow(id="f_add", target_version_id=tv.id, segment_id=segs[0].id, category="mistranslation",
+                       description="d", original_text=texts[0],
+                       suggested_text=texts[0] + "\nHablaste con él por teléfono.", confidence=1.0),
+            FindingRow(id="f_del", target_version_id=tv.id, segment_id=segs[1].id, category="mistranslation",
+                       description="d", original_text=texts[1], suggested_text="Ah, sí.", confidence=1.0),
+            FindingRow(id="f_ok", target_version_id=tv.id, segment_id=segs[2].id, category="mistranslation",
+                       description="d", original_text=texts[2], suggested_text="Eso es todo.", confidence=1.0),
+        ])
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/findings")
+    by_id = {f["id"]: f for f in r.json()}
+    assert by_id["f_add"]["neighbor_warning"]["side"] == "after"
+    assert by_id["f_add"]["neighbor_warning"]["neighbor_text"] == texts[1]
+    assert by_id["f_del"]["neighbor_warning"] is None
+    assert by_id["f_ok"]["neighbor_warning"] is None
+    assert "shrinks_content" not in by_id["f_add"]
+
+
+@pytest.mark.asyncio
+async def test_flagged_segments_marks_groups_that_likely_are_not_a_person():
+    """referent가 상황·게임 같은 비사람 대상이고 사람 단서가 없으면 likely_not_person을 붙인다 —
+    저장된 그룹 값은 그대로 두고 읽을 때만 계산한다."""
+    from app.models import Segment
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM", status="review")
+        session.add(tv); await session.flush()
+        groups = [
+            {"referent": "상황", "words": ["divertido"], "gender": None, "human_confirmed": False},
+            {"referent": "화자 자신의 상황", "words": ["injusta"], "gender": None, "human_confirmed": False},
+            {"referent": None, "words": ["solo"], "gender": None, "human_confirmed": False},
+        ]
+        session.add(Segment(id=f"{tv.id}:s0", target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                            korean_text="한", target_text="Es divertido.", gender_check_needed=True,
+                            resolved_gender_groups_raw=groups))
+        session.add(Segment(id=f"{tv.id}:s1", target_version_id=tv.id, index=1, start=1.0, end=2.0,
+                            korean_text="둘", target_text="Hola.", formality_check_needed=True))
+        await session.commit()
+        tv_id = tv.id
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/flagged-segments")
+    by_index = {s["id"].split(":")[-1]: s for s in r.json()}
+    flags = [g["likely_not_person"] for g in by_index["s0"]["resolved_gender_groups_raw"]]
+    assert flags == [True, False, False]
+    assert by_index["s1"]["resolved_gender_groups_raw"] is None   # 그룹이 없으면 그대로 None
+    assert "likely_not_person" not in groups[0]                   # 저장된 값에는 영향 없음
