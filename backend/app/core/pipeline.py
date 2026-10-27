@@ -24,8 +24,9 @@ from app.core.glossary_guard import revert_canonical_regression, term_in
 from app.language_profiles.loader import load_profile
 from app.knowledge.loader import load_knowledge
 from app.core.grammar_necessity import (
-    check_grammar_necessity, _strip_html_tags, _detect_korean_gender,
+    check_grammar_necessity, _strip_html_tags, _detect_korean_gender, _resolve_model,
 )
+from app.core.gender_check import find_gender_mismatches, only_inflection_changed
 from app.schemas import SegmentText, AlignedPair, Finding
 
 logger = logging.getLogger(__name__)
@@ -1774,6 +1775,99 @@ async def _apply_resolved_registers(
                        formality=reg.get("formality"))
 
 
+_GENDER_KO = {"male": "남성", "female": "여성"}
+
+
+def _apply_gender_fix_to_card(finding, new_text: str, pair, words: list) -> None:
+    """기존 카드의 제안문에서 성별 어미만 고친다. 역번역 태그는 설명 끝에 있어야 해서
+    (프론트가 뒤에서부터 파싱) 그 앞에 안내를 끼워 넣는다. 한국어에는 성별 어미가 없어
+    역번역은 그대로 둔다. 이미 자동 반영된 카드면(final_text/번역문이 옛 제안문 그대로) 함께 고친다."""
+    old = finding.suggested_text
+    note = f" (성별 어미도 확정값에 맞게 함께 고쳤습니다: {', '.join(words)})"
+    i = finding.description.find(" (한국어 역번역 참고:")
+    finding.description = (finding.description + note if i == -1
+                           else finding.description[:i] + note + finding.description[i:])
+    finding.suggested_text = new_text
+    if finding.final_text == old:
+        finding.final_text = new_text
+    if pair is not None and pair.target is not None and pair.target.text == old:
+        pair.target.text = new_text
+
+
+async def _run_gender_mismatch_pass(
+    pairs: list, provider: ModelProvider, profile: dict, target_version_id: str,
+    resolved_registers: dict, existing_findings: list, warnings: list,
+) -> list:
+    """확정된 성별과 번역문 단어의 성이 어긋났는데 AI 검증기가 finding을 안 올린 줄을
+    찾아 finding으로 올린다. 찾기는 spaCy(gender_check), 고친 문장은 LLM이 쓰고(검수자가
+    대상언어를 모르므로) 성 어미만 바뀐 결과만 받는다. 문장은 적용하지 않고 pending으로
+    두어 검수자가 승인한다. 검증기가 이미 finding을 올린 줄은 건너뛴다.
+    ponytail: LLM 결과가 검사를 못 넘으면 그 줄은 올리지 않는다(규칙으로 어미를
+    바꾸는 대체 수정안은 없음) — 놓친 줄이 많으면 -o/-a 규칙 대체안을 추가한다."""
+    if not any(r.get("gender_groups") for r in resolved_registers.values()):
+        return []
+    try:
+        nlp = _resolve_model(profile.get("language"))
+    except ValueError:
+        return []   # spaCy 모델이 없는 언어는 이 검사를 지원하지 않는다
+    pair_by_id = {p.id: p for p in pairs}
+    mismatches = find_gender_mismatches(
+        pairs, resolved_registers, nlp, skip_ids={f.segment_id for f in existing_findings})
+    # 이미 카드가 있는 줄은 새 카드를 만들지 않고(한 줄에 카드 한 장) 카드의 제안문을 검사한다 —
+    # 검증기가 오역만 고치고 성별은 그대로 둔 제안을 승인하면 성별 오류가 반영된다.
+    card_by_id = {f.id: f for f in existing_findings if f.segment_id in resolved_registers}
+    card_mismatches = find_gender_mismatches(
+        [AlignedPair(id=fid, target=SegmentText(start=0, end=1, text=f.suggested_text))
+         for fid, f in card_by_id.items()],
+        {fid: resolved_registers[f.segment_id] for fid, f in card_by_id.items()}, nlp)
+    if not mismatches and not card_mismatches:
+        return []
+    all_mismatches = {**mismatches, **card_mismatches}
+    text_by_id = {**{pid: pair_by_id[pid].target.text for pid in mismatches},
+                  **{fid: card_by_id[fid].suggested_text for fid in card_mismatches}}
+    items = [{"id": i, "target_text": text_by_id[i], "groups": groups}
+             for i, groups in all_mismatches.items()]
+    results = await _safe_call(
+        provider.apply_gender_groups(items, profile), "성별 어긋남 수정문 작성",
+        "이 검사를 건너뛰고 계속 진행", target_version_id, warnings)
+    fixed = {}
+    for r in results:
+        groups = all_mismatches.get(r["id"])
+        if groups and only_inflection_changed(
+                text_by_id[r["id"]], r["corrected_text"], [w for g in groups for w in g["words"]]):
+            fixed[r["id"]] = r["corrected_text"]
+    for fid in card_mismatches:
+        if fid in fixed:
+            _apply_gender_fix_to_card(
+                card_by_id[fid], fixed[fid], pair_by_id.get(card_by_id[fid].segment_id),
+                [w for g in card_mismatches[fid] for w in g["words"]])
+    fixed = {pid: text for pid, text in fixed.items() if pid in mismatches}
+    if not fixed:
+        return []
+    back = await _back_translate_all(
+        [{"id": pid, "original_text": _strip_html_tags(pair_by_id[pid].target.text),
+          "text": _strip_html_tags(text)} for pid, text in fixed.items()],
+        profile, provider.back_translate_with_claude,   # 수정문은 GPT가 썼으므로 반대쪽 모델로
+        "성별 수정문 역번역", target_version_id, warnings)
+    back_by_id = {b["id"]: b for b in back}
+    findings = []
+    for pid, text in fixed.items():
+        who = ", ".join(
+            f"'{'/'.join(g['words'])}'({g.get('referent') or '대상 불명'} → {_GENDER_KO[g['gender']]})"
+            for g in mismatches[pid])
+        description = f"확정된 성별과 번역문의 단어 형태가 어긋납니다: {who}. 확정된 성별에 맞게 고쳤습니다."
+        if back_by_id.get(pid, {}).get("korean_text"):
+            description += f" (한국어 역번역 참고: {back_by_id[pid]['korean_text']})"
+        if back_by_id.get(pid, {}).get("original_korean_text"):
+            description += f" (원본 한국어 역번역 참고: {back_by_id[pid]['original_korean_text']})"
+        findings.append(Finding(
+            id=f"finding_{pid}_gender_check_mistranslation", target_version_id=target_version_id,
+            segment_id=pid, category="mistranslation", description=description,
+            original_text=pair_by_id[pid].target.text, suggested_text=text,
+            confidence=1.0, source="llm", model="gender_check"))
+    return findings
+
+
 async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dict,
                                knowledge: dict,
                                target_version_id: str, resolved_registers: dict,
@@ -1798,6 +1892,10 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
         knowledge, format_constraint,
         target_version_id, resolved_registers, glossary_entries,
     )
+
+    dual_verification_findings += await _run_gender_mismatch_pass(
+        pairs, provider, profile, target_version_id, resolved_registers,
+        dual_verification_findings, dual_verification_warnings)
 
     final_ellipsis_violations, safety_net_findings = await _run_final_safety_net(
         pairs, provider, target_version_id, dual_verification_findings,
