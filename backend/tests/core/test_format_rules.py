@@ -28,7 +28,7 @@ def test_check_line_length_allows_two_short_lines():
 
 
 def test_check_reading_speed_flags_short_cue_with_long_text():
-    """회귀(사용자 재현): 줄당 50자 제약은 통과해도, 1.2초짜리 짧은 큐에
+    """회귀(사용자 재현): 줄당 42자 제약은 통과해도, 1.2초짜리 짧은 큐에
     문장 두 개 분량이 들어가면 읽기 속도 기준으로는 위반이어야 한다."""
     pair = AlignedPair(id="p1", target=SegmentText(
         start=0.0, end=1.2, text="Ahora hasta se le caen los palillos pequeños."))
@@ -84,16 +84,16 @@ def test_check_line_length_captures_current_text_as_original_text():
 
 
 def test_rewrap_line_fits_content_that_only_needs_rebreaking():
-    text = " ".join(["word"] * 20)  # 99자, 한 줄에 몰려있음 — 100자(50x2) 안에는 들어감
+    text = " ".join(["word"] * 16)  # 79자, 한 줄에 몰려있음 — 84자(42x2) 안에는 들어감
     result = rewrap_line(text)
     assert result is not None
     lines = result.split("\n")
     assert len(lines) <= 2
-    assert all(len(ln) <= 50 for ln in lines)
+    assert all(len(ln) <= 42 for ln in lines)
 
 
 def test_rewrap_line_returns_none_when_content_too_long_even_optimally_wrapped():
-    text = " ".join(["word"] * 40)  # 199자 — 아무리 잘 나눠도 2줄x50자 안에 안 들어감
+    text = " ".join(["word"] * 40)  # 179자 — 아무리 잘 나눠도 2줄x42자 안에 안 들어감
     assert rewrap_line(text) is None
 
 
@@ -105,7 +105,7 @@ def test_rewrap_line_normalizes_existing_bad_linebreaks():
     text = "línea muy larga que\nno respeta el límite de caracteres por línea aquí"
     result = rewrap_line(text)
     assert result is not None
-    assert all(len(ln) <= 50 for ln in result.split("\n"))
+    assert all(len(ln) <= 42 for ln in result.split("\n"))
 
 
 def test_rewrap_line_prefers_sentence_boundary_over_word_boundary():
@@ -123,7 +123,7 @@ def test_rewrap_line_does_not_split_inside_ellipsis():
 
 
 def test_rewrap_line_falls_back_to_word_boundary_without_punctuation():
-    text = " ".join(["word"] * 20)
+    text = " ".join(["word"] * 16)
     result = rewrap_line(text)
     assert "\n" in result
     assert "." not in result and "," not in result

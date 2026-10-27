@@ -47,6 +47,6 @@ async def test_verify_and_refine_delegates_to_gpt():
 @pytest.mark.asyncio
 async def test_shrink_line_delegates_to_claude():
     provider = _make_provider()
-    result = await provider.shrink_line("긴 문장", max_chars=50, max_lines=2)
+    result = await provider.shrink_line("긴 문장", max_chars=42, max_lines=2)
     assert result == "짧아진 문장"
     provider._claude.shrink_line.assert_awaited_once()

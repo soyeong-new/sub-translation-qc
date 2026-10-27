@@ -257,10 +257,10 @@ async def test_pipeline_retries_with_claude_only_when_target_text_is_left_untran
 
 @pytest.mark.asyncio
 async def test_pipeline_shrinks_pending_finding_that_exceeds_line_length(tmp_path, monkeypatch):
-    """회귀(사용자 재현): 프롬프트에 "줄당 50자 이내로 제안할 것" 지시가
+    """회귀(사용자 재현): 프롬프트에 "줄당 42자 이내로 제안할 것" 지시가
     있어도 LLM이 안 지킬 수 있다 — pending finding(한쪽 모델만 지적,
     사람 승인 전)은 검수자가 승인하기 전까지 S4 안전망을 안 거치므로,
-    여기서 미리 강제하지 않으면 50자 넘는 제안이 그대로 화면에 보인다."""
+    여기서 미리 강제하지 않으면 42자 넘는 제안이 그대로 화면에 보인다."""
     srt_path = tmp_path / "target.srt"
     srt_path.write_text(TARGET_SRT, encoding="utf-8")
     provider = MockProvider()
@@ -289,7 +289,7 @@ async def test_pipeline_shrinks_pending_finding_that_exceeds_line_length(tmp_pat
     finding = next(f for f in result["findings"] if f.model == "claude")
     assert finding.status == "pending"
     assert finding.suggested_text != long_text
-    assert all(len(ln) <= 50 for ln in finding.suggested_text.split("\n"))
+    assert all(len(ln) <= 42 for ln in finding.suggested_text.split("\n"))
 
 
 @pytest.mark.asyncio
@@ -2123,6 +2123,40 @@ async def test_run_grammar_necessity_check_sends_relevant_saved_character_facts_
 
 
 @pytest.mark.asyncio
+async def test_run_grammar_necessity_check_retries_only_ids_missing_from_llm_response():
+    """회귀: LLM이 일부 줄을 응답에서 통째로 빼먹으면 그 줄만 한 번 더 묻는다 —
+    바로 폴백으로 가면 설명·사람 아님 판단 없는 미확정 카드가 된다."""
+    from app.core.pipeline import _run_grammar_necessity_check
+    from app.schemas import SegmentText, AlignedPair
+    from app.providers.mock import MockProvider
+
+    class DropsOnFirstCall(MockProvider):
+        def __init__(self):
+            self.calls = []
+
+        async def resolve_gender_from_context(self, items, profile):
+            self.calls.append([i["id"] for i in items])
+            if len(self.calls) == 1:
+                items = items[:1]
+            return [{"id": i["id"], "words": [{
+                "index": 0, "is_person": True, "group_id": 0,
+                "gender": None, "referent": "친구", "character_name": None}]} for i in items]
+
+    pairs = [AlignedPair(
+        id=pid, korean=SegmentText(start=0.0, end=1.0, text="피곤해."),
+        target=SegmentText(start=0.0, end=1.0, text="Estoy cansada."),
+    ) for pid in ("p1", "p2")]
+    provider = DropsOnFirstCall()
+
+    resolutions, warnings = await _run_grammar_necessity_check(
+        pairs, {"language": "es", "variant": "LATAM"}, provider, "tv1")
+
+    assert provider.calls == [["p1", "p2"], ["p2"]]
+    groups = {r["segment_id"]: r["resolved_gender_groups"] for r in resolutions}
+    assert groups["p2"][0]["referent"] == "친구"      # 폴백(referent=None)이 아니다
+
+
+@pytest.mark.asyncio
 async def test_phase2_applies_confirmed_gender_and_formality_in_one_llm_call(monkeypatch):
     """Phase 2는 확정 성별과 격식을 순차 호출하지 않고 한 번에 반영한다."""
     from app.core.pipeline import run_pipeline_phase2
@@ -2675,7 +2709,7 @@ async def test_run_final_safety_net_skips_line_length_check_for_pending_segment(
     from app.core.pipeline import _run_final_safety_net
     from app.schemas import Finding
 
-    long_text = "x " * 40  # MAX_LINE_CHARS(50)를 넘겨 줄 길이 위반 유발
+    long_text = "x " * 40  # MAX_LINE_CHARS (42)를 넘겨 줄 길이 위반 유발
     pairs = [AlignedPair(
         id="p1", korean=SegmentText(start=0.0, end=1.0, text="원문"),
         target=SegmentText(start=0.0, end=1.0, text=long_text),
@@ -2939,7 +2973,7 @@ async def test_dual_verification_receives_confirmed_gender_groups_per_line():
                                   target=SegmentText(start=0, end=1, text=t))
     groups = [{"words": ["bravo"], "referent": "듣고 있는 상대방", "gender": "male"}]
     await _run_dual_verification_pass(
-        [mk("p0", "Você está bravo?")], _P(), {"language": "pt"}, {}, "줄당 50자",
+        [mk("p0", "Você está bravo?")], _P(), {"language": "pt"}, {}, "줄당 42자",
         "tv1", {"p0": {"gender_groups": groups, "formality": "formal"}})
     assert captured["pairs"][0]["gender_groups"] == groups
 

@@ -131,7 +131,7 @@ async def test_requery_reapplies_already_confirmed_gender_to_new_suggestion(monk
 
 @pytest.mark.asyncio
 async def test_requery_shrinks_suggestion_that_exceeds_line_length(monkeypatch):
-    """회귀(사용자 재현): 프롬프트에 "줄당 50자 이내" 지시가 있어도 LLM이
+    """회귀(사용자 재현): 프롬프트에 "줄당 42자 이내" 지시가 있어도 LLM이
     다시 질문 응답에서 이를 안 지킬 수 있다 — 다시 질문 결과는 곧바로
     pending으로 저장되고 검수자가 승인하기 전까지 다른 안전망을 안 거치므로,
     여기서 미리 강제해야 한다."""
@@ -153,7 +153,7 @@ async def test_requery_shrinks_suggestion_that_exceeds_line_length(monkeypatch):
     assert r.status_code == 200
     suggested_text = r.json()["suggested_text"]
     assert suggested_text != long_text
-    assert all(len(ln) <= 50 for ln in suggested_text.split("\n"))
+    assert all(len(ln) <= 42 for ln in suggested_text.split("\n"))
 
 
 @pytest.mark.asyncio

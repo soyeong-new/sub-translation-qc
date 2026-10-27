@@ -60,7 +60,7 @@ async def test_requery_live_provider_passes_instruction_without_argument_collisi
     assert called.await_args.args[:4] == (
         [{"id": "seg1", "korean_text": "안녕", "target_text": "hola corregido"}],
         {"language": "es", "variant": "LATAM"}, "지식",
-        "줄당 50자 이내, 세그먼트당 최대 2줄을 지켜서 제안할 것.",
+        "줄당 42자 이내, 세그먼트당 최대 2줄을 지켜서 제안할 것.",
     )
     assert called.await_args.args[4] == "더 정확하게"
 

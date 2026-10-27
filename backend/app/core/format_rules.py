@@ -5,7 +5,7 @@ import textwrap
 from typing import List, Optional, Tuple
 from app.schemas import AlignedPair, FormatViolation
 
-MAX_LINE_CHARS = 50
+MAX_LINE_CHARS = 42
 MAX_LINES = 2
 # 자막 한 줄을 초당 몇 자까지 읽을 수 있다고 볼지 — 정적인 줄당 글자수
 # 제약만으로는 큐 노출 시간이 아주 짧을 때(예: 1.2초) 읽기엔 너무 많은
@@ -39,7 +39,7 @@ def rewrap_line(text: str, max_chars: int = MAX_LINE_CHARS,
     """줄바꿈 위치만 바꿔서 위반을 해소할 수 있으면(내용 자체는 안 늘어난
     경우) 그 결과를 반환한다. 문장/절 경계에서 끊을 수 있으면 그걸 우선
     쓰고(자연스러움), 안 되면 textwrap의 단어 경계 줄바꿈으로 폴백한다.
-    재배치만으로 안 되면(문장 자체가 너무 길어 2줄×50자 안에 못 들어가는
+    재배치만으로 안 되면(문장 자체가 너무 길어 2줄×42자 안에 못 들어가는
     경우) None을 반환해 호출자가 LLM 축약으로 폴백하게 한다 — 단어를
     쪼개지 않으므로(break_long_words=False), 한 단어 자체가 max_chars보다
     길면 항상 실패한다(그 경우도 LLM이 필요한 상황이라 맞는 동작)."""
@@ -118,7 +118,7 @@ def check_reading_speed(pairs: List[AlignedPair]) -> List[FormatViolation]:
     """줄당 글자수 제약(check_line_length)과 별개로, 큐가 화면에 떠 있는
     시간 대비 글자수가 너무 많아 읽을 수 없는 경우를 잡는다 — 두 문장을
     합친 교정문이 1초짜리 큐 하나에 통째로 들어가는 사고가 실제로
-    있었다(줄당 50자 제약은 통과하지만 읽을 시간이 부족한 경우)."""
+    있었다(줄당 42자 제약은 통과하지만 읽을 시간이 부족한 경우)."""
     violations = []
     for pair in pairs:
         if pair.target is None:

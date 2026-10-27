@@ -287,7 +287,7 @@ function Field({ id, label, children }) {
 // backend/app/core/format_rules.py의 MAX_LINE_CHARS와 동기화되어야 함 —
 // 자막은 줄 단위로 글자수 제한이 걸리므로(줄당, 세그먼트 전체가 아님)
 // 줄바꿈으로 나눠서 줄마다 따로 세고, 제한을 넘는 줄만 강조 표시한다.
-const MAX_LINE_CHARS = 50;
+const MAX_LINE_CHARS = 42;
 
 function CharCount({ text }) {
   const lines = text.split("\n");
@@ -612,7 +612,7 @@ function FindingCard({
       </div>
 
       {/* 실제로 저장된 최종 텍스트 — AI 제안(suggested_text)과 다를 수 있으니
-          (검수자가 직접 고쳤거나, 승인 시점에 50자 제약 위반이라 자동으로
+          (검수자가 직접 고쳤거나, 승인 시점에 42자 제약 위반이라 자동으로
           줄었거나) 다를 때만 별도로 보여준다 (export 시 실제 반영되는 텍스트). */}
       {finding.final_text && finding.final_text !== finding.suggested_text && (
         <div className="mt-3 border-t border-warning/30 pt-2">

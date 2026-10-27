@@ -93,7 +93,7 @@ async def test_correct_stt_creates_pending_finding_when_reverify_flags_problem(m
 
 @pytest.mark.asyncio
 async def test_correct_stt_shrinks_reverify_suggestion_that_exceeds_line_length(monkeypatch):
-    """회귀(사용자 재현): 프롬프트에 "줄당 50자 이내" 지시가 있어도 LLM이
+    """회귀(사용자 재현): 프롬프트에 "줄당 42자 이내" 지시가 있어도 LLM이
     STT 재검증 응답에서 이를 안 지킬 수 있다 — 새로 만들어지는 pending
     finding은 검수자가 승인하기 전까지 다른 안전망을 안 거치므로, 여기서
     미리 강제해야 한다."""
@@ -124,7 +124,7 @@ async def test_correct_stt_shrinks_reverify_suggestion_that_exceeds_line_length(
         assert r.status_code == 200
         suggested_text = r.json()["new_finding"]["suggested_text"]
         assert suggested_text != long_text
-        assert all(len(ln) <= 50 for ln in suggested_text.split("\n"))
+        assert all(len(ln) <= 42 for ln in suggested_text.split("\n"))
 
 
 @pytest.mark.asyncio

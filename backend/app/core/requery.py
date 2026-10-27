@@ -67,10 +67,10 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
     if not results:
         raise RequeryNoResultError(
             "AI가 이 지시로는 수정하지 못했습니다 — 다른 표현으로 다시 시도해주세요.")
-    # 프롬프트에 "50자 이내로 제안할 것" 지시가 있어도 LLM이 안 지킬 수
+    # 프롬프트에 "42자 이내로 제안할 것" 지시가 있어도 LLM이 안 지킬 수
     # 있다(design §한국어 혼입 방어와 같은 이유) — pending 상태로 저장되는
     # 다시 질문 결과는 검수자가 승인하기 전까지 다른 안전망을 안 거치므로,
-    # 여기서 바로 강제한다(사용자 재현: 다시 질문 결과가 50자를 넘겨서 그대로 보임).
+    # 여기서 바로 강제한다(사용자 재현: 다시 질문 결과가 42자를 넘겨서 그대로 보임).
     text, _ = await enforce_line_length(results[0]["corrected_text"], provider)
     # pipeline._make_dual_verification_finding과 같은 이유로, 재질문 결과도
     # 등록된 고유명사 표기를 미등록 표기로 퇴행시켰으면 되돌린다(실사용

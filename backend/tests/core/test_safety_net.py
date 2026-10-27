@@ -25,7 +25,7 @@ async def test_violation_shrinks_text_and_updates_pair_in_place():
     assert len(findings) == 1
     assert findings[0].model == "안전망"
     assert findings[0].status == "approved"
-    assert len(findings[0].suggested_text) <= 50
+    assert len(findings[0].suggested_text) <= 42
     assert pairs[0].target.text == findings[0].suggested_text
 
 
@@ -39,11 +39,11 @@ async def test_violation_for_unknown_segment_id_is_skipped():
 
 @pytest.mark.asyncio
 async def test_violation_resolved_by_rewrap_alone_skips_llm():
-    """내용 자체는 100자(50자x2줄) 안에 들어가고 그냥 한 줄에 몰려있어서
+    """내용 자체는 84자(42자x2줄) 안에 들어가고 그냥 한 줄에 몰려있어서
     위반이 난 경우, LLM을 부르지 않고 줄바꿈 재배치만으로 해결해야 한다."""
-    text = " ".join(["word"] * 20)  # 99자, 한 줄
+    text = " ".join(["word"] * 16)  # 79자, 한 줄
     pairs = [_pair("p1", text)]
-    violations = [FormatViolation(segment_id="p1", rule="line_length", detail="1줄, 최대 줄 길이 99자")]
+    violations = [FormatViolation(segment_id="p1", rule="line_length", detail="1줄, 최대 줄 길이 79자")]
 
     provider = MockProvider()
     shrink_calls = []
@@ -62,7 +62,7 @@ async def test_violation_resolved_by_rewrap_alone_skips_llm():
     assert findings[0].source == "rule"
     lines = pairs[0].target.text.split("\n")
     assert len(lines) <= 2
-    assert all(len(ln) <= 50 for ln in lines)
+    assert all(len(ln) <= 42 for ln in lines)
 
 
 @pytest.mark.asyncio
@@ -78,12 +78,12 @@ async def test_enforce_line_length_leaves_short_text_untouched_without_calling_l
 
 @pytest.mark.asyncio
 async def test_enforce_line_length_resolves_via_rewrap_without_llm():
-    text = " ".join(["word"] * 20)  # 99자, 한 줄 — 재배치만으로 2줄x50자 안에 들어감
+    text = " ".join(["word"] * 16)  # 79자, 한 줄 — 재배치만으로 2줄x42자 안에 들어감
     result, changed = await enforce_line_length(text, MockProvider())
     assert changed is True
     lines = result.split("\n")
     assert len(lines) <= 2
-    assert all(len(ln) <= 50 for ln in lines)
+    assert all(len(ln) <= 42 for ln in lines)
 
 
 @pytest.mark.asyncio
@@ -93,5 +93,6 @@ async def test_enforce_line_length_falls_back_to_llm_when_rewrap_cannot_help():
     text = "a" * 70
     result, changed = await enforce_line_length(text, MockProvider())
     assert changed is True
-    assert len(result) <= 50
+    assert len(result) <= 42
     assert result != text
+

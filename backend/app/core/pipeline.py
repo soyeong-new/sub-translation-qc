@@ -467,6 +467,18 @@ async def _run_grammar_necessity_check(
                 if isinstance(resolve_result, Exception):
                     raise resolve_result
                 llm_results = resolve_result
+                # 응답에서 id가 통째로 빠진 줄은 폴백(설명·사람 아님 판단 없는 미확정
+                # 카드)으로 가기 전에 그 줄만 한 번 더 묻는다. 재시도가 실패해도
+                # 기존 폴백이 그대로 받는다.
+                answered = {r["id"] for r in llm_results}
+                missing_wire = [w for w in wire_items if w["id"] not in answered]
+                if missing_wire:
+                    try:
+                        llm_results = llm_results + await provider.resolve_gender_from_context(
+                            missing_wire, profile)
+                    except Exception as exc:
+                        logger.warning("성별 문맥 판단 누락 %d줄 재요청 실패, 폴백으로 처리: %s",
+                                       len(missing_wire), exc)
                 llm_groups_by_id = _build_gender_groups_from_llm(llm_items, llm_results, profile)
                 # _build_gender_groups_from_llm은 응답에 실제로 포함된 id만
                 # 키로 넣는다(빈 리스트 포함 가능 — "전부 사람 아님"이라는
@@ -1053,7 +1065,7 @@ async def _make_dual_verification_finding(
     original_text = pair.target.text
     # status="pending"(모델 하나만 지적)인 항목은 검수자가 승인하기 전까지
     # S4 안전망(_run_final_safety_net)을 안 거친다 — 여기서 미리 강제하지
-    # 않으면 검수자가 50자 넘는 제안을 승인 전 화면에서 그대로 보게 된다
+    # 않으면 검수자가 42자 넘는 제안을 승인 전 화면에서 그대로 보게 된다
     # (사용자 재현). status="approved"도 여기서 같이 걸러두면 S4가 같은
     # 세그먼트를 또 검사할 필요가 없다(enforce_line_length는 위반이 없으면
     # LLM을 안 부르므로 여기서 미리 해도 비용이 늘지 않는다).

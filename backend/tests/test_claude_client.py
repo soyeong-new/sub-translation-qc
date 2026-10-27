@@ -27,7 +27,7 @@ async def test_correct_primary_parses_json_array_of_changed_segments():
     result = await client.correct_primary(
         pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "esta feliz"}],
         profile={},
-        knowledge="", format_constraint="줄당 50자 이내",
+        knowledge="", format_constraint="줄당 42자 이내",
     )
     assert result == payload
 
@@ -219,7 +219,7 @@ async def test_correct_primary_skips_thinking_block_before_text_block():
     result = await client.correct_primary(
         pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "esta feliz"}],
         profile={},
-        knowledge="", format_constraint="줄당 50자 이내",
+        knowledge="", format_constraint="줄당 42자 이내",
     )
     assert result == payload
 
@@ -242,7 +242,7 @@ async def test_correct_primary_raises_when_response_is_object_not_array():
 @pytest.mark.asyncio
 async def test_shrink_line_returns_shrunk_text():
     client = _make_client_with_fake_sdk(json.dumps({"shrunk_text": "짧아진 문장"}))
-    result = await client.shrink_line("아주 길어서 줄여야 하는 문장입니다", max_chars=50, max_lines=2)
+    result = await client.shrink_line("아주 길어서 줄여야 하는 문장입니다", max_chars=42, max_lines=2)
     assert result == "짧아진 문장"
 
 
@@ -253,7 +253,7 @@ async def test_shrink_line_prompt_instructs_to_preserve_existing_gender_and_form
     깨지는 사례가 실측으로 확인됐다. shrink_line은 profile을 안 받으니
     "지금 입력에 이미 반영된 성별/격식은 바꾸지 마라"는 지시로 방어한다."""
     client = _make_client_with_fake_sdk(json.dumps({"shrunk_text": "짧아진 문장"}))
-    await client.shrink_line("문장", max_chars=50, max_lines=2)
+    await client.shrink_line("문장", max_chars=42, max_lines=2)
     sent_system = client._sdk_client.messages.create.call_args.kwargs["system"]
     assert "성별" in sent_system and "격식" in sent_system
 
@@ -262,7 +262,7 @@ async def test_shrink_line_prompt_instructs_to_preserve_existing_gender_and_form
 async def test_shrink_line_raises_when_response_is_array_not_object():
     client = _make_client_with_fake_sdk(json.dumps(["짧아진 문장"]))
     with pytest.raises(ValueError):
-        await client.shrink_line("문장", max_chars=50, max_lines=2)
+        await client.shrink_line("문장", max_chars=42, max_lines=2)
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ async def test_shrink_line_raises_on_empty_content():
     client = _make_client_with_fake_sdk("무시됨")
     client._sdk_client.messages.create.return_value.content = []
     with pytest.raises(ValueError):
-        await client.shrink_line("문장", max_chars=50, max_lines=2)
+        await client.shrink_line("문장", max_chars=42, max_lines=2)
 
 
 @pytest.mark.asyncio

@@ -215,7 +215,7 @@ async def test_reject_pair_returns_404_for_missing_other_finding():
 
 @pytest.mark.asyncio
 async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch):
-    """회귀: Claude/GPT 단독 제안(pending)은 S4 안전망을 거치지 않아 50자를
+    """회귀: Claude/GPT 단독 제안(pending)은 S4 안전망을 거치지 않아 42자를
     넘는 채로 남을 수 있었다 — 승인 시점에 자동으로 줄여야 한다."""
     monkeypatch.setenv("QC_PROVIDER", "mock")
     await _make_finding_row("f1")
@@ -234,7 +234,7 @@ async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch)
         )
     assert r.status_code == 200
     final_text = r.json()["final_text"]
-    assert len(final_text) <= 50
+    assert len(final_text) <= 42
     assert final_text != "a" * 70
 
 
@@ -275,7 +275,7 @@ async def test_pick_auto_shrinks_accepted_suggestion_over_line_length(monkeypatc
             json={"reviewer_name": "김검수", "other_finding_id": gpt_id},
         )
     assert r.status_code == 200
-    assert len(r.json()["picked"]["final_text"]) <= 50
+    assert len(r.json()["picked"]["final_text"]) <= 42
 
 
 @pytest.mark.asyncio

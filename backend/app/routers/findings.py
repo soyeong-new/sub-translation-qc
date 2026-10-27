@@ -322,7 +322,7 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
         elif payload.action == "approved":
             # AI 제안은 검수자의 문구가 아니라서, 제약을 넘으면 자동으로
             # 줄인다(승인 시점까지는 S4 안전망을 안 거치는 pending 제안이라
-            # 여기서 처음 걸러진다). 줄당 글자수 제약(50자, 최대 2줄)을 검사한다.
+            # 여기서 처음 걸러진다). 줄당 글자수 제약(42자, 최대 2줄)을 검사한다.
             # 등록된 고유명사 표준 표기가 AI 제안에서 빠졌으면(LLM 프롬프트
             # 지시만으로는 안 지켜질 수 있음) 여기서 마지막으로 강제한다.
             korean_text, _, _, glossary_entries = await _load_glossary_context(session, finding)
@@ -359,7 +359,7 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
             await _apply_glossary_override(session, finding, payload.final_text)
         else:
             finding.status = "approved"
-            # 그대로 채택한 AI 제안은 줄당 글자수 제약(50자, 최대 2줄)을
+            # 그대로 채택한 AI 제안은 줄당 글자수 제약(42자, 최대 2줄)을
             # 넘으면 자동으로 줄인다. 등록된 고유명사 표준 표기가 빠졌으면
             # review-action과 동일하게 여기서도 마지막으로 강제한다.
             korean_text, _, _, glossary_entries = await _load_glossary_context(session, finding)

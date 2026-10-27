@@ -88,7 +88,7 @@ async def test_export_skips_empty_segments_and_orders_by_start_time():
 
 @pytest.mark.asyncio
 async def test_export_format_warnings_flags_line_length_violation_with_no_findings():
-    long_text = "x" * 60  # exceeds format_rules.MAX_LINE_CHARS (50), no findings involved
+    long_text = "x" * 60  # exceeds format_rules.MAX_LINE_CHARS (42), no findings involved
     async with async_session() as session:
         title = Title(name="T", type="movie"); session.add(title); await session.flush()
         episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()

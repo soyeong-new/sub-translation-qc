@@ -45,7 +45,7 @@ async def test_verify_and_refine_sends_korean_and_target_text():
     result = await client.verify_and_refine(
         pairs=[{"id": "p1", "korean_text": "안녕", "target_text": "hola"}],
         profile={},
-        knowledge="", format_constraint="줄당 50자 이내",
+        knowledge="", format_constraint="줄당 42자 이내",
     )
     assert result == payload["findings"]
     sent_user = client._sdk_client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
