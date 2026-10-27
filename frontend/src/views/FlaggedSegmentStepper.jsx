@@ -159,12 +159,6 @@ export function GenderQuestion({
           확인된 적이 있습니다 — 맞으면 아래 버튼으로 확인해주세요.
         </p>
       )}
-      {preselectNotPerson && (
-        <p className="mb-3 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning-foreground">
-          사람이 아닌 대상을 가리키는 것 같아 <strong>사람 아님</strong>을 미리 표시했습니다 — 맞으면
-          그 버튼을 눌러 확인하고, 사람이면 남성/여성을 골라주세요.
-        </p>
-      )}
       {/* 이미 확인된 줄이어도 버튼은 계속 눌러서 답을 바꿀 수 있다 — 지금
           저장된 값과 같은 버튼만 강조 표시한다. */}
       <div className="flex flex-wrap gap-2">
