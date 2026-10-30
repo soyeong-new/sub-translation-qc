@@ -239,6 +239,23 @@ async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_modifying_with_text_that_only_needs_line_break_is_saved_with_line_break():
+    """검수자가 쓴 문구가 줄바꿈만 바꾸면 제약 안에 들어가면 내용은 그대로 두고 줄바꿈만 고쳐 저장한다."""
+    await _make_finding_row("f1")
+    typed = "Ellos dijeron que nunca me salvaran la vida"   # 43자, 한 줄
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/findings/f1/review-action",
+            json={"action": "modified", "reviewer_name": "김검수", "final_text": typed},
+        )
+    assert r.status_code == 200
+    saved = r.json()["final_text"]
+    assert "\n" in saved and " ".join(saved.split()) == typed
+
+
+@pytest.mark.asyncio
 async def test_modifying_with_text_over_line_length_is_rejected_and_not_saved():
     """검수자가 직접 입력한 문구는 자동으로 줄이지 않고, 대신 저장 자체를
     막아야 한다 — 임의로 잘라버리면 검수자의 의도와 다른 문장이 나갈 수

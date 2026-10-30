@@ -3011,3 +3011,26 @@ async def test_back_translate_proposals_sends_hints_but_not_korean():
     assert item["glossary"] == [{"korean_term": "강옥", "canonical": "Kang-ok"}]
     assert item["speaker_hints"] == {"gender": "male"}
     assert "reference_korean" not in item
+
+
+def test_drop_hallucinated_words_removes_only_the_phrase_words():
+    from app.core.pipeline import _drop_hallucinated_words
+    texts = ["안녕", " 이", " 영상에는", " 유료", " 광고가", " 포함되어", " 있습니다", " 네"]
+    words = [{"start": float(i), "end": i + 1.0, "text": t} for i, t in enumerate(texts)]
+    assert [w["text"] for w in _drop_hallucinated_words(words)] == ["안녕", " 네"]
+
+
+def test_drop_hallucinated_words_catches_broken_variants_seen_in_trace():
+    from app.core.pipeline import _drop_hallucinated_words
+    for phrase in ["이 영상은 유료광고를 포함하고 있습니다",
+                   "이 영상은 유료광고를 있습니다",
+                   "이 영상은 유료광고를 있습니다 이 이 유료광고를 포함하고 있습니다"]:
+        words = [{"start": 0.0, "end": 1.0, "text": " " + t} for t in ["안녕"] + phrase.split() + ["네"]]
+        assert [w["text"] for w in _drop_hallucinated_words(words)] == [" 안녕", " 네"], phrase
+
+
+def test_drop_hallucinated_words_removes_subtitle_credit_phrase():
+    from app.core.pipeline import _drop_hallucinated_words
+    phrase = "한글자막 제공 및 협조해주신 모든 분들께 진심으로 감사드립니다"
+    words = [{"start": 0.0, "end": 1.0, "text": " " + t} for t in ["안녕"] + phrase.split() + ["네"]]
+    assert [w["text"] for w in _drop_hallucinated_words(words)] == [" 안녕", " 네"]

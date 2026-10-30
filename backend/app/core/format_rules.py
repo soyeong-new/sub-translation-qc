@@ -14,10 +14,15 @@ READING_SPEED_CPS = 20
 _ELLIPSIS_RE = re.compile(r"\.{4,}")
 # 문장/절 경계 우선순위 — 단어 경계보다 이 지점에서 끊는 게 자연스럽다
 # ("홍길동" / "입니다"처럼 의미 단위가 잘리는 걸 피함). 마침표류를 먼저
-# 시도하고 안 되면 쉼표. `[.!?]+`로 묶은 건 "..." 같은 말줄임표 내부에서
-# 끊기는 걸 막기 위함(온점 하나하나가 아니라 연속된 덩어리를 한 지점으로 봄).
-_SENTENCE_END_RE = re.compile(r"[.!?]+\s*")
-_COMMA_RE = re.compile(r",\s*")
+# 시도하고, 다음으로 대사 전환(공백 뒤 "-"), 안 되면 쉼표·세미콜론·콜론.
+# `[.!?…]+`로 묶은 건 "..." 같은 말줄임표 내부에서 끊기는 걸 막기 위함(온점 하나하나가
+# 아니라 연속된 덩어리를 한 지점으로 봄).
+# 부호 뒤에 닫는 태그·따옴표가 붙을 수 있고(`</i>`), 반드시 공백이 이어져야 한다 — 그래야
+# "1,500"·"3.5"·"10:30" 같은 숫자나 태그 안쪽이 끊기지 않는다.
+_CLOSERS = r"(?:</\w+>|[\"'”’»)\]])*"
+_SENTENCE_END_RE = re.compile(r"[.!?…]+" + _CLOSERS + r"\s+")
+_DIALOGUE_DASH_RE = re.compile(r"\s+(?=-(?!-))")
+_COMMA_RE = re.compile(r"[,;:]" + _CLOSERS + r"\s+")
 # 줄 첫머리의 대사 대시 — "--"(말 끊김)는 제외하려고 뒤에 "-"가 아닐 것을 요구한다.
 _SPEAKER_DASH_RE = re.compile(r"^-(?!-)[ \t]*", re.MULTILINE)
 
@@ -47,7 +52,7 @@ def rewrap_line(text: str, max_chars: int = MAX_LINE_CHARS,
     if not flat:
         return None
     if max_lines >= 2:
-        for pattern in (_SENTENCE_END_RE, _COMMA_RE):
+        for pattern in (_SENTENCE_END_RE, _DIALOGUE_DASH_RE, _COMMA_RE):
             result = _best_punct_split(flat, max_chars, pattern)
             if result is not None:
                 return result

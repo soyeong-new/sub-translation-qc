@@ -18,7 +18,7 @@ from app.core.requery import (
     apply_resolved_gender_to_text, flag_new_gender_ambiguity, gloss_new_gender_words,
     reapply_gender_to_pending_findings,
 )
-from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, violates_line_length, final_text_reason
+from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, rewrap_line, violates_line_length, final_text_reason
 from app.core.safety_net import enforce_line_length
 from app.core.neighbor_warning import compute_neighbor_warning
 from app.core.person_hint import likely_not_person
@@ -303,6 +303,17 @@ async def _apply_glossary_override(session, finding: FindingRow, final_text: str
             session, entry_id, spellings={f"{target_language}_{variant}": new_canonical})
 
 
+def _fit_typed_text(text: str) -> str:
+    """검수자가 직접 쓴 문구가 글자수 제약을 넘으면, 줄바꿈만 바꿔 맞출 수 있을 때 그
+    결과를 반환하고 내용을 줄여야 하면 400으로 저장을 막는다(문구는 임의로 줄이지 않는다)."""
+    if not violates_line_length(text):
+        return text
+    rewrapped = rewrap_line(text)
+    if rewrapped is None:
+        raise HTTPException(400, _LINE_LENGTH_ERROR)
+    return rewrapped
+
+
 @router.post("/findings/{finding_id}/review-action")
 async def review_action(finding_id: str, payload: ReviewActionIn):
     async with async_session() as session:
@@ -310,9 +321,10 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
         if finding is None:
             raise HTTPException(404, "finding not found")
         # 검수자가 직접 타이핑한 문구(수정)는 시스템이 임의로 잘라버리지
-        # 않는다 — 대신 제약을 넘으면 저장 자체를 막고 직접 줄이게 한다.
-        if payload.action == "modified" and violates_line_length(payload.final_text):
-            raise HTTPException(400, _LINE_LENGTH_ERROR)
+        # 않는다 — 줄바꿈만 바꿔서 맞출 수 있으면 줄바꿈만 고치고, 내용을 줄여야
+        # 하면 저장 자체를 막고 직접 줄이게 한다.
+        if payload.action == "modified":
+            payload.final_text = _fit_typed_text(payload.final_text)
         finding.status = payload.action
         finding.reviewer_name = payload.reviewer_name
         finding.reviewed_at = datetime.now(timezone.utc)
@@ -349,8 +361,8 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
         # 검수자가 직접 고친 문구(수정해서 채택)는 임의로 잘라버리지 않고
         # 제약을 넘으면 저장을 막는다 — review-action의 "modified"와 동일한
         # 원칙.
-        if payload.final_text and violates_line_length(payload.final_text):
-            raise HTTPException(400, _LINE_LENGTH_ERROR)
+        if payload.final_text:
+            payload.final_text = _fit_typed_text(payload.final_text)
         now = datetime.now(timezone.utc)
 
         if payload.final_text:
@@ -565,15 +577,16 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
             if proposal_backtranslation:
                 description += f" (제안 한국어 역번역 참고: {proposal_backtranslation})"
 
-            # 이 세그먼트에 finding이 이미 정확히 하나뿐이면(가장 흔한 경우 —
-            # 이전에 승인/거부까지 끝난 상태) 새 카드를 또 만들지 않고 그
-            # 카드를 그 자리에서 갱신한다 — 새로 만들면 같은 세그먼트에 대해
-            # "승인됨" finding이 두 개 남을 수 있는데, export가 최종 텍스트를
-            # 고를 때 reviewed_at 유무만 boolean으로 비교해서(실제 시각 순서
-            # 비교 아님) 어느 쪽이 이길지 보장이 안 된다. finding이 0개거나
-            # 2개 이상(의견 갈림 등 아직 안 끝난 상태)이면 어느 걸 갱신해야
-            # 할지 애매하므로 안전하게 새로 만든다.
-            if len(existing) == 1:
+            # 이 세그먼트에 finding이 이미 있으면(승인/거부 여부와 무관) 새 카드를
+            # 또 만들지 않고 첫 번째 카드를 그 자리에서 갱신한다 — 새로 만들면
+            # 같은 세그먼트에 대해 "승인됨" finding이 두 개 남을 수 있는데,
+            # export가 최종 텍스트를 고를 때 reviewed_at 유무만 boolean으로
+            # 비교해서(실제 시각 순서 비교 아님) 어느 쪽이 이길지 보장이 안 된다.
+            # 의견 갈림 등으로 2개 이상이면 나머지는 옛 원문 기준의 낡은
+            # 제안이므로 지운다. finding이 0개일 때만 새로 만든다.
+            if existing:
+                for stale in existing[1:]:
+                    await session.delete(stale)
                 finding = existing[0]
                 finding.category = correction["category"]
                 finding.description = description
@@ -614,8 +627,7 @@ async def edit_target_text(segment_id: str, payload: EditTargetTextIn):
     바꾸면 별도 finding 없이 바로 최종 SRT에 반영된다. 이력은 남기지 않는다
     (correct-stt의 SttCorrection과 달리 재검증도 하지 않는 단순 텍스트
     교체라 이력을 남길 이유가 약함)."""
-    if violates_line_length(payload.target_text):
-        raise HTTPException(400, _LINE_LENGTH_ERROR)
+    payload.target_text = _fit_typed_text(payload.target_text)
     async with async_session() as session:
         seg = await session.get(Segment, segment_id)
         if seg is None:

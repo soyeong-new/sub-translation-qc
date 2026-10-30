@@ -47,12 +47,12 @@ def _trace(target_version_id: str, stage: str, **fields) -> None:
     except Exception:
         logger.debug("기록 실패(무시)", exc_info=True)
 
-# gpt-4o-mini-transcribe(OpenAI 오디오 API)는 25MB/약 1500초(25분) 제한이
-# 있다. 16kHz mono 16bit PCM WAV는 초당 32KB라 25MB는 약 781초(≈13분)에
-# 해당하므로, 이보다 여유 있게 낮춰서 잡는다. split_audio_into_chunks의
-# 기본값과 같은 값이지만, 병합 시 오프셋 계산에 이 상수를 그대로 다시
-# 써야 하므로 여기서도 명시적으로 갖고 있는다.
-STT_CHUNK_SECONDS = 600.0
+# OpenAI 오디오 API는 25MB 제한이 있어 16kHz mono WAV 기준 약 781초가
+# 상한이지만, 실제로는 크기보다 환각 때문에 짧게 자른다. 10분짜리 한 덩어리로
+# 보내면 "이 영상은 유료광고를…" 환각이 한번 시작돼 끝까지 번지며 대사를
+# 덮었고(단어 245개 중 49개가 환각), 60초로 자르니 458개 중 3개로 줄었다.
+# 병합 시 오프셋 계산에도 이 상수를 그대로 쓴다.
+STT_CHUNK_SECONDS = 60.0
 
 
 def _clean_gloss_meaning(meaning: Optional[str], word: str) -> Optional[str]:
@@ -99,6 +99,33 @@ def _offset_segments(segments: list, offset_seconds: float) -> list:
     ]
 
 
+# STT가 음악/무음 구간에서 지어내는 정형 문구. 띄어쓰기를 모두 지운 텍스트에
+# 대해 검색하므로 패턴에는 공백이 없다. 새 환각 문구가 보이면 여기에 추가한다.
+# ponytail: 목록에 없는 환각은 못 잡는다 — 그땐 무음 제거(VAD)를 검토.
+# 모델이 문구를 조금씩 깨뜨려 내므로("…유료광고를 있습니다", "이 이 유료광고를…")
+# 문구 전체가 아니라 핵심(유료광고 … 있습니다)만 본다.
+# "한글자막 제공 및 협조해주신 …" 같은 자막 크레딧 문구는 "자막제공" 부분부터 본다.
+_STT_HALLUCINATION_RE = re.compile(
+    r"(이|영상(에는|은))*유료광고(가|를)(포함(되어|하고))?있습니다"
+    r"|(한글)?자막제공(및협조해주신모든분들께진심으로감사드립니다)?")
+
+
+def _drop_hallucinated_words(words: list) -> list:
+    """STT 단어 목록에서 정형 환각 문구에 해당하는 단어들을 통째로 지운다.
+    문구는 단어 여러 개로 쪼개져 나오므로, 단어를 이어붙인 텍스트에서 문구를
+    찾고 그 글자 범위와 겹치는 단어를 모두 제거한다."""
+    owner: list = []  # 이어붙인(공백 제거) 텍스트의 글자 -> 단어 인덱스
+    chars: list = []
+    for i, w in enumerate(words):
+        for ch in w["text"]:
+            if not ch.isspace():
+                chars.append(ch)
+                owner.append(i)
+    dropped = {owner[j] for m in _STT_HALLUCINATION_RE.finditer("".join(chars))
+               for j in range(m.start(), m.end())}
+    return [w for i, w in enumerate(words) if i not in dropped]
+
+
 async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
     """긴 오디오를 여러 조각으로 나눠 각각 STT한 뒤 이어붙인다.
     asyncio.gather는 완료 순서와 무관하게 항상 입력 순서대로 결과를
@@ -129,6 +156,7 @@ async def _transcribe_in_chunks(provider: ModelProvider, wav_path: str) -> list:
     merged: list = []
     for i, segments in enumerate(chunk_results):
         merged.extend(_offset_segments(segments, i * STT_CHUNK_SECONDS))
+    merged = _drop_hallucinated_words(merged)
     if not merged:
         # 개별 조각에 세그먼트가 없는 것(무음 구간)은 정상이지만, 모든
         # 조각을 병합한 결과가 통째로 비어 있다면 에피소드 전체에 대사가

@@ -1,3 +1,4 @@
+import pytest
 from app.schemas import AlignedPair, SegmentText
 from app.core.format_rules import (
     check_line_length, check_ellipsis, fix_ellipsis, normalize_speaker_dash, rewrap_line, check_reading_speed,
@@ -133,3 +134,18 @@ def test_normalize_speaker_dash_adds_space_only_to_dash_lines():
     assert normalize_speaker_dash("-¿Eres el nuevo?\n-Sí.") == "- ¿Eres el nuevo?\n- Sí."
     assert normalize_speaker_dash("- Sí.\nHola Lim Ho-young") == "- Sí.\nHola Lim Ho-young"
     assert normalize_speaker_dash("--Espera") == "--Espera"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Ya sabes… de todos modos te traje el plano para ti", "Ya sabes…\nde todos modos te traje el plano para ti"),       # 말줄임표
+    ("Tengo una sola cosa que decirte: no vuelvas nunca a mi casa", "Tengo una sola cosa que decirte:\nno vuelvas nunca a mi casa"),  # 콜론
+    ("Todo salió perfecto hoy; mañana veremos qué pasa con todo", "Todo salió perfecto hoy;\nmañana veremos qué pasa con todo"),     # 세미콜론
+    ("- Claro que sí, te espero aquí mismo - Nos vemos mañana", "- Claro que sí, te espero aquí mismo\n- Nos vemos mañana"),       # 대사 전환
+])
+def test_rewrap_line_breaks_at_extended_punctuation(text, expected):
+    assert rewrap_line(text) == expected
+
+
+def test_rewrap_line_does_not_treat_double_dash_as_dialogue_switch():
+    result = rewrap_line("Il a dit que -- enfin, tu sais bien -- il ne viendrait pas ce soir du tout")
+    assert not any(line.startswith("--") for line in result.split("\n"))
