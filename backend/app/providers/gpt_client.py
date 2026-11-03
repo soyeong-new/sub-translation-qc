@@ -9,7 +9,7 @@ from app.providers.base import (
     contains_hangul, CATEGORY_ENUM, build_verification_priority_paragraph,
     build_batch_scope_intro, BATCH_SKIP_CLEAN_LINE,
     build_requery_scope_intro, REQUERY_SKIP_CLEAN_LINE,
-    build_verification_checklist, build_json_instruction, build_json_instruction_requery,
+    build_verification_checklist, build_back_translate_instruction, build_json_instruction, build_json_instruction_requery,
     build_findings_schema_instruction, build_naturalness_instruction_line,
     build_improvement_judgment_criteria, build_glossary_block,
     build_glossary_extraction_system,
@@ -34,8 +34,8 @@ _BACK_TRANSLATE_SCHEMA_INSTRUCTION = (
     '반드시 {"results": {"<id>": {...}, ...}} 형태의 JSON 객체만 출력하라 — '
     "results의 키는 입력 배열 각 항목의 id이고, 값은 정확히 다음 키를 가진 "
     "JSON 객체여야 한다: "
-    "korean_text (문자열, text의 자연스러운 한국어 역번역), "
-    "original_korean_text (문자열, original_text의 자연스러운 한국어 역번역 "
+    "korean_text (문자열, text의 한국어 역번역), "
+    "original_korean_text (문자열, original_text의 한국어 역번역 "
     "— 검수자가 교정 전 원문이 원래 무슨 뜻이었는지 비교할 수 있게). "
     "입력에 있는 id는 하나도 빠짐없이 전부 results의 키로 포함해야 한다."
 )
@@ -520,40 +520,11 @@ class GptClient:
 
     async def back_translate(self, texts: List[dict], profile: dict) -> List[dict]:
         language_label = _language_label(profile)
-        system = (
-            f"다음은 교정 전 {language_label} 원본(original_text), 교정 후 "
-            f"{language_label} 제안문(text) 목록이다. "
-            "각 항목마다 다음을 하라.\n"
-            "text와 original_text를 각각 있는 그대로 독립적으로 한국어로 "
-            "역번역하라(korean_text, original_korean_text) — "
-            "대상언어를 모르는 검수자가 교정 전/후 의미를 나란히 비교하기 "
-            "위한 참고용이다. 목표는 \"매끄러운 한국어 문장\"이 아니라 "
-            "\"원문과 같은 톤·강도·격식을 가진 한국어\"다 — 원문이 짧고 "
-            "거칠면 역번역도 짧고 거칠게, 존댓말·격식이 있으면 그 격식 "
-            "그대로, 원문이 애매하거나 어색하면 역번역도 그 애매함·어색함을 "
-            "지우지 말고 남겨라. 다음 두 예시로 기준을 잡아라.\n"
-            "- 원문이 짧고 직설적인 명령: \"Get out.\" → (o) \"나가.\" / "
-            "(x) \"나가주시겠어요?\"(원문에 없는 공손함을 추가함)\n"
-            "- 원문이 거칠고 감정적인 말투: \"I'm freaking exhausted.\" → "
-            "(o) \"아 진짜 뒤지겠다, 피곤해.\" / (x) \"많이 피곤하다.\"(거친 "
-            "어투·강도가 사라짐), (x) \"나는 미친듯이 기진맥진했다.\"(한국어로서 "
-            "부자연스러운 직역이라 검수자가 오역으로 오인할 수 있음)\n"
-            "text·original_text에 실제로 쓰인 단어와 표현만 근거로 삼아라 — "
-            "검수자가 원문의 오역 여부를 정확히 판단할 수 "
-            "있어야 하므로, 원문에 없는 의미·뉘앙스를 추측해서 채워넣거나 "
-            "미화하지 마라. 중의적이거나 문맥 없이는 뜻이 불분명한 "
-            "단어·표현은 배열의 다른 항목들(앞뒤 세그먼트)을 참고해 실제로 "
-            "어떤 의미로 쓰였는지 판별한 뒤 역번역하라.\n"
-            "항목에 context_before/context_after(앞뒤 줄), glossary(이 줄의 고유명사·"
-            "용어 표기), speaker_hints(확정된 화자 성별·격식)가 있으면 의미·주어·"
-            "고유명사 판별에만 쓰고, 힌트에 없는 내용을 지어내지 마라. "
-            "context_*는 번역 대상이 아니다.\n"
-            + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
-        )
+        system = build_back_translate_instruction(language_label) + _BACK_TRANSLATE_SCHEMA_INSTRUCTION
         user = json.dumps(texts, ensure_ascii=False)
         ids = [t["id"] for t in texts]
         result = await self._call(system, user, key="results", label="역번역",
-                                   model_override=self._light_model,
+                                   model_override=self._model,
                                    response_format=_back_translate_schema(ids), expect_dict=True)
         return [{"id": seg_id, **result[seg_id]} for seg_id in ids]
 

@@ -123,6 +123,36 @@ def build_verification_checklist(language_label: str, skip_clean_line: str,
     )
 
 
+def build_back_translate_instruction(language_label: str) -> str:
+    """역번역 시스템 프롬프트 본문(출력 형식 지시 제외). claude/gpt가 공유한다.
+    여러 언어가 같은 프롬프트를 쓰므로 특정 언어 예시는 넣지 않는다 — 예시가
+    있으면 다른 언어에서 그 패턴을 억지로 따라 하는 환각이 생긴다."""
+    return (
+        f"다음은 교정 전 {language_label} 원본(original_text), 교정 후 "
+        f"{language_label} 제안문(text) 목록이다. "
+        "각 항목의 text와 original_text를 각각 독립적으로 한국어로 "
+        "역번역하라(korean_text, original_korean_text). "
+        f"{language_label}를 모르는 검수자가 교정 전/후 의미를 나란히 비교하기 "
+        "위한 참고용이므로, 목표는 매끄러운 번역이 아니라 \"무엇이 쓰여 있는지\"를 "
+        "정확히 보여주는 것이다.\n"
+        "- 충실하게: 쓰인 단어·수·명사·부정·의문·시제를 빠뜨리거나 바꾸지 마라. "
+        "줄이거나 요약하지 마라.\n"
+        "- 추가 금지: text·original_text에 없는 주어·성별·존칭·의미·뉘앙스를 "
+        "추측해서 채워넣거나 미화하지 마라.\n"
+        "- 어조: 한국어로 읽히되 원문의 어조·강도·격식(거침, 간결함, 존댓말/반말 "
+        "등)은 그대로 유지하라. 원문이 어색하거나 애매하면 그 어색함·애매함을 "
+        "지우지 마라.\n"
+        "- 의미 판별: 겉모습이 비슷한 단어나 관용구에 속지 말고 문맥상 실제 "
+        "뜻으로 옮겨라. 중의적이거나 문맥 없이는 뜻이 불분명한 표현은 배열의 "
+        "다른 항목들(앞뒤 세그먼트)을 참고해 판별하되, 근거가 없으면 단정하지 "
+        "말고 원문에 가깝게 옮겨라.\n"
+        "항목에 context_before/context_after(앞뒤 줄), glossary(이 줄의 고유명사·"
+        "용어 표기), speaker_hints(확정된 화자 성별·격식)가 있으면 의미·주어·"
+        "고유명사 판별에만 쓰고, 힌트에 없는 내용을 지어내지 마라. "
+        "context_*는 번역 대상이 아니다.\n"
+    )
+
+
 def build_json_instruction(envelope_declaration: str) -> str:
     """수정 불필요 항목 처리 지시(배치용). envelope_declaration만 API별로
     다르고(claude: JSON 배열, gpt: {"findings": [...]} 객체) 나머지 스킵 로직은 동일하다."""
@@ -534,6 +564,7 @@ def get_provider() -> ModelProvider:
         return LiveModelProvider(
             claude_api_key=required["ANTHROPIC_API_KEY"], claude_model=required["CLAUDE_MODEL"],
             claude_light_model=os.getenv("CLAUDE_LIGHT_MODEL", "claude-haiku-4-5"),
+            claude_back_translate_model=os.getenv("CLAUDE_BACKTRANSLATE_MODEL") or None,
             gpt_api_key=required["OPENAI_API_KEY"], gpt_model=required["GPT_MODEL"],
             gpt_light_model=os.getenv("GPT_LIGHT_MODEL", "gpt-5.6-luna"),
             gpt_transcribe_model=os.getenv("GPT_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe"),

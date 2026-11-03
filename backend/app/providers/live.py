@@ -11,9 +11,11 @@ class LiveModelProvider(ModelProvider):
                  gpt_api_key: str, gpt_model: str,
                  claude_light_model: str = None,
                  gpt_light_model: str = None,
-                 gpt_transcribe_model: str = "gpt-4o-mini-transcribe"):
+                 gpt_transcribe_model: str = "gpt-4o-mini-transcribe",
+                 claude_back_translate_model: str = None):
         self._claude = ClaudeClient(api_key=claude_api_key, model=claude_model,
-                                     light_model=claude_light_model)
+                                     light_model=claude_light_model,
+                                     back_translate_model=claude_back_translate_model)
         self._gpt = GptClient(api_key=gpt_api_key, model=gpt_model,
                                light_model=gpt_light_model,
                                transcribe_model=gpt_transcribe_model)
