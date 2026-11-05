@@ -1029,6 +1029,9 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
 }, ref) {
   const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
   const [activeId, setActiveId] = useState(null);
+  // 영상 위에 얹는 자막 — 목록 하이라이트(activeId)와 달리, 실제 자막처럼
+  // 재생 위치가 줄의 시간 범위 안일 때만 보인다(공백 구간엔 숨김).
+  const [overlayId, setOverlayId] = useState(null);
   // 분할 버튼은 "선택된" 줄에서만 렌더링된다. NEW 기능 투어가 그 버튼을
   // 실제로 짚을 수 있도록, 투어 시작 직전에 외부(ReviewView)에서 첫 줄을
   // 강제로 선택시킬 수 있게 메서드를 열어둔다.
@@ -1048,6 +1051,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
     if (!video || sorted.length === 0) return undefined;
     function handleTimeUpdate() {
       const srtTime = video.currentTime + videoOffsetSeconds;
+      setOverlayId(sorted.find((s) => srtTime >= s.start && srtTime <= s.end)?.id ?? null);
       // 미리보기 중인 finding 구간(패딩 포함) 안에서는 재생 위치로 다시
       // 매칭하지 않고 그 finding의 줄로 고정한다. seek 직후엔 currentTime이
       // 아직 확정되지 않아 이전 줄 범위를 잠깐 가리키는 경우가 있어서, 매번
@@ -1124,7 +1128,16 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
   return (
     <>
       <div data-tour="video-card" className="rounded-xl border border-border bg-card p-3 shadow-sm">
-        {videoSlot}
+        <div className="relative">
+          {videoSlot}
+          {overlayId && (
+            <p className="pointer-events-none absolute inset-x-4 bottom-14 whitespace-pre-wrap text-center text-sm font-medium leading-snug text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.9)]">
+              <span className="rounded bg-black/60 px-2 py-0.5 box-decoration-clone">
+                {resolvedTextBySegment[overlayId] ?? sorted.find((s) => s.id === overlayId)?.target_text ?? ""}
+              </span>
+            </p>
+          )}
+        </div>
         <div className="mt-2 flex items-center justify-between gap-2">
           <button
             type="button"
@@ -2195,12 +2208,12 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
 
       {/* 본문을 좌측 영상 미리보기 / 우측 Findings·내보내기 본문으로 분리한다.
           모바일 폭(md 미만)에서만 세로로 쌓이고, 그 위에서는 좌측 열을
-          420px 고정이 아니라 화면 폭의 비율(30%)로 잡아 창을 줄이면 영상도
+          420px 고정이 아니라 화면 폭의 비율(38%)로 잡아 창을 줄이면 영상도
           같이 비례해서 줄어들게 한다 — 고정폭이면 창이 좁아질수록 영상
           열이 상대적으로 커 보이다가 md 미만에서 갑자기 전체 폭으로
           튀어 화면을 다 차지하는 것처럼 보였다. */}
       <main className="mx-auto max-w-[1360px] px-6 py-8">
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(280px,30%)_1fr]">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(280px,38%)_1fr]">
           <div className="space-y-3 md:sticky md:top-24 md:self-start">
             <VideoPreviewPanel
               syncSlot={videoProxyUrl && (
@@ -2261,10 +2274,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               return (
                 <div className="pointer-events-none fixed inset-0 z-40 flex items-center">
                   {/* Findings 컬럼과 가로 위치를 맞추려고 페이지 그리드(mx-auto
-                      max-w-[1360px] px-6 + md:grid-cols-[minmax(280px,30%)_1fr])를
+                      max-w-[1360px] px-6 + md:grid-cols-[minmax(280px,38%)_1fr])를
                       그대로 복제한다 — 세로 스크롤과 무관하게 가로 정렬은
                       뷰포트 폭에만 달려 있어 JS 없이도 항상 일치한다. */}
-                  <div className="mx-auto grid w-full max-w-[1360px] grid-cols-1 gap-8 px-6 md:grid-cols-[minmax(280px,30%)_1fr]">
+                  <div className="mx-auto grid w-full max-w-[1360px] grid-cols-1 gap-8 px-6 md:grid-cols-[minmax(280px,38%)_1fr]">
                     <div />
                     <div className="pointer-events-auto flex justify-center">
                       <div className="max-h-[85vh] w-full max-w-md overflow-y-auto space-y-4 rounded-xl border border-border bg-card p-4 shadow-xl">
