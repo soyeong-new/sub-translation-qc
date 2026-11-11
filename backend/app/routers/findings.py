@@ -5,7 +5,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
@@ -18,8 +18,7 @@ from app.core.requery import (
     apply_resolved_gender_to_text, flag_new_gender_ambiguity, gloss_new_gender_words,
     reapply_gender_to_pending_findings,
 )
-from app.core.format_rules import MAX_LINE_CHARS, MAX_LINES, rewrap_line, violates_line_length, final_text_reason
-from app.core.safety_net import enforce_line_length
+from app.core.format_rules import rewrap_line, violates_line_length, final_text_reason
 from app.core.neighbor_warning import compute_neighbor_warning
 from app.core.person_hint import likely_not_person
 from app.core.glossary_guard import patch_missing_canonical, find_canonical_overrides
@@ -29,14 +28,10 @@ from app.providers.base import get_provider
 from app.repositories import (
     get_findings as repo_get_findings, get_findings_for_segment,
     get_glossary_prompt_entries, update_glossary_entry,
+    split_segment_in_session, undo_split_in_session, SplitUndoError,
 )
 
 logger = logging.getLogger(__name__)
-
-_LINE_LENGTH_ERROR = (
-    f"최종 텍스트가 자막 글자수 제약(줄당 {MAX_LINE_CHARS}자 이내, 최대 {MAX_LINES}줄)을 "
-    "넘었습니다 — 직접 입력한 문구는 자동으로 줄이지 않으니, 줄여서 다시 시도해주세요."
-)
 
 router = APIRouter()
 
@@ -160,8 +155,15 @@ async def list_segments(target_version_id: str):
     async with async_session() as session:
         rows = (await session.execute(
             select(Segment).where(Segment.target_version_id == target_version_id)
-            .order_by(Segment.index)
+            .order_by(Segment.index, Segment.start)  # 분할로 생긴 큐는 index가 같다
         )).scalars().all()
+        # 분할 쌍의 어느 쪽에서든 되돌릴 수 있게, 큐마다 "지울 새 큐" id를 정한다. 새 큐는 자기 자신,
+        # 원래 큐는 자식 중 가장 앞(마지막에 분할된 것 — 분할은 늘 앞부분을 원래 큐에 남긴다).
+        undo_target = {}
+        for s in rows:   # rows는 (index, start) 순이라 같은 원래 큐의 자식 중 첫 번째가 남는다
+            if s.split_undo_raw:
+                undo_target[s.id] = s.id
+                undo_target.setdefault(s.split_undo_raw["original_segment_id"], s.id)
         return [
             {"id": s.id, "start": s.start, "end": s.end,
              "korean_text": s.korean_text, "target_text": s.target_text,
@@ -171,7 +173,8 @@ async def list_segments(target_version_id: str):
              "gender_check_needed": s.gender_check_needed,
              "resolved_gender_raw": s.resolved_gender_raw,
              "resolved_gender_groups_raw": s.resolved_gender_groups_raw,
-             "excluded": s.excluded}
+             "excluded": s.excluded,
+             "can_undo_split": s.id in undo_target, "undo_split_id": undo_target.get(s.id)}
             for s in rows
         ]
 
@@ -303,15 +306,42 @@ async def _apply_glossary_override(session, finding: FindingRow, final_text: str
             session, entry_id, spellings={f"{target_language}_{variant}": new_canonical})
 
 
-def _fit_typed_text(text: str) -> str:
-    """검수자가 직접 쓴 문구가 글자수 제약을 넘으면, 줄바꿈만 바꿔 맞출 수 있을 때 그
-    결과를 반환하고 내용을 줄여야 하면 400으로 저장을 막는다(문구는 임의로 줄이지 않는다)."""
-    if not violates_line_length(text):
-        return text
-    rewrapped = rewrap_line(text)
-    if rewrapped is None:
-        raise HTTPException(400, _LINE_LENGTH_ERROR)
-    return rewrapped
+async def _line_break_rules(session, target_version_id: str) -> Optional[dict]:
+    """언어판 프로파일의 줄바꿈 위치 비용 단어 목록(rewrap_line의 rules). 프로파일이
+    없는 언어면 None — 구두점·길이 균형만으로 줄바꿈한다."""
+    tv = await session.get(TargetVersion, target_version_id)
+    try:
+        return load_profile(tv.target_language, tv.variant).get("line_break") if tv else None
+    except FileNotFoundError:
+        return None
+
+
+async def _finalize_approved_text(session, finding: FindingRow, text: str, ignore_ids=()) -> Optional[dict]:
+    """승인·채택한 AI 제안(text)의 글자수 제약을 맞춰 finding.final_text에 넣는다. 줄바꿈 재배치로
+    풀리면 그걸로, 안 풀리면 LLM으로 줄이지 않고 큐를 나눈다(내용 보존; 그 큐에 다른 처리 안 된
+    finding이 있으면 나누지 않는다 — 그쪽이 문구를 바꿀 수 있다). 나눴으면 화면이 목록을 다시 불러오도록
+    {"original", "new"}를 반환하고, 아니면 None."""
+    rules = await _line_break_rules(session, finding.target_version_id)
+    fitted = text if not violates_line_length(text) else rewrap_line(text, rules=rules, avoid_forbidden=True)
+    finding.final_text = fitted if fitted is not None else text
+    if fitted is not None:
+        return None
+    # 자연스럽게 끊을 자리가 없으면 큐를 나눈다. 못 나누면 어색해도 줄바꿈으로 맞춘다.
+    forced = rewrap_line(text, rules=rules)
+    seg = await session.get(Segment, finding.segment_id)
+    if seg is None or any(f.status == "pending" and f.id != finding.id and f.id not in ignore_ids
+                          for f in await get_findings_for_segment(session, seg.id)):
+        return None
+    new_seg = await split_segment_in_session(session, seg, text, rules)
+    if new_seg is None:
+        finding.final_text = forced if forced is not None else text
+        return None
+    await session.flush()
+    finding.status, finding.final_text = "approved", seg.target_text  # 승인한 제안 그대로 + 첫 조각
+    return {"original": {"id": seg.id, "start": seg.start, "end": seg.end, "target_text": seg.target_text},
+            "new": {"id": new_seg.id, "start": new_seg.start, "end": new_seg.end,
+                    "korean_text": new_seg.korean_text, "target_text": new_seg.target_text,
+                    "can_undo_split": True}}
 
 
 @router.post("/findings/{finding_id}/review-action")
@@ -320,17 +350,20 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
         finding = await session.get(FindingRow, finding_id)
         if finding is None:
             raise HTTPException(404, "finding not found")
-        # 검수자가 직접 타이핑한 문구(수정)는 시스템이 임의로 잘라버리지
-        # 않는다 — 줄바꿈만 바꿔서 맞출 수 있으면 줄바꿈만 고치고, 내용을 줄여야
-        # 하면 저장 자체를 막고 직접 줄이게 한다.
-        if payload.action == "modified":
-            payload.final_text = _fit_typed_text(payload.final_text)
+        # 검수자가 직접 쓴 문구(수정)는 줄바꿈·길이를 건드리지 않고 쓴 그대로 저장한다(길이 초과는 export 경고로 보인다).
+        split = None
         finding.status = payload.action
         finding.reviewer_name = payload.reviewer_name
         finding.reviewed_at = datetime.now(timezone.utc)
         if payload.action == "modified":
             finding.final_text = payload.final_text
             await _apply_glossary_override(session, finding, payload.final_text)
+        elif payload.action == "rejected" and finding.model == "자동재배치":
+            # 자동 줄바꿈 재배치는 이미 세그먼트에 반영돼 있어서, 거부하면 원문으로 되돌린다.
+            # 그 사이 세그먼트 텍스트가 바뀌었으면(분할 등) 건드리지 않는다.
+            seg = await session.get(Segment, finding.segment_id)
+            if seg is not None and seg.target_text == finding.suggested_text:
+                seg.target_text = finding.original_text
         elif payload.action == "approved":
             # AI 제안은 검수자의 문구가 아니라서, 제약을 넘으면 자동으로
             # 줄인다(승인 시점까지는 S4 안전망을 안 거치는 pending 제안이라
@@ -340,10 +373,9 @@ async def review_action(finding_id: str, payload: ReviewActionIn):
             korean_text, _, _, glossary_entries = await _load_glossary_context(session, finding)
             patched_text = patch_missing_canonical(
                 korean_text, finding.original_text, finding.suggested_text, glossary_entries)
-            finding.final_text, _ = await enforce_line_length(
-                patched_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
+            split = await _finalize_approved_text(session, finding, patched_text)
         await session.commit()
-        return {"id": finding.id, "status": finding.status, "final_text": finding.final_text}
+        return {"id": finding.id, "status": finding.status, "final_text": finding.final_text, "split": split}
 
 
 @router.post("/findings/{finding_id}/pick")
@@ -358,12 +390,8 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
         other = await session.get(FindingRow, payload.other_finding_id)
         if finding is None or other is None:
             raise HTTPException(404, "finding not found")
-        # 검수자가 직접 고친 문구(수정해서 채택)는 임의로 잘라버리지 않고
-        # 제약을 넘으면 저장을 막는다 — review-action의 "modified"와 동일한
-        # 원칙.
-        if payload.final_text:
-            payload.final_text = _fit_typed_text(payload.final_text)
         now = datetime.now(timezone.utc)
+        split = None
 
         if payload.final_text:
             finding.status = "modified"
@@ -377,8 +405,8 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
             korean_text, _, _, glossary_entries = await _load_glossary_context(session, finding)
             patched_text = patch_missing_canonical(
                 korean_text, finding.original_text, finding.suggested_text, glossary_entries)
-            finding.final_text, _ = await enforce_line_length(
-                patched_text, get_provider(), MAX_LINE_CHARS, MAX_LINES)
+            split = await _finalize_approved_text(
+                session, finding, patched_text, ignore_ids=(payload.other_finding_id,))
         finding.reviewer_name = payload.reviewer_name
         finding.reviewed_at = now
 
@@ -391,6 +419,7 @@ async def pick_finding(finding_id: str, payload: PickFindingIn):
         return {
             "picked": {"id": finding.id, "status": finding.status, "final_text": finding.final_text},
             "rejected": {"id": other.id, "status": other.status, "final_text": other.final_text},
+            "split": split,
         }
 
 
@@ -619,6 +648,22 @@ async def correct_stt(segment_id: str, payload: CorrectSttIn):
         return {"id": seg.id, "korean_text": seg.korean_text, "new_finding": new_finding}
 
 
+@router.post("/segments/{segment_id}/undo-split")
+async def undo_split(segment_id: str):
+    """분할로 생긴 큐(segment_id)를 지우고 원래 큐를 복원한다. 분할 후 고친 내용은 사라진다."""
+    async with async_session() as session:
+        new_seg = await session.get(Segment, segment_id)
+        if new_seg is None:
+            raise HTTPException(404, "segment not found")
+        try:
+            orig = await undo_split_in_session(session, new_seg)
+        except SplitUndoError as e:
+            raise HTTPException(409, str(e))
+        await session.commit()
+        return {"id": orig.id, "start": orig.start, "end": orig.end,
+                "korean_text": orig.korean_text, "target_text": orig.target_text}
+
+
 @router.post("/segments/{segment_id}/edit-target-text")
 async def edit_target_text(segment_id: str, payload: EditTargetTextIn):
     """Finding이 안 걸린 줄도 번역문을 직접 고칠 수 있게 한다. export의
@@ -627,7 +672,6 @@ async def edit_target_text(segment_id: str, payload: EditTargetTextIn):
     바꾸면 별도 finding 없이 바로 최종 SRT에 반영된다. 이력은 남기지 않는다
     (correct-stt의 SttCorrection과 달리 재검증도 하지 않는 단순 텍스트
     교체라 이력을 남길 이유가 약함)."""
-    payload.target_text = _fit_typed_text(payload.target_text)
     async with async_session() as session:
         seg = await session.get(Segment, segment_id)
         if seg is None:
@@ -669,34 +713,29 @@ async def edit_segment_timing(segment_id: str, payload: EditSegmentTimingIn):
 
 @router.post("/segments/{segment_id}/split")
 async def split_segment(segment_id: str, payload: SplitSegmentIn):
-    """한 큐에 여러 화자 대사가 섞여 길게 뭉쳐 있을 때, 검수자가 중간 지점에서
-    둘로 쪼갤 수 있게 한다. 시간은 중간 지점으로 반분하고 텍스트는 그대로
-    복제해서 넘겨주며, 각 줄을 어디서 자르고 경계를 어디로 맞출지는 이미 있는
-    텍스트/시간 편집 UI로 검수자가 직접 다듬는다."""
+    """한 큐에 여러 화자 대사가 섞여 길게 뭉쳐 있을 때, 검수자가 둘로 쪼갤 수 있게 한다.
+    문구는 문장 경계(문장 끝 > 대사 전환 > 쉼표 > 접속사 …, format_rules._break_cost)에서
+    둘로 나눠 담고 시간은 글자수 비율로 나눈다(큐당 최소 1초, split_cue). 한 조각에 대사
+    대시가 하나뿐이면 대시는 뗀다. 나눌 수 없으면(경계 없음·시간이 2초 미만) 예전처럼 시간을
+    반으로 나누고 문구는 양쪽에 복사해, 각 줄은 검수자가 기존 편집 UI로 다듬는다.
+    나눈 뒤 되돌리기는 POST /segments/{새 큐 id}/undo-split."""
     async with async_session() as session:
         seg = await session.get(Segment, segment_id)
         if seg is None:
             raise HTTPException(404, "segment not found")
-        text = payload.target_text or seg.target_text
-        midpoint = (seg.start + seg.end) / 2
-        new_seg = Segment(
-            target_version_id=seg.target_version_id,
-            index=seg.index,
-            start=midpoint,
-            end=seg.end,
-            korean_text=seg.korean_text,
-            target_text=text,
-        )
-        seg.end = midpoint
-        session.add(new_seg)
+        new_seg = await split_segment_in_session(
+            session, seg, payload.target_text or seg.target_text,
+            await _line_break_rules(session, seg.target_version_id), fallback_copy=True)
         await session.commit()
         return {
-            "original": {"id": seg.id, "start": seg.start, "end": seg.end},
+            "original": {"id": seg.id, "start": seg.start, "end": seg.end,
+                         "target_text": seg.target_text},
             "new": {
                 "id": new_seg.id,
                 "start": new_seg.start,
                 "end": new_seg.end,
                 "korean_text": new_seg.korean_text,
                 "target_text": new_seg.target_text,
+                "can_undo_split": True,
             },
         }

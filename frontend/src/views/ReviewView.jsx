@@ -17,6 +17,7 @@ import {
   editTargetText,
   editSegmentTiming,
   splitSegment,
+  undoSplitSegment,
   resolveGender,
   resolveGenderGroup,
   excludeSegment,
@@ -1024,7 +1025,7 @@ function PairedFindingCard({
 const SrtSyncPanel = forwardRef(function SrtSyncPanel({
   videoSlot, syncSlot, segments, videoRef, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
-  srtTimingErrors, onSaveSrtTiming, onSplitSegment,
+  srtTimingErrors, onSaveSrtTiming, onSplitSegment, onUndoSplitSegment,
   boundaryClearedRef, showSplitBadge, onDismissSplitBadge,
 }, ref) {
   const sorted = useMemo(() => [...segments].sort((a, b) => a.start - b.start), [segments]);
@@ -1223,18 +1224,33 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
               }`}
             >
               {canEdit && distance === 0 && (
-                <button
-                  type="button"
-                  data-tour="split-button"
-                  disabled={pending}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSplitSegment(seg.id, displayText);
-                  }}
-                  className="absolute right-1 top-1 z-10 rounded-lg bg-card px-2 py-1 text-[10px] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground disabled:opacity-50"
-                >
-                  분할
-                </button>
+                <div className="absolute right-1 top-1 z-10 flex gap-1">
+                  {seg.can_undo_split && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUndoSplitSegment(seg.undo_split_id);
+                      }}
+                      className="rounded-lg bg-card px-2 py-1 text-[10px] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      되돌리기
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-tour="split-button"
+                    disabled={pending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSplitSegment(seg.id, displayText);
+                    }}
+                    className="rounded-lg bg-card px-2 py-1 text-[10px] text-muted-foreground shadow-sm hover:bg-muted hover:text-foreground disabled:opacity-50"
+                  >
+                    분할
+                  </button>
+                </div>
               )}
               {canEdit ? (
                 <div>
@@ -1297,7 +1313,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
 const VideoPreviewPanel = forwardRef(function VideoPreviewPanel({
   videoProxyUrl, syncSlot, videoRef, segments, videoOffsetSeconds, previewSegment, previewTick, onSeekSegment,
   pendingFindingSegmentIds, resolvedTextBySegment, srtPendingId, srtErrors, onSaveSrtEdit,
-  srtTimingErrors, onSaveSrtTiming, onSplitSegment,
+  srtTimingErrors, onSaveSrtTiming, onSplitSegment, onUndoSplitSegment,
   boundaryClearedRef, showSplitBadge, onDismissSplitBadge,
 }, ref) {
   if (!videoProxyUrl) {
@@ -1339,6 +1355,7 @@ const VideoPreviewPanel = forwardRef(function VideoPreviewPanel({
           srtTimingErrors={srtTimingErrors}
           onSaveSrtTiming={onSaveSrtTiming}
           onSplitSegment={onSplitSegment}
+          onUndoSplitSegment={onUndoSplitSegment}
           boundaryClearedRef={boundaryClearedRef}
           showSplitBadge={showSplitBadge}
           onDismissSplitBadge={onDismissSplitBadge}
@@ -1632,8 +1649,11 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     setFindingErrors((prev) => ({ ...prev, [findingId]: null }));
     setPendingActions((prev) => ({ ...prev, [findingId]: action }));
     try {
-      await submitReviewAction(findingId, action, reviewerName, finalText);
+      const result = await submitReviewAction(findingId, action, reviewerName, finalText);
       setFindings(await getFindings(targetVersionId));
+      // 승인한 제안이 너무 길어 백엔드가 큐를 나눴거나, 자동 줄바꿈 재배치를 거부해 원문으로
+      // 되돌렸으면(rejected) 큐 문구가 바뀌었으므로 목록을 다시 불러온다.
+      if (result?.split || action === "rejected") setSegments(await listSegments(targetVersionId));
       // 저장이 끝난 finding이 여전히 편집 중인 finding일 때만 편집 패널을 닫는다.
       // 저장 요청이 진행되는 동안 다른 finding의 수정 패널이 열렸다면(editingId가
       // 바뀌었다면) 그 미저장 초안을 여기서 지우면 안 된다.
@@ -1661,8 +1681,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     setFindingErrors((prev) => ({ ...prev, [findingId]: null }));
     setPendingActions((prev) => ({ ...prev, [findingId]: finalText ? "modified" : "approved" }));
     try {
-      await pickFinding(findingId, otherFindingId, reviewerName, finalText);
+      const result = await pickFinding(findingId, otherFindingId, reviewerName, finalText);
       setFindings(await getFindings(targetVersionId));
+      if (result?.split) setSegments(await listSegments(targetVersionId));
       setEditingId((cur) => (cur === findingId ? null : cur));
     } catch (err) {
       setFindingErrors((prev) => ({
@@ -1819,13 +1840,31 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     try {
       const { original, new: newSeg } = await splitSegment(segmentId, displayText);
       setSegments((prev) => [
-        ...prev.map((s) => (s.id === original.id ? { ...s, start: original.start, end: original.end } : s)),
+        ...prev.map((s) => (s.id === original.id ? { ...s, start: original.start, end: original.end, target_text: original.target_text } : s)),
         newSeg,
       ]);
     } catch (err) {
       setSrtTimingErrors((prev) => ({
         ...prev,
         [segmentId]: err.message ?? "분할 중 오류가 발생했습니다.",
+      }));
+    } finally {
+      setSrtPendingId(null);
+    }
+  }
+
+  // 분할로 생긴 큐를 지우고 원래 큐로 되돌린다. 분할 후 고친 내용은 사라지므로 먼저 확인한다.
+  async function handleUndoSplit(segmentId) {
+    if (!window.confirm("분할을 되돌릴까요? 분할 후 두 큐에서 고친 내용은 사라져요.")) return;
+    setSrtPendingId(segmentId);
+    try {
+      await undoSplitSegment(segmentId);
+      setSegments(await listSegments(targetVersionId));
+      setFindings(await getFindings(targetVersionId));
+    } catch (err) {
+      setSrtTimingErrors((prev) => ({
+        ...prev,
+        [segmentId]: err.message ?? "되돌리는 중 오류가 발생했습니다.",
       }));
     } finally {
       setSrtPendingId(null);
@@ -2242,6 +2281,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               srtTimingErrors={srtTimingErrors}
               onSaveSrtTiming={handleSaveSrtTiming}
               onSplitSegment={handleSplitSegment}
+              onUndoSplitSegment={handleUndoSplit}
               boundaryClearedRef={boundaryClearedRef}
               showSplitBadge={showSplitBadge}
               onDismissSplitBadge={dismissSplitBadge}

@@ -174,6 +174,10 @@ export const splitSegment = (segmentId, targetText) =>
     body: JSON.stringify({ target_text: targetText }),
   });
 
+// 분할로 생긴 큐(segmentId)를 지우고 원래 큐를 복원한다 — 분할 후 고친 내용은 사라진다.
+export const undoSplitSegment = (segmentId) =>
+  request(`/segments/${segmentId}/undo-split`, { method: "POST" });
+
 export const exportTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export`);
 

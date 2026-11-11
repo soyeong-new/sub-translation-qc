@@ -7,3 +7,9 @@ formality_instruction: >
 # 번역문의 인칭 표지 — 카드 설명이 "화자 자신"인데 2인칭 표지만 있으면 청자로 바로잡는 데 쓴다.
 second_person_markers: [você, vocês, o senhor, a senhora]
 first_person_markers: [eu, sou, estou]
+# 줄바꿈 위치 비용 계산용 단어(소문자) — conjunctions/prepositions 앞은 싸게, no_break_after 뒤는 금지(rewrap_line).
+line_break:
+  conjunctions: [e, ou, mas, porque, embora, quando, se, que, como, nem, pois, enquanto]
+  prepositions: [de, em, com, para, por, sem, sobre, contra, entre, desde, até, a, durante, após]
+  no_break_after: [o, a, os, as, um, uma, uns, umas, do, da, dos, das, "no", na, nos, nas, ao, à, pelo, pela, meu, minha, meus, minhas, seu, sua, seus, suas, nosso, nossa, este, esta, esse, essa, me, te, se, lhe, não, é, está, sou, são, foi, era, estou, estamos, vai, vou, vamos, tem]
+  no_break_phrases: ["por que", "assim que", "desde que", "para que", "até que", "mesmo que", "já que"]

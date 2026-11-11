@@ -58,7 +58,8 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
     elif finding.model == "안전망":
         shrunk = await provider.shrink_line(
             current_text, MAX_LINE_CHARS, MAX_LINES, extra_instruction=extra_instruction)
-        text, _ = await enforce_line_length(shrunk, provider)
+        text, _ = await enforce_line_length(
+            shrunk, provider, rules=profile.get("line_break"))
         return text, None
     else:
         raise RequeryNotSupportedError(
@@ -71,7 +72,8 @@ async def requery_finding(finding: FindingRow, segment: Segment, instruction: st
     # 있다(design §한국어 혼입 방어와 같은 이유) — pending 상태로 저장되는
     # 다시 질문 결과는 검수자가 승인하기 전까지 다른 안전망을 안 거치므로,
     # 여기서 바로 강제한다(사용자 재현: 다시 질문 결과가 42자를 넘겨서 그대로 보임).
-    text, _ = await enforce_line_length(results[0]["corrected_text"], provider)
+    text, _ = await enforce_line_length(
+        results[0]["corrected_text"], provider, rules=profile.get("line_break"))
     # pipeline._make_dual_verification_finding과 같은 이유로, 재질문 결과도
     # 등록된 고유명사 표기를 미등록 표기로 퇴행시켰으면 되돌린다(실사용
     # 재현 — 재질문이 1차 검증과 같은 오류를 반복함).
@@ -105,7 +107,8 @@ async def reverify_segment_after_stt_correction(
     if not results:
         return None
     correction = results[0]
-    correction["corrected_text"], _ = await enforce_line_length(correction["corrected_text"], provider)
+    correction["corrected_text"], _ = await enforce_line_length(
+        correction["corrected_text"], provider, rules=profile.get("line_break"))
     # requery_finding과 동일하게, STT 재검증도 등록된 고유명사 표기를
     # 퇴행시켰으면 되돌린다.
     patched = revert_canonical_regression(

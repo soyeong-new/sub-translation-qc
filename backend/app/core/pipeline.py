@@ -1060,7 +1060,7 @@ async def _back_translate_proposals(
 
 async def _finalize_correction_for_review(
     pair, correction: dict, provider: ModelProvider,
-    glossary_entries: Optional[list] = None,
+    glossary_entries: Optional[list] = None, line_break_rules: Optional[dict] = None,
 ) -> None:
     """사용자에게 보여줄 제안문을 확정한다.
 
@@ -1068,7 +1068,7 @@ async def _finalize_correction_for_review(
     실제 finding.suggested_text가 같은 문장이 되게 한다.
     """
     corrected_text, _ = await enforce_line_length(
-        correction["corrected_text"], provider)
+        correction["corrected_text"], provider, rules=line_break_rules)
     description = correction["description"]
     original_text = pair.target.text
     korean_text = pair.korean.text if pair.korean else ""
@@ -1425,7 +1425,7 @@ async def _run_dual_verification_pass(
             if pair is None or pair.target is None:
                 continue
             await _finalize_correction_for_review(
-                pair, correction, provider, glossary_entries)
+                pair, correction, provider, glossary_entries, (profile or {}).get("line_break"))
 
     (backtranslation_by_id, original_backtranslation_by_id, not_improved,
      backtranslation_warnings) = await _back_translate_proposals(
@@ -1452,7 +1452,7 @@ async def _run_dual_verification_pass(
 
 async def _run_final_safety_net(
     pairs: list, provider: ModelProvider, target_version_id: str,
-    dual_verification_findings: list,
+    dual_verification_findings: list, line_break_rules: Optional[dict] = None,
 ) -> tuple[list, list]:
     """S4 최종 안전망: 모든 교정이 끝난 텍스트를 기준으로 글자수·온점을 마지막
     으로 다시 검사한다 — GPT 패스가 문장을 늘리면서 새 위반을 만들 수 있어
@@ -1485,7 +1485,7 @@ async def _run_final_safety_net(
     ]
     # reading_speed는 화면에 실제로 입혀서 확인하므로 여기서 체크하지 않음
     safety_net_findings = await shrink_violating_lines(
-        pairs, line_length_violations, provider, target_version_id)
+        pairs, line_length_violations, provider, target_version_id, line_break_rules)
     return final_ellipsis_violations, safety_net_findings
 
 
@@ -1939,6 +1939,7 @@ async def run_pipeline_phase2(pairs: list, provider: ModelProvider, profile: dic
 
     final_ellipsis_violations, safety_net_findings = await _run_final_safety_net(
         pairs, provider, target_version_id, dual_verification_findings,
+        (profile or {}).get("line_break"),
     )
 
     glossary_extractions = await _extract_glossary_terms_pass(

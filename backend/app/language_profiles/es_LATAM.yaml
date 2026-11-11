@@ -14,3 +14,9 @@ naturalness_check:
     쓴다(끝에 ?나 !만 있고 앞의 ¿·¡가 빠지면 안 된다). 독립된 문장은 대문자로
     시작하고, 앞 줄에서 이어지는 문장일 때만 소문자로 시작해도 된다. 강세 부호(á, é,
     í, ó, ú, ñ)를 빠뜨리지 마라.
+# 줄바꿈 위치 비용 계산용 단어(소문자) — conjunctions/prepositions 앞은 싸게, no_break_after 뒤는 금지(rewrap_line).
+line_break:
+  conjunctions: [y, e, o, u, pero, porque, aunque, mientras, cuando, si, que, como, sino, ni, pues]
+  prepositions: [a, de, en, con, para, por, sin, sobre, contra, entre, desde, hasta, hacia, bajo, durante, tras, según, ante]
+  no_break_after: [el, la, los, las, un, una, unos, unas, del, al, mi, tu, su, mis, tus, sus, nuestro, nuestra, este, esta, ese, esa, estos, estas, esos, esas, me, te, se, lo, le, nos, les, "no", es, está, soy, eres, son, está, están, era, fue, estoy, estás, ha, he, has, han, hay, voy, vas, va, vamos, puedo, puedes, puede, podemos, pueden, debo, debes, debe, tengo, tienes, tiene, estaba, había]
+  no_break_phrases: ["para que", "hasta que", "por qué", "por que", "así que", "desde que", "a pesar de"]

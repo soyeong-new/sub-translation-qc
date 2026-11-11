@@ -17,16 +17,20 @@ async def test_no_violations_skips_llm_call_entirely():
 
 
 @pytest.mark.asyncio
-async def test_violation_shrinks_text_and_updates_pair_in_place():
-    long_text = "가" * 60
-    pairs = [_pair("p1", long_text)]
+async def test_violation_rewrap_cannot_fix_is_left_alone_without_calling_llm():
+    """줄바꿈만으로 안 풀리는 줄은 LLM으로 줄이지 않는다 — 저장 직후 자동 분할이 처리한다."""
+    pairs = [_pair("p1", "가" * 60)]
     violations = [FormatViolation(segment_id="p1", rule="line_length", detail="60자")]
-    findings = await shrink_violating_lines(pairs, violations, MockProvider(), "tv1")
-    assert len(findings) == 1
-    assert findings[0].model == "안전망"
-    assert findings[0].status == "approved"
-    assert len(findings[0].suggested_text) <= 42
-    assert pairs[0].target.text == findings[0].suggested_text
+    provider = MockProvider()
+    calls = []
+
+    async def _spy(*a, **k):
+        calls.append(a)
+    provider.shrink_line = _spy
+
+    findings = await shrink_violating_lines(pairs, violations, provider, "tv1")
+    assert findings == [] and calls == []
+    assert pairs[0].target.text == "가" * 60
 
 
 @pytest.mark.asyncio

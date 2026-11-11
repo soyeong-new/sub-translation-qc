@@ -18,7 +18,7 @@ from app.core.pipeline import (
 )
 from app.core.ingest import delete_original_video
 from app.repositories import (
-    save_phase1_result, save_phase2_result, get_character_gender_facts, get_episode_gender_facts,
+    save_phase1_result, save_phase2_result, auto_split_overlong_segments, get_character_gender_facts, get_episode_gender_facts,
     get_glossary_prompt_entries, upsert_glossary_extraction,
 )
 from app.providers.base import get_provider, ModelProvider
@@ -193,6 +193,9 @@ async def _run_phase2_and_save(target_version_id: str, provider: ModelProvider) 
 
         async with async_session() as session:
             await save_phase2_result(session, target_version_id, phase2)
+            # 줄바꿈 재배치로 안 풀린 긴 큐는 LLM으로 줄이지 않고 나눈다(내용 보존).
+            await auto_split_overlong_segments(
+                session, target_version_id, (profile or {}).get("line_break"))
             tv = await session.get(TargetVersion, target_version_id)
             tv.status = "review"
             tv.warnings = (tv.warnings or []) + (phase2.get("warnings") or []) or None

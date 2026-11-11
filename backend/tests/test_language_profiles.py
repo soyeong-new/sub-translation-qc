@@ -95,3 +95,10 @@ def test_list_profiles_ignores_non_yaml_files(tmp_path, monkeypatch):
     (tmp_path / "README.md").write_text("not a profile", encoding="utf-8")
     profiles = loader_module.list_profiles()
     assert profiles == [{"language": "es", "variant": "LATAM", "display_name": "es (LATAM)"}]
+
+
+@pytest.mark.parametrize("language,variant", [("es", "LATAM"), ("pt", "BR"), ("fr", "FR"), ("en", "US")])
+def test_line_break_word_lists_are_all_strings(language, variant):
+    # YAML에서 따옴표 없는 no/on/yes/off는 불리언으로 읽힌다 — 단어 목록에 섞이면 규칙이 조용히 안 먹는다
+    rules = load_profile(language, variant)["line_break"]
+    assert all(isinstance(w, str) for words in rules.values() for w in words)

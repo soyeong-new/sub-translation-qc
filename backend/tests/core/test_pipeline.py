@@ -1593,7 +1593,7 @@ async def test_pipeline_back_translates_final_proposal_after_gender_and_ellipsis
     backtranslation_inputs = []
     finalized_texts = []
 
-    async def _mark_each_finalization(text, _provider):
+    async def _mark_each_finalization(text, _provider, **_kw):
         if not text.startswith("Estoy cansada"):
             return text, False
         finalized_texts.append(text)

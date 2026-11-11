@@ -101,17 +101,12 @@ async def test_edit_target_text_rejects_segment_with_pending_finding():
 
 
 @pytest.mark.asyncio
-async def test_edit_target_text_rejects_line_over_length_limit():
+async def test_edit_target_text_saves_typed_text_exactly_even_when_long():
     seg_id = await _make_segment()
-    transport = ASGITransport(app=app)
-    too_long = "a" * 51
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
-            f"/segments/{seg_id}/edit-target-text",
-            json={"target_text": too_long},
-        )
-        assert r.status_code == 400
+    long = "a" * 51
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(f"/segments/{seg_id}/edit-target-text", json={"target_text": long})
+        assert r.status_code == 200
 
     async with async_session() as session:
-        seg = await session.get(Segment, seg_id)
-        assert seg.target_text == "Hola"
+        assert (await session.get(Segment, seg_id)).target_text == long

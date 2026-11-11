@@ -1,7 +1,7 @@
 import pytest
 from app.schemas import AlignedPair, SegmentText
 from app.core.format_rules import (
-    check_line_length, check_ellipsis, fix_ellipsis, normalize_speaker_dash, rewrap_line, check_reading_speed,
+    check_line_length, check_ellipsis, fix_ellipsis, violates_line_length, normalize_speaker_dash, rewrap_line, check_reading_speed,
 )
 
 
@@ -149,3 +149,86 @@ def test_rewrap_line_breaks_at_extended_punctuation(text, expected):
 def test_rewrap_line_does_not_treat_double_dash_as_dialogue_switch():
     result = rewrap_line("Il a dit que -- enfin, tu sais bien -- il ne viendrait pas ce soir du tout")
     assert not any(line.startswith("--") for line in result.split("\n"))
+
+
+_ES_RULES = {
+    "conjunctions": ["y", "o", "pero", "porque"],
+    "prepositions": ["de", "en", "con", "para"],
+    "no_break_after": ["el", "la", "un", "una", "me", "no"],
+}
+
+
+def test_rewrap_line_prefers_preposition_over_plain_word_boundary():
+    text = "Gané casi 10 millones de dólares en criptomonedas."
+    assert rewrap_line(text, rules=_ES_RULES) == "Gané casi 10 millones\nde dólares en criptomonedas."
+
+
+def test_rewrap_line_prefers_conjunction_before_plain_word_boundary():
+    text = "pero nunca sabes si estaba en casa o en un motel."
+    assert rewrap_line(text, rules=_ES_RULES) == "pero nunca sabes si estaba en casa\no en un motel."
+
+
+def test_rewrap_line_avoids_breaking_after_article_when_alternative_exists():
+    text = "Ella siempre quería comprar la casa grande del barrio viejo"
+    first = rewrap_line(text, rules=_ES_RULES).split("\n")[0]
+    assert not first.endswith(" la")
+
+
+def test_rewrap_line_avoids_breaking_between_capitalized_names():
+    text = "Todos dicen que Bool Gom Gang es el mejor equipo del mundo"
+    result = rewrap_line(text, rules={})
+    assert "Gom\nGang" not in result and "Bool\nGom" not in result
+
+
+def test_rewrap_line_still_succeeds_when_every_candidate_is_forbidden():
+    # 금지 위치만 남아도 줄바꿈 자체는 가능해야 한다(None → LLM 축약으로 가면 안 됨)
+    text = " ".join(["no"] * 20)
+    assert rewrap_line(text, rules=_ES_RULES) is not None
+
+
+_FR_RULES = {"conjunctions": ["que", "parce"], "prepositions": ["de"], "no_break_after": [],
+             "no_break_phrases": ["parce que", "est-ce que"]}
+
+
+def test_rewrap_line_does_not_break_inside_no_break_phrase():
+    text = "Je ne suis pas parti hier soir parce que personne ne m'avait prévenu"
+    result = rewrap_line(text, rules=_FR_RULES)
+    assert "parce\nque" not in result
+
+
+def test_rewrap_line_keeps_space_before_french_punctuation_with_previous_word():
+    text = "Tu es sûr de vouloir partir maintenant sans rien lui dire ?"
+    result = rewrap_line(text, max_chars=40, rules={})
+    assert not any(line.startswith("?") for line in result.split("\n"))
+
+
+def test_rewrap_line_preserves_nbsp_and_never_splits_on_it():
+    text = "Tu es sûr de vouloir partir maintenant sans rien lui dire ?"
+    result = rewrap_line(text, max_chars=40, rules={})
+    assert "dire ?" in result
+
+
+def test_rewrap_line_keeps_lone_inverted_mark_with_next_word():
+    text = "No puedo creer que hayas hecho eso otra vez ¡ Eres increíble de verdad!"
+    result = rewrap_line(text, max_chars=40, rules={})
+    assert not any(line.endswith("¡") for line in result.split("\n"))
+
+
+def test_fix_ellipsis_turns_two_dots_into_three():
+    assert fix_ellipsis("Espera..") == ("Espera...", True)
+    assert fix_ellipsis("Espera... y.. ya") == ("Espera... y... ya", True)
+
+
+_EN_RULES = {"prepositions": ["on", "in"], "no_break_after": ["your", "the"]}
+_EN_43 = "if you do not have Shinhwa School\non your resume, don't even bother applying."
+
+
+def test_line_up_to_tolerance_is_not_a_violation():
+    assert not violates_line_length(_EN_43)          # 둘째 줄 43자
+    assert violates_line_length("a" * 46)
+
+
+def test_avoid_forbidden_gives_up_when_only_bad_breaks_fit():
+    flat = _EN_43.replace("\n", " ")
+    assert "your\nresume" in rewrap_line(flat, rules=_EN_RULES)   # 기존 동작: 어색해도 맞춘다
+    assert rewrap_line(flat, rules=_EN_RULES, avoid_forbidden=True) is None

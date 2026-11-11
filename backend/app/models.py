@@ -113,6 +113,9 @@ class Segment(Base):
     # ([{"start", "end", "text"}, ...]). 고친 내용이 없으면 export가 합친 큐
     # 대신 이 원래 큐들을 내보낸다(AlignedPair.target_cues).
     target_cues_raw: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # 분할(split_segment_in_session)로 새로 생긴 큐에만 채워진다 — 분할 되돌리기에 필요한
+    # 원래 큐 상태({"original_segment_id", "original_text", "original_end", "findings": [...]}).
+    split_undo_raw: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class FindingRow(Base):

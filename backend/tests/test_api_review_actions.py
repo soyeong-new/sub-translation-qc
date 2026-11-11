@@ -213,17 +213,38 @@ async def test_reject_pair_returns_404_for_missing_other_finding():
         assert r.status_code == 404
 
 
+_LONG_TWO_SENTENCES = "Esto es una frase bastante larga que continúa. Esta es otra frase igualmente larga que sigue aquí."
+
+
 @pytest.mark.asyncio
-async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch):
-    """회귀: Claude/GPT 단독 제안(pending)은 S4 안전망을 거치지 않아 42자를
-    넘는 채로 남을 수 있었다 — 승인 시점에 자동으로 줄여야 한다."""
-    monkeypatch.setenv("QC_PROVIDER", "mock")
+async def test_approving_finding_over_line_length_splits_the_cue_instead_of_shrinking():
+    """Claude/GPT 단독 제안(pending)은 S4 안전망을 거치지 않아 2줄×42자를 넘을 수 있다 —
+    승인 시점에 LLM으로 줄이지 않고 큐를 나눈다(내용 보존)."""
     await _make_finding_row("f1")
     async with async_session() as session:
         f = await session.get(FindingRow, "f1")
-        # 공백 없는 긴 한 단어라 rewrap_line(줄바꿈 재배치)으로는 못 줄이고
-        # LLM 폴백(MockProvider.shrink_line)을 강제로 타게 만든다.
-        f.suggested_text = "a" * 70
+        f.suggested_text = _LONG_TWO_SENTENCES
+        await session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/findings/f1/review-action",
+            json={"action": "approved", "reviewer_name": "김검수"},
+        )
+    body = r.json()
+    assert r.status_code == 200 and body["status"] == "approved"
+    assert body["final_text"].startswith("Esto es una frase") and body["split"]["new"]["target_text"].startswith("Esta es otra")
+    async with async_session() as session:
+        assert len((await session.execute(select(Segment))).scalars().all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_approving_unsplittable_over_length_text_is_kept_without_llm():
+    await _make_finding_row("f1")
+    async with async_session() as session:
+        f = await session.get(FindingRow, "f1")
+        f.suggested_text = "a" * 70  # 공백 없는 한 단어 — 재배치도 분할도 못 한다
         await session.commit()
 
     transport = ASGITransport(app=app)
@@ -233,56 +254,50 @@ async def test_approving_finding_auto_shrinks_text_over_line_length(monkeypatch)
             json={"action": "approved", "reviewer_name": "김검수"},
         )
     assert r.status_code == 200
-    final_text = r.json()["final_text"]
-    assert len(final_text) <= 42
-    assert final_text != "a" * 70
+    assert r.json()["final_text"] == "a" * 70 and r.json()["split"] is None
 
 
 @pytest.mark.asyncio
-async def test_modifying_with_text_that_only_needs_line_break_is_saved_with_line_break():
-    """검수자가 쓴 문구가 줄바꿈만 바꾸면 제약 안에 들어가면 내용은 그대로 두고 줄바꿈만 고쳐 저장한다."""
+async def test_approving_does_not_split_when_another_finding_on_the_cue_is_pending():
     await _make_finding_row("f1")
-    typed = "Ellos dijeron que nunca me salvaran la vida"   # 43자, 한 줄
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
-            "/findings/f1/review-action",
-            json={"action": "modified", "reviewer_name": "김검수", "final_text": typed},
-        )
-    assert r.status_code == 200
-    saved = r.json()["final_text"]
-    assert "\n" in saved and " ".join(saved.split()) == typed
-
-
-@pytest.mark.asyncio
-async def test_modifying_with_text_over_line_length_is_rejected_and_not_saved():
-    """검수자가 직접 입력한 문구는 자동으로 줄이지 않고, 대신 저장 자체를
-    막아야 한다 — 임의로 잘라버리면 검수자의 의도와 다른 문장이 나갈 수
-    있다."""
-    await _make_finding_row("f1")
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
-            "/findings/f1/review-action",
-            json={"action": "modified", "reviewer_name": "김검수", "final_text": "a" * 60},
-        )
-    assert r.status_code == 400
-
     async with async_session() as session:
         f = await session.get(FindingRow, "f1")
-        assert f.status == "pending"
-        assert f.final_text == ""
+        f.suggested_text = _LONG_TWO_SENTENCES
+        session.add(FindingRow(id="f2", target_version_id=f.target_version_id, segment_id="p1",
+                               category="mistranslation", description="근거", original_text="a",
+                               suggested_text="b", confidence=0.9))
+        await session.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/findings/f1/review-action",
+            json={"action": "approved", "reviewer_name": "김검수"},
+        )
+    assert r.status_code == 200 and r.json()["split"] is None
+    async with async_session() as session:
+        assert len((await session.execute(select(Segment))).scalars().all()) == 1
 
 
 @pytest.mark.asyncio
-async def test_pick_auto_shrinks_accepted_suggestion_over_line_length(monkeypatch):
-    monkeypatch.setenv("QC_PROVIDER", "mock")
+async def test_modifying_saves_typed_text_exactly_even_when_over_line_length():
+    """검수자가 직접 쓴 문구는 줄바꿈도 길이도 건드리지 않고 쓴 그대로 저장한다."""
+    await _make_finding_row("f1")
+    typed = "Ellos dijeron que nunca me salvaran la vida jamás"   # 49자, 한 줄
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/findings/f1/review-action",
+                              json={"action": "modified", "reviewer_name": "김검수", "final_text": typed})
+    assert r.status_code == 200
+    assert r.json()["final_text"] == typed
+
+
+@pytest.mark.asyncio
+async def test_pick_splits_accepted_suggestion_over_line_length():
     claude_id, gpt_id = await _make_disagreeing_pair()
     async with async_session() as session:
         f = await session.get(FindingRow, claude_id)
-        f.suggested_text = "a" * 70
+        f.suggested_text = _LONG_TWO_SENTENCES
         await session.commit()
 
     transport = ASGITransport(app=app)
@@ -291,27 +306,21 @@ async def test_pick_auto_shrinks_accepted_suggestion_over_line_length(monkeypatc
             f"/findings/{claude_id}/pick",
             json={"reviewer_name": "김검수", "other_finding_id": gpt_id},
         )
-    assert r.status_code == 200
-    assert len(r.json()["picked"]["final_text"]) <= 42
+    body = r.json()
+    assert r.status_code == 200 and body["picked"]["status"] == "approved"
+    assert body["picked"]["final_text"].startswith("Esto es una frase")
+    assert body["split"]["new"]["target_text"].startswith("Esta es otra")
+    assert body["rejected"]["status"] == "rejected"
 
 
 @pytest.mark.asyncio
-async def test_pick_with_custom_text_over_line_length_is_rejected_and_not_saved():
+async def test_pick_with_custom_text_saves_it_exactly():
     claude_id, gpt_id = await _make_disagreeing_pair()
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
-            f"/findings/{claude_id}/pick",
-            json={"reviewer_name": "김검수", "other_finding_id": gpt_id, "final_text": "a" * 60},
-        )
-    assert r.status_code == 400
-
-    async with async_session() as session:
-        claude_f = await session.get(FindingRow, claude_id)
-        gpt_f = await session.get(FindingRow, gpt_id)
-        assert claude_f.status == "pending"
-        assert gpt_f.status == "pending"  # 짝도 아직 거부되면 안 됨(저장 자체가 안 됐음)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(f"/findings/{claude_id}/pick",
+                              json={"reviewer_name": "김검수", "other_finding_id": gpt_id, "final_text": "a" * 60})
+    assert r.status_code == 200
+    assert r.json()["picked"]["final_text"] == "a" * 60
 
 
 async def _make_finding_row_with_glossary(finding_id: str, *, korean_text: str,
@@ -389,3 +398,23 @@ async def test_modifying_finding_self_heals_glossary_canonical():
             select(GlossarySpelling).where(GlossarySpelling.language == "es")
         )).scalar_one()
         assert spelling.canonical == "Orc"
+
+
+@pytest.mark.asyncio
+async def test_rejecting_auto_rewrap_restores_original_text():
+    await _make_finding_row("f1")
+    async with async_session() as session:
+        seg = await session.get(Segment, "p1")
+        seg.target_text = "uno dos\ntres"
+        f = await session.get(FindingRow, "f1")
+        f.model, f.source, f.category = "자동재배치", "rule", "formatting"
+        f.original_text, f.suggested_text, f.status = "uno dos tres", "uno dos\ntres", "approved"
+        await session.commit()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/findings/f1/review-action",
+                              json={"action": "rejected", "reviewer_name": "김검수"})
+        assert r.status_code == 200
+
+    async with async_session() as session:
+        assert (await session.get(Segment, "p1")).target_text == "uno dos tres"

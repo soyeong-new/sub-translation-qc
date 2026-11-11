@@ -1,13 +1,16 @@
 """파이프라인 실행 결과(세그먼트/findings)를 DB에 영속화하는 모듈."""
 
 import unicodedata
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion,
     GlossaryEntry, GlossarySpelling, GlossarySuppression,
 )
+from app.core.cue_split import split_cue
+from app.core.format_rules import violates_line_length
 from app.schemas import Finding
 
 
@@ -524,3 +527,105 @@ async def delete_glossary_entry(session: AsyncSession, entry_id: str) -> bool:
     await session.delete(entry)
     await session.flush()
     return True
+
+
+async def split_segment_in_session(session: AsyncSession, seg: Segment, text: str,
+                                    rules: Optional[dict] = None,
+                                    fallback_copy: bool = False) -> Optional[Segment]:
+    """큐를 둘로 나눈다 — 수동 분할 버튼과 자동 분할(저장 직후·승인 시점)이 같이 쓴다.
+    문구를 문장 경계에서 나눠 담고 시간은 글자수 비율로 나눈다(cue_split.split_cue). 나눌 수
+    없으면 fallback_copy=True일 때만 예전처럼 시간을 반으로 나누고 문구를 양쪽에 복사하고,
+    아니면 None(아무것도 안 바꾼다). 승인/수정된 finding의 final_text는 export에서
+    segment.target_text보다 우선하므로 첫 조각으로 같이 맞춘다. 되돌리기에 필요한 원래
+    상태는 새 큐의 split_undo_raw에 남긴다(새 큐에는 한국어 원문이 그대로 복사된다)."""
+    cues = split_cue(text, seg.start, seg.end, rules)
+    if cues is None and not fallback_copy:
+        return None
+    if cues:
+        (_, mid, first_text), (_, _, second_text) = cues
+    else:
+        mid, first_text, second_text = (seg.start + seg.end) / 2, text, text
+    findings = await get_findings_for_segment(session, seg.id)
+    undo = {
+        "original_segment_id": seg.id, "original_text": seg.target_text, "original_end": seg.end,
+        "findings": [
+            {"id": f.id, "status": f.status, "final_text": f.final_text,
+             "reviewed_at": f.reviewed_at.isoformat() if f.reviewed_at else None}
+            for f in findings if f.status in ("approved", "modified")
+        ],
+    }
+    if cues:
+        now = datetime.now(timezone.utc)
+        for f in findings:
+            if f.status in ("approved", "modified"):
+                f.status, f.final_text, f.reviewed_at = "modified", first_text, now
+        seg.target_text = first_text
+    new_seg = Segment(
+        target_version_id=seg.target_version_id, index=seg.index, start=mid, end=seg.end,
+        korean_text=seg.korean_text, target_text=second_text, split_undo_raw=undo,
+    )
+    seg.end = mid
+    session.add(new_seg)
+    return new_seg
+
+
+class SplitUndoError(Exception):
+    """분할을 되돌릴 수 없는 이유(화면에 그대로 보여준다)."""
+
+
+async def undo_split_in_session(session: AsyncSession, new_seg: Segment) -> Segment:
+    """split_segment_in_session으로 생긴 큐를 지우고 원래 큐(문구·끝 시간·finding 상태)를
+    복원한다. 분할 후 양쪽 큐에서 고친 내용은 사라진다. 새 큐에 finding·STT 교정이 붙었거나,
+    그 새 큐를 다시 분할한 큐가 있으면 지울 수 없어 SplitUndoError."""
+    undo = new_seg.split_undo_raw
+    if not undo:
+        raise SplitUndoError("분할로 만들어진 큐가 아니라서 되돌릴 수 없습니다.")
+    if await get_findings_for_segment(session, new_seg.id):
+        raise SplitUndoError("이 큐에 검수 카드가 있어 되돌릴 수 없습니다.")
+    stt = await session.execute(select(SttCorrection.id).where(SttCorrection.segment_id == new_seg.id))
+    if stt.first() is not None:
+        raise SplitUndoError("이 큐에 STT 교정 이력이 있어 되돌릴 수 없습니다.")
+    siblings = (await session.execute(
+        select(Segment).where(Segment.target_version_id == new_seg.target_version_id)
+    )).scalars().all()  # JSON null과 SQL NULL이 섞일 수 있어 SQL 필터 대신 파이썬에서 거른다
+    if any(s.split_undo_raw and s.split_undo_raw.get("original_segment_id") == new_seg.id for s in siblings):
+        raise SplitUndoError("이 큐를 다시 분할한 큐가 있어, 그 분할을 먼저 되돌려야 합니다.")
+    orig = await session.get(Segment, undo["original_segment_id"])
+    if orig is None:
+        raise SplitUndoError("원래 큐를 찾을 수 없습니다.")
+    orig.target_text, orig.end = undo["original_text"], undo["original_end"]
+    for saved in undo["findings"]:
+        f = await session.get(FindingRow, saved["id"])
+        if f is not None:
+            f.status, f.final_text = saved["status"], saved["final_text"]
+            f.reviewed_at = datetime.fromisoformat(saved["reviewed_at"]) if saved["reviewed_at"] else None
+    await session.delete(new_seg)
+    return orig
+
+
+async def auto_split_overlong_segments(session: AsyncSession, target_version_id: str,
+                                        rules: Optional[dict] = None) -> int:
+    """줄바꿈 재배치(S4)로도 2줄×42자에 안 들어가 남은 큐를 저장 직후 나눈다 — LLM으로 줄이면
+    내용이 사라져서 대신 쓴다. 처리 안 된 finding이 있는 큐는 건드리지 않는다(검수자가 승인할 때
+    최종 문구가 정해지므로 그 시점에 나눈다 — findings.py). 나눈 조각이 아직 길면 몇 번 더
+    나눈다. 못 나누는 큐(시간 2초 미만·한 단어가 42자 초과)는 그대로 남아 export 경고로 보인다.
+    나눈 큐 수를 반환한다."""
+    segs = (await session.execute(
+        select(Segment).where(Segment.target_version_id == target_version_id, Segment.excluded == False)  # noqa: E712
+        .order_by(Segment.index, Segment.start)
+    )).scalars().all()
+    pending = set((await session.execute(
+        select(FindingRow.segment_id).where(
+            FindingRow.target_version_id == target_version_id, FindingRow.status == "pending")
+    )).scalars().all())
+    work = [(s, 0) for s in segs if s.id not in pending and s.target_text]
+    count = 0
+    while work:
+        seg, depth = work.pop()
+        if depth >= 3 or not violates_line_length(seg.target_text):
+            continue
+        new_seg = await split_segment_in_session(session, seg, seg.target_text, rules)
+        if new_seg is not None:
+            count += 1
+            work += [(seg, depth + 1), (new_seg, depth + 1)]
+    return count
