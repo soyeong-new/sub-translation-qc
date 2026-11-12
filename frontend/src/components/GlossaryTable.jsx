@@ -156,7 +156,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           <tr className="divide-x divide-border/30 border-b border-border bg-card text-foreground">
             <th className="sticky left-0 z-10 bg-card px-4 py-2 text-left font-bold">한국어 용어</th>
             {columns.map((col) => (
-              <th key={col} className="px-4 py-2 text-left font-bold">
+              <th key={col} className="min-w-[11rem] px-4 py-2 text-left font-bold">
                 {col}
               </th>
             ))}

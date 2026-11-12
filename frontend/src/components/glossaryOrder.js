@@ -10,3 +10,8 @@ export function orderGlossaryEntries(entries, columns) {
   const rest = entries.filter((entry) => !isPending(entry)).sort(byKoreanTerm);
   return { pending, rest };
 }
+
+// 지금 검수 중인 언어 열(예: "en_US")을 맨 앞으로 — 나머지는 원래 순서 그대로.
+export function orderColumns(columns, firstKey) {
+  return columns.includes(firstKey) ? [firstKey, ...columns.filter((c) => c !== firstKey)] : columns;
+}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { orderGlossaryEntries } from "./glossaryOrder.js";
+import { orderGlossaryEntries, orderColumns } from "./glossaryOrder.js";
 
 const e = (term, category, spellings) => ({ id: term, korean_term: term, category, spellings });
 
@@ -24,4 +24,9 @@ test("amount entry blank in any one column stays pending", () => {
   const { pending } = orderGlossaryEntries(
     [e("100억", "amount", { es_LATAM: "x" })], ["es_LATAM", "fr_FR"]);
   assert.equal(pending.length, 1);
+});
+
+test("orderColumns moves the target language first, ignores unknown key", () => {
+  assert.deepEqual(orderColumns(["en_US", "fr_FR", "es_LATAM"], "fr_FR"), ["fr_FR", "en_US", "es_LATAM"]);
+  assert.deepEqual(orderColumns(["en_US", "fr_FR"], null), ["en_US", "fr_FR"]);
 });

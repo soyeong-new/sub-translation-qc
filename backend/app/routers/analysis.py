@@ -106,6 +106,7 @@ async def get_target_version(target_version_id: str):
                 "title_id": episode.title_id if episode else None,
                 "title_name": title.name if title else None,
                 "episode_no": episode.episode_no if episode else None,
+                "target_language": tv.target_language, "variant": tv.variant,
                 "display_name": display_names.get((tv.target_language, tv.variant), tv.target_language)}
 
 

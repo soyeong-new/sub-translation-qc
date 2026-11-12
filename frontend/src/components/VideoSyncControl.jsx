@@ -27,24 +27,27 @@ export default function VideoSyncControl({ segmentStart, videoRef, onChange }) {
   }
 
   return (
-    <div data-tour="video-sync" className="rounded-xl border border-border bg-card p-3 shadow-sm">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold text-muted-foreground">싱크 맞추기</span>
-        <button
-          disabled={pending || segmentStart == null}
-          onClick={alignToCurrentTime}
-          title={
-            segmentStart == null
-              ? "자막이나 카드를 눌러 줄을 먼저 재생해 주세요."
-              : "영상에서 말이 시작되는 곳에 멈추고 누르세요. 이 영상의 모든 줄에 같은 만큼 적용됩니다."
-          }
-          className={syncBtnClass}
-        >
-          지금 위치
-        </button>
-      </div>
+    <div data-tour="video-sync" className="relative">
+      <button
+        disabled={pending || segmentStart == null}
+        onClick={alignToCurrentTime}
+        title={
+          segmentStart == null
+            ? "자막이나 카드를 눌러 줄을 먼저 재생해 주세요."
+            : "영상에서 말이 시작되는 곳에 멈추고 누르세요. 이 영상의 모든 줄에 같은 만큼 적용됩니다."
+        }
+        className={syncBtnClass}
+      >
+        싱크 맞추기
+      </button>
       {error && (
-        <p role="status" aria-live="polite" className="mt-1.5 text-sm font-medium text-destructive">{error}</p>
+        <p
+          role="status"
+          aria-live="polite"
+          className="absolute left-1/2 top-full z-10 mt-1.5 w-max max-w-[16rem] -translate-x-1/2 rounded-md border border-destructive/40 bg-card px-3 py-2 text-sm font-medium text-destructive shadow-md"
+        >
+          {error}
+        </p>
       )}
     </div>
   );

@@ -19,7 +19,7 @@ const SYNC_FEATURE_STEP = {
   element: '[data-tour="video-sync"]',
   popover: {
     title: "영상 싱크 맞추기",
-    description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+    description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 이 '싱크 맞추기' 버튼을 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
     popoverClass: "tour-popover-feature",
   },
 };
@@ -56,7 +56,7 @@ const CONFIRM_TOUR_STEPS = [
     element: '[data-tour="video-sync"]',
     popover: {
       title: "④ 영상 싱크 맞추기",
-      description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+      description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 이 '싱크 맞추기' 버튼을 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
     },
   },
   {

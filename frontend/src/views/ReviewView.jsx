@@ -28,6 +28,7 @@ import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PA
 import QQLogo from "../components/QQLogo.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
 import VideoSyncControl from "../components/VideoSyncControl.jsx";
+import { orderColumns } from "../components/glossaryOrder.js";
 import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
 
 // 규칙 기반(사전필터, 자동재배치)은 판단을 내린 LLM이 없어 재질문 대상이
@@ -152,7 +153,7 @@ const modifyBtnClass = `${btnBase} border border-input bg-background text-foregr
 
 // 투어 내용을 바꿀 때는 이 키의 버전을 올린다("review-v2" 등) — 이미 한 번
 // 본 사람에게도 바뀐 안내가 다시 한 번 뜨게 하기 위해서다.
-const TOUR_KEY = "review-v1";
+const TOUR_KEY = "review-v2";
 
 // 전체 투어 내용을 다시 바꾸지 않고, 새로 추가된 기능 하나만 기존 사용자에게
 // 알리고 싶을 때 쓰는 "NEW" 뱃지용 미니 투어 — 전체 투어(TOUR_KEY)를 이미 본
@@ -174,7 +175,7 @@ const SYNC_FEATURE_STEP = {
   element: '[data-tour="video-sync"]',
   popover: {
     title: "영상 싱크 맞추기",
-    description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+    description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 이 '싱크 맞추기' 버튼을 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
     popoverClass: "tour-popover-feature",
   },
 };
@@ -192,14 +193,14 @@ function buildReviewTourSteps(hasFindings) {
       element: '[data-tour="video-card"]',
       popover: {
         title: "② 영상",
-        description: "전체 자막 목록에서 줄을 클릭하면 그 장면으로 영상이 이동해요.",
+        description: "전체 자막 목록에서 줄을 클릭하면 그 장면으로 영상이 이동해요. 방향키(←/→)나 아래 '이전/다음 구간' 버튼으로도 구간을 옮길 수 있어요.",
       },
     },
     {
       element: '[data-tour="video-sync"]',
       popover: {
         title: "③ 영상 싱크 맞추기",
-        description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 '지금 위치'를 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
+        description: "영상과 자막이 어긋나 있으면, 영상에서 말이 시작되는 곳에 멈추고 이 '싱크 맞추기' 버튼을 눌러요. 이 영상의 모든 줄에 같은 만큼 적용돼요.",
       },
     },
     {
@@ -1148,7 +1149,7 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
           >
             &#9664; 이전 구간
           </button>
-          <span className="text-xs text-muted-foreground">방향키(&larr;/&rarr;)로 이동</span>
+          {syncSlot}
           <button
             type="button"
             onClick={() => goToOffset(1)}
@@ -1159,7 +1160,6 @@ const SrtSyncPanel = forwardRef(function SrtSyncPanel({
           </button>
         </div>
       </div>
-      {syncSlot && <div className="mt-3">{syncSlot}</div>}
       <div data-tour="subtitle-list" className="mt-3 rounded-xl border border-border bg-card p-3 shadow-sm">
         <div className="mb-1.5 flex items-center gap-1.5">
           <p className="text-xs font-medium text-muted-foreground">전체 자막</p>
@@ -1430,6 +1430,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 빼서 영상 파일 자체의 시계로 변환해야 한다.
   const [videoOffsetSeconds, setVideoOffsetSeconds] = useState(0);
   const [previewSegment, setPreviewSegment] = useState(null);
+  const [targetColumnKey, setTargetColumnKey] = useState(null);
   const previewVideoRef = useRef(null);
   // 같은 finding 카드를 다시 눌러도(id가 안 바뀌어도) 구간 처음으로 다시
   // 이동해 재생하도록 누를 때마다 값을 바꿔 아래 미리보기 이펙트를 강제로
@@ -1571,6 +1572,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     };
   }, [targetVersionId]);
 
+          setTargetColumnKey(data.target_language ? `${data.target_language}_${data.variant}` : null);
   function refreshGlossary() {
     if (!titleId) return;
     getTitleGlossary(titleId)
@@ -2065,8 +2067,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 어긋난다("Findings (56)"인데 탭 합은 52 같은 불일치, 사용자 재현).
   const totalFindingsCount = reviewRequiredItems.length;
   const processedFindingsCount = reviewRequiredItems.filter((it) => !itemStatuses(it).includes("pending")).length;
-  const glossarySpellingColumns = Array.from(
-    new Set((glossary ?? []).flatMap((e) => Object.keys(e.spellings ?? {})))
+  const glossarySpellingColumns = orderColumns(
+    Array.from(new Set((glossary ?? []).flatMap((e) => Object.keys(e.spellings ?? {})))),
+    targetColumnKey
   );
   const statusCounts = { all: displayItems.length };
   for (const status of Object.keys(STATUS_LABELS)) {
@@ -2129,13 +2132,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                     style={{ width: `${Math.round((processedFindingsCount / totalFindingsCount) * 100)}%` }}
                   />
                 </div>
-                <span className="whitespace-nowrap text-xs text-muted-foreground">
-                  {processedFindingsCount}/{totalFindingsCount} 처리됨
-                </span>
-              </div>
-            </>
-          )}
-
           <div className="h-6 w-px shrink-0 bg-border" />
 
           <div data-tour="reviewer-name" className="flex shrink-0 items-center gap-2">
@@ -2150,6 +2146,31 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               className="w-32 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
           </div>
+
+                <span className="whitespace-nowrap text-xs text-muted-foreground">
+                  {processedFindingsCount}/{totalFindingsCount} 처리됨
+                </span>
+              </div>
+            </>
+          )}
+
+          <div className="h-6 w-px shrink-0 bg-border" />
+
+          <div data-tour="export-button" className="relative shrink-0">
+            <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
+              {isExporting && <Spinner />}
+              내보내기
+            </button>
+            {exportStatus.kind === "error" && (
+              <p
+                role="status"
+                aria-live="polite"
+                className="absolute right-0 top-full mt-2 w-max max-w-xs rounded-md border border-destructive/40 bg-card px-3 py-2 text-sm text-destructive shadow-md"
+              >
+                {exportStatus.message}
+              </p>
+            )}
+          </div>
         </div>
       </header>
 
@@ -2163,6 +2184,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         </button>
       </div>
 
+      {/* 용어집이 열리면 경고 배너·본문 전체를 크기 그대로 왼쪽으로만 민다(lg 이상).
+          폭이 모자라면 오른쪽 여백(패널 폭) 때문에 페이지가 가로 스크롤된다. */}
+      <div className={showGlossary ? "lg:mr-[32rem] lg:w-[min(1360px,100vw)]" : ""}>
       {pipelineWarnings.length > 0 && (
         <div className="mx-auto max-w-[1360px] px-6 pt-4">
           <div className="flex gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning-foreground">
@@ -2208,9 +2232,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           )}
 
           <div
-            className={`fixed right-0 top-16 z-40 h-[calc(100%-4rem)] w-full ${
-              glossarySpellingColumns.length > 2 ? "max-w-xl" : "max-w-sm"
-            } transform border-l border-border bg-card shadow-xl transition-transform duration-200 ${
+            className={`fixed right-0 top-16 z-40 h-[calc(100%-4rem)] w-full max-w-[30rem] transform border-l border-border bg-card shadow-xl transition-transform duration-200 ${
               showGlossary ? "translate-x-0" : "translate-x-full"
             }`}
           >
@@ -2232,7 +2254,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                 {glossaryError}
               </p>
             )}
-            <div className="h-[calc(100%-49px)] overflow-y-auto">
+            <div className="h-[calc(100%-49px)] overflow-auto">
               <GlossaryTable
                 titleId={titleId}
                 entries={glossary}
@@ -2286,18 +2308,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               showSplitBadge={showSplitBadge}
               onDismissSplitBadge={dismissSplitBadge}
             />
-
-            <div data-tour="export-button" className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card p-3 shadow-sm">
-              <button onClick={handleExport} disabled={isExporting} className={primaryBtnClass}>
-                {isExporting && <Spinner />}
-                내보내기
-              </button>
-              {exportStatus.kind === "error" && (
-                <p role="status" aria-live="polite" className="text-sm text-destructive">
-                  {exportStatus.message}
-                </p>
-              )}
-            </div>
           </div>
 
           <div className="space-y-8">
@@ -2462,13 +2472,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                   aria-hidden="true"
                 />
               )}
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-3">
-                  <h2 id="findings-heading" className="text-lg font-semibold text-foreground">
-                    Findings {findings ? `(${displayItems.length})` : ""}
-                  </h2>
-                </div>
-              </div>
+              {/* 화면에는 숨기고 스크린리더용 section 이름(aria-labelledby)으로만 남긴다. */}
+              <h2 id="findings-heading" className="sr-only">
+                Findings {findings ? `(${displayItems.length})` : ""}
+              </h2>
 
               {findings && findings.length > 0 && (
                 <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -2728,6 +2735,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               d="M10 17a.75.75 0 0 1-.75-.75V5.612L5.29 9.573a.75.75 0 1 1-1.08-1.04l5.25-5.5a.75.75 0 0 1 1.08 0l5.25 5.5a.75.75 0 1 1-1.08 1.04l-3.96-4.16V16.25A.75.75 0 0 1 10 17Z"
               clipRule="evenodd"
             />
+      </div>
           </svg>
         </button>
       )}
