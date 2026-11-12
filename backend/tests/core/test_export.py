@@ -278,3 +278,104 @@ def test_unconfirmed_amount_check_skips_excluded_segments_and_empty_terms():
     assert unconfirmed_amount_check(segs, ["100억"]) == []
     assert unconfirmed_amount_check(
         [{"id": "s1", "korean_text": "x", "excluded": False}], []) == []
+
+
+def test_assemble_final_srt_applies_profile_space_before_punct():
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "Pourquoi?"}]
+    assert "Pourquoi ?" in assemble_final_srt(segments, [], {"space_before_punct": "?!:;"})
+    assert "Pourquoi?" in assemble_final_srt(segments, [], {})
+
+
+def test_assemble_final_srt_applies_profile_ligatures():
+    segments = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "Soeur, poème?"}]
+    profile = {"ligature_words": ["sœur"], "space_before_punct": "?!:;"}
+    srt = assemble_final_srt(segments, [], profile)
+    assert "Sœur, poème ?" in srt
+
+
+@pytest.mark.asyncio
+async def test_glossary_consistency_check_reuses_cached_judgment():
+    """같은 줄·같은 용어는 두 번째 검사에서 LLM을 다시 부르지 않고, 바뀐 줄만 묻는다."""
+    from app.core import export as export_mod
+    export_mod._GLOSSARY_JUDGMENT_CACHE.clear()
+    calls = []
+
+    class _CountingProvider(MockProvider):
+        async def check_glossary_reflection(self, items, profile):
+            calls.append([i["id"] for i in items])
+            return await super().check_glossary_reflection(items, profile)
+
+    seg = {"id": "p1", "start": 0.0, "end": 2.0, "text": "Oye, Gang-ok.", "korean_text": "야, 강오크."}
+    first = await glossary_consistency_check([seg], [], _GLOSSARY_ENTRIES, _CountingProvider(), {})
+    second = await glossary_consistency_check([seg], [], _GLOSSARY_ENTRIES, _CountingProvider(), {})
+    assert len(calls) == 1 and len(first) == len(second) == 1
+    changed = {**seg, "text": "Oye, Gang-Ok."}
+    await glossary_consistency_check([changed], [], _GLOSSARY_ENTRIES, _CountingProvider(), {})
+    assert len(calls) == 2
+
+
+def test_glossary_candidates_skip_term_contained_in_longer_registered_term():
+    from app.core.export import _find_glossary_candidates
+    entries = [{"entry_id": "e1", "korean_term": "신화 그룹", "canonical": "Shinhwa Group"},
+               {"entry_id": "e2", "korean_term": "신화", "canonical": "Shinhwa"}]
+    seg = {"id": "p1", "start": 0.0, "end": 2.0, "text": "Sabordez-vous !", "korean_text": "신화 그룹 자폭하라!"}
+    found = _find_glossary_candidates([seg], [], entries)
+    assert [c["korean_term"] for c in found] == ["신화 그룹"]
+    # 짧은 용어가 긴 용어 밖에서도 따로 나오면 그 자리는 계속 검사한다.
+    seg2 = {**seg, "korean_text": "신화 그룹, 신화!"}
+    assert {c["korean_term"] for c in _find_glossary_candidates([seg2], [], entries)} == {"신화 그룹", "신화"}
+
+
+def test_applied_glossary_fix_wins_over_reviewer_finding_and_undo_restores():
+    from datetime import datetime, timezone
+    seg = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "original"}]
+    reviewed = {"segment_id": "p1", "status": "modified", "final_text": "reviewer text",
+                "reviewed_at": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+    fix = {"segment_id": "p1", "status": "approved", "final_text": "fixed text",
+           "reviewed_at": None, "_fix": True}
+    assert "fixed text" in assemble_final_srt(seg, [reviewed, fix])
+    assert "reviewer text" in assemble_final_srt(seg, [reviewed])  # fix를 지우면(되돌리기) 검수 결과로 돌아간다
+
+
+# ---- 반복 대사 일관성 ----
+def _seg(i, ko, text, **kw):
+    return {"id": i, "start": ord(i) * 20.0, "end": 1.0, "text": text, "korean_text": ko, "excluded": False} | kw
+
+
+def test_repeated_line_mismatch_lists_group_with_differing_finals():
+    from app.core.export import repeated_line_mismatches
+    segs = [_seg("a", "（일봉）아빠는 팔 안 아파", "Papa n'a pas mal au bras"),
+            _seg("b", "전혀 다른 대사가 여기에 있다", "Autre"),
+            _seg("c", "아빠는 팔 안 아파!", "Papa n'a pas mal aux bras.")]
+    groups = repeated_line_mismatches(segs, [])
+    assert len(groups) == 1
+    assert [m["segment_id"] for m in groups[0]["members"]] == ["a", "c"]
+    assert groups[0]["members"][0]["text"] == "Papa n'a pas mal au bras"
+
+
+def test_repeated_line_same_text_ignoring_case_and_punctuation_is_not_listed():
+    from app.core.export import repeated_line_mismatches
+    segs = [_seg("a", "아빠는 팔 안 아파", "Papa n'a pas mal !"), _seg("c", "아빠는 팔 안 아파", "papa n'a pas mal")]
+    assert repeated_line_mismatches(segs, []) == []
+
+
+def test_repeated_line_uses_reviewer_final_text():
+    from app.core.export import repeated_line_mismatches
+    segs = [_seg("a", "아빠는 팔 안 아파", "Papa a mal"), _seg("c", "아빠는 팔 안 아파", "Papa n'a pas mal")]
+    findings = [{"segment_id": "a", "status": "approved", "final_text": "Papa n'a pas mal", "reviewed_at": 1}]
+    assert repeated_line_mismatches(segs, findings) == []
+
+
+def test_repeated_line_ignores_excluded_and_empty_targets():
+    from app.core.export import repeated_line_mismatches
+    segs = [_seg("a", "아빠는 팔 안 아파", "Papa a mal", excluded=True), _seg("c", "아빠는 팔 안 아파", "Papa n'a pas mal"),
+            _seg("d", "아빠는 팔 안 아파", "")]
+    assert repeated_line_mismatches(segs, []) == []
+
+
+def test_repeated_line_within_10_seconds_is_not_listed():
+    from app.core.export import repeated_line_mismatches
+    segs = [_seg("a", "아빠는 팔 안 아파", "Papa a mal", start=100.0), _seg("c", "아빠는 팔 안 아파", "Papa n'a pas mal", start=109.0)]
+    assert repeated_line_mismatches(segs, []) == []
+    segs[1]["start"] = 110.0
+    assert len(repeated_line_mismatches(segs, [])) == 1

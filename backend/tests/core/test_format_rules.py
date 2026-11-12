@@ -232,3 +232,36 @@ def test_avoid_forbidden_gives_up_when_only_bad_breaks_fit():
     flat = _EN_43.replace("\n", " ")
     assert "your\nresume" in rewrap_line(flat, rules=_EN_RULES)   # 기존 동작: 어색해도 맞춘다
     assert rewrap_line(flat, rules=_EN_RULES, avoid_forbidden=True) is None
+
+
+def test_fix_space_before_punct_adds_missing_space_only():
+    from app.core.format_rules import fix_space_before_punct
+    f = lambda t: fix_space_before_punct(t, "?!:;")
+    assert f("Pourquoi?") == "Pourquoi ?"
+    assert f("J'ai pas envie!") == "J'ai pas envie !"
+    assert f("Déjà ?") == "Déjà ?"  # 이미 공백이 있으면 그대로
+    assert f("Quoi?!") == "Quoi ?!"  # 연속 부호는 앞에만
+    assert f("Vraiment...?") == "Vraiment...?"  # 말줄임표 뒤는 그대로
+    assert f('Il dit "Quoi?"') == 'Il dit "Quoi ?"'
+    assert f("Il est 10:30") == "Il est 10:30"
+    assert f("http://a.fr &amp; b") == "http://a.fr &amp; b"
+    assert f("Il dit:\nviens") == "Il dit :\nviens"
+    assert fix_space_before_punct("Pourquoi?", "") == "Pourquoi?"
+
+
+def test_fix_ligatures_only_listed_words_and_keeps_case():
+    from app.core.format_rules import fix_ligatures
+    words = ["sœur", "sœurs", "cœur", "œuf", "œufs", "œuvre", "manœuvre", "œil"]
+    f = lambda t: fix_ligatures(t, words)
+    assert f("Ma soeur et mon coeur") == "Ma sœur et mon cœur"
+    assert f("Soeur,") == "Sœur,"
+    assert f("SOEUR !") == "SŒUR !"
+    assert f("Oeuf, oeufs") == "Œuf, œufs"
+    assert f("chef-d'oeuvre") == "chef-d'œuvre"  # 목록 단어 "œuvre"가 합성어 조각으로 걸림
+    assert f("la manoeuvre") == "la manœuvre"  # 더 긴 단어가 "oeuvre"보다 먼저 걸린다
+    assert f("<i>l'oeil</i>") == "<i>l'œil</i>"
+    # 목록에 없거나 다른 단어의 일부면 그대로
+    assert f("poème moelle coexister Joe Zoe coefficient") == "poème moelle coexister Joe Zoe coefficient"
+    assert f("desoeuvre") == "desoeuvre"
+    assert f("sœur") == "sœur"
+    assert fix_ligatures("soeur", None) == "soeur"

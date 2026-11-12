@@ -203,3 +203,18 @@ class GlossarySuppression(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
     korean_term: Mapped[str] = mapped_column(String)
+
+
+class GlossaryFix(Base):
+    """내보내기 창에서 용어집 경고를 "적용"한 기록 — 세그먼트당 한 줄. after_text가 등록 표기로 바꾼
+    최종 문구이고, 지우면 되돌려진다(export는 이 문구를 다른 최종 텍스트보다 우선한다)."""
+    __tablename__ = "glossary_fixes"
+    __table_args__ = (UniqueConstraint("target_version_id", "segment_id", "kind", "korean_term"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    target_version_id: Mapped[str] = mapped_column(ForeignKey("target_versions.id"))
+    segment_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)  # "applied"(용어집) | "repeated"(반복 대사)
+    korean_term: Mapped[str] = mapped_column(String, default="")
+    before_text: Mapped[str] = mapped_column(String, default="")
+    after_text: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

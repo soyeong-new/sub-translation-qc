@@ -10,6 +10,10 @@ import {
   rejectFindingPair,
   exportTargetVersion,
   reassembleExport,
+  applyGlossaryFixes,
+  undoGlossaryFix,
+  applyRepeatedFixes,
+  undoRepeatedFix,
   confirmExport,
   listSegments,
   getTargetVersion,
@@ -61,6 +65,18 @@ function parseSrtTimestamp(text) {
   return Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000;
 }
 
+// 같은 용어(korean_term)에 걸린 용어집 경고를 카드 하나로 묶는다 — "잔디"가 줄마다 다른 표기로 쓰인 경우
+// 그 줄들을 한 카드에서 같이 보고 한 번에 고친다.
+function groupGlossaryWarnings(warnings) {
+  const byTerm = new Map();
+  for (const w of warnings) {
+    const key = w.korean_term || w.segment_id;
+    if (!byTerm.has(key)) byTerm.set(key, []);
+    byTerm.get(key).push(w);
+  }
+  return [...byTerm.values()];
+}
+
 // glossary_mismatch 경고의 matched_text(등록 표기 대신 실제로 쓰인 표기)를
 // 번역문 안에서 찾아 하이라이트한다 — 못 찾으면(빈 문자열, 또는 LLM 실패로
 // matched_text가 없는 경우) 그냥 원문 그대로 보여준다. 검수자가 대상언어를
@@ -90,6 +106,7 @@ const CATEGORY_LABELS = {
   sensitivity: "민감어",
   formatting: "포맷팅",
   glossary: "표기 통일",
+  consistency: "앞 회차와 다름",
 };
 
 const CATEGORY_BADGE_CLASS = {
@@ -1412,6 +1429,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // "반영하기"(재조립)는 용어집 검사에 LLM을 쓸 수 있어 몇 초~수십 초 걸린다 — 진행 중에는 버튼을
   // 잠가 중복 호출을 막고, 실패하면 이유를 팝업에 보여준다(안 보이면 눌러도 반응 없는 것처럼 보인다).
   const [reassembling, setReassembling] = useState(false);
+  const [glossaryBusy, setGlossaryBusy] = useState(false);
+  const [exportTab, setExportTab] = useState(null); // 내보내기 창에서 보고 있는 탭(없는 탭이면 첫 탭)
+  const [repeatedPick, setRepeatedPick] = useState({}); // 반복 대사 카드에서 고른 기준 줄(카드 첫 줄 id → segment_id)
+  const [rowSkipped, setRowSkipped] = useState({}); // 용어 카드에서 체크를 끈 줄("segment_id|용어")
   const [reassembleError, setReassembleError] = useState(null);
   const [pipelineWarnings, setPipelineWarnings] = useState([]);
   const [videoProxyUrl, setVideoProxyUrl] = useState(null);
@@ -1420,6 +1441,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   const [titleName, setTitleName] = useState(null);
   const [episodeNo, setEpisodeNo] = useState(null);
   const [versionDisplayName, setVersionDisplayName] = useState(null);
+  const [targetColumnKey, setTargetColumnKey] = useState(null);
   // 추가/변경 중인 용어를 보면서 작업할 수 있게 검수 화면에서도 용어집을
   // 참고할 수 있게 한다 — 무거운 GET /titles 전체 대신 이 작품 것만 조회.
   const [glossary, setGlossary] = useState(null);
@@ -1430,7 +1452,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 빼서 영상 파일 자체의 시계로 변환해야 한다.
   const [videoOffsetSeconds, setVideoOffsetSeconds] = useState(0);
   const [previewSegment, setPreviewSegment] = useState(null);
-  const [targetColumnKey, setTargetColumnKey] = useState(null);
   const previewVideoRef = useRef(null);
   // 같은 finding 카드를 다시 눌러도(id가 안 바뀌어도) 구간 처음으로 다시
   // 이동해 재생하도록 누를 때마다 값을 바꿔 아래 미리보기 이펙트를 강제로
@@ -1562,6 +1583,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           setTitleName(data.title_name ?? null);
           setEpisodeNo(data.episode_no ?? null);
           setVersionDisplayName(data.display_name ?? null);
+          setTargetColumnKey(data.target_language ? `${data.target_language}_${data.variant}` : null);
         }
       })
       .catch(() => {
@@ -1572,7 +1594,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     };
   }, [targetVersionId]);
 
-          setTargetColumnKey(data.target_language ? `${data.target_language}_${data.variant}` : null);
   function refreshGlossary() {
     if (!titleId) return;
     getTitleGlossary(titleId)
@@ -1985,6 +2006,22 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     (exportStatus.checkedFindings !== findings || exportStatus.checkedSegments !== segments ||
       exportStatus.checkedGlossary !== glossarySignature);
 
+  // 용어집 경고 처리(적용·되돌리기·그대로 둠) — 서버에 기록한 뒤 검사를 다시 받아 카드를 갱신한다
+  // (LLM 판정은 서버 캐시라 바뀐 줄만 다시 묻는다).
+  async function runGlossaryAction(action) {
+    if (glossaryBusy) return;
+    setGlossaryBusy(true);
+    setReassembleError(null);
+    try {
+      await action();
+      await handleReassemble();
+    } catch (err) {
+      setReassembleError(err.message ?? "처리하지 못했습니다.");
+    } finally {
+      setGlossaryBusy(false);
+    }
+  }
+
   // SRT를 최신 findings/segments/용어집으로 다시 조립하고, 전체 세그먼트에 대한
   // 용어집/포맷 검사도 다시 돌려 경고 목록을 새로 받는다(LLM 호출 포함).
   async function handleReassemble() {
@@ -2122,16 +2159,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
             )}
           </div>
 
-          {totalFindingsCount > 0 && (
-            <>
-              <div className="h-6 w-px shrink-0 bg-border" />
-              <div className="flex shrink-0 items-center gap-2">
-                <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary"
-                    style={{ width: `${Math.round((processedFindingsCount / totalFindingsCount) * 100)}%` }}
-                  />
-                </div>
           <div className="h-6 w-px shrink-0 bg-border" />
 
           <div data-tour="reviewer-name" className="flex shrink-0 items-center gap-2">
@@ -2147,6 +2174,16 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
             />
           </div>
 
+          {totalFindingsCount > 0 && (
+            <>
+              <div className="h-6 w-px shrink-0 bg-border" />
+              <div className="flex shrink-0 items-center gap-2">
+                <div className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary"
+                    style={{ width: `${Math.round((processedFindingsCount / totalFindingsCount) * 100)}%` }}
+                  />
+                </div>
                 <span className="whitespace-nowrap text-xs text-muted-foreground">
                   {processedFindingsCount}/{totalFindingsCount} 처리됨
                 </span>
@@ -2174,6 +2211,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         </div>
       </header>
 
+      {/* 용어집이 열리면 경고 배너·본문 전체를 크기 그대로 왼쪽으로만 민다(lg 이상).
+          폭이 모자라면 오른쪽 여백(패널 폭) 때문에 페이지가 가로 스크롤된다. */}
+      <div className={showGlossary ? "lg:mr-[32rem] lg:w-[min(1360px,100vw)]" : ""}>
       <div className="px-6 pt-1.5">
         <button
           type="button"
@@ -2184,9 +2224,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         </button>
       </div>
 
-      {/* 용어집이 열리면 경고 배너·본문 전체를 크기 그대로 왼쪽으로만 민다(lg 이상).
-          폭이 모자라면 오른쪽 여백(패널 폭) 때문에 페이지가 가로 스크롤된다. */}
-      <div className={showGlossary ? "lg:mr-[32rem] lg:w-[min(1360px,100vw)]" : ""}>
       {pipelineWarnings.length > 0 && (
         <div className="mx-auto max-w-[1360px] px-6 pt-4">
           <div className="flex gap-2.5 rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning-foreground">
@@ -2319,8 +2356,31 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                 카드만 pointer-events-auto라 카드 밖 클릭은 아래 UI로 그대로
                 통과한다. */}
             {exportStatus.kind === "checked" && (() => {
+              // 틀린 표기를 찾아 바로 적용할 수 있는 경고와, 번역문에서 용어가 사라진 경고를 나눈다.
+              const isReplaced = (w) => Boolean(w.matched_text && w.canonical);
+              const glossaryAll = exportStatus.warnings.filter((w) => w.rule === "glossary_mismatch");
+              const glossarySections = [
+                ["다른 표기로 대체됨", glossaryAll.filter(isReplaced)],
+                ["표기 반영 안 됨", glossaryAll.filter((w) => !isReplaced(w))],
+              ].filter(([, items]) => items.length > 0)
+                .map(([label, items]) => [label, items.length, groupGlossaryWarnings(items)]);
+              const appliedFixes = exportStatus.result?.glossary_fixes ?? [];
+              const repeatedGroups = exportStatus.result?.repeated_groups ?? [];
+              const repeatedFixes = exportStatus.result?.repeated_fixes ?? [];
               const formatWarnings = exportStatus.warnings.filter((w) => w.rule !== "glossary_mismatch");
               const glossaryWarnings = exportStatus.warnings.filter((w) => w.rule === "glossary_mismatch");
+              const tabs = [
+                ["format", "포맷", formatWarnings.length],
+                ["glossary", "용어집", glossaryWarnings.length],
+                ["repeated", "반복 대사", repeatedGroups.length],
+                ["applied", "적용 내역", appliedFixes.length + repeatedFixes.length],
+              ].filter(([, , count]) => count > 0);
+              const activeTab = tabs.find(([id]) => id === exportTab)?.[0] ?? tabs[0]?.[0];
+              const RULE_LABELS = { line_length: "줄 길이", ellipsis: "온점", reading_speed: "읽기 속도" };
+              const formatByRule = Object.entries(formatWarnings.reduce((acc, w) => {
+                (acc[w.rule] ??= []).push(w);
+                return acc;
+              }, {}));
               return (
                 <div className="pointer-events-none fixed inset-0 z-40 flex items-center">
                   {/* Findings 컬럼과 가로 위치를 맞추려고 페이지 그리드(mx-auto
@@ -2330,8 +2390,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                   <div className="mx-auto grid w-full max-w-[1360px] grid-cols-1 gap-8 px-6 md:grid-cols-[minmax(280px,38%)_1fr]">
                     <div />
                     <div className="pointer-events-auto flex justify-center">
-                      <div className="max-h-[85vh] w-full max-w-md overflow-y-auto space-y-4 rounded-xl border border-border bg-card p-4 shadow-xl">
+                      <div className="flex max-h-[88vh] w-full max-w-xl flex-col rounded-xl border border-border bg-card shadow-xl">
 
+                      <div className="shrink-0 space-y-3 p-4 pb-0 empty:hidden">
                       {exportOutOfDate && (
                         <div className="flex items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                           <span>✎ 이후 수정된 내용이 있습니다</span>
@@ -2351,95 +2412,282 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                           반영하지 못했습니다: {reassembleError}
                         </p>
                       )}
+                      {tabs.length > 1 && (
+                        <div className="flex flex-wrap gap-1 rounded-lg bg-muted p-1 text-xs" role="tablist">
+                          {tabs.map(([id, label, count]) => (
+                            <button
+                              key={id}
+                              type="button"
+                              role="tab"
+                              aria-selected={id === activeTab}
+                              onClick={() => setExportTab(id)}
+                              className={`rounded-md px-3 py-1.5 font-medium transition-colors ${
+                                id === activeTab ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                              }`}
+                            >
+                              {label} {count}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      </div>
 
-                      {formatWarnings.length > 0 && (
-                        <div className="space-y-1">
+                      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+                      {tabs.length === 0 && (
+                        <p className="text-sm text-muted-foreground">확인할 경고가 없습니다.</p>
+                      )}
+
+                      {activeTab === "format" && (
+                        <div className="space-y-2">
                           <p className="text-sm font-medium text-foreground">
                             포맷 경고 {formatWarnings.length}건이 있습니다
                           </p>
-                          <ul className="space-y-1 text-xs text-muted-foreground">
-                            {formatWarnings.map((w, i) => {
-                              const seg = segments?.find((s) => s.id === w.segment_id);
-                              const where = seg ? ` (${formatSrtTimestamp(seg.start)})` : "";
-                              if (!seg) {
-                                return (
-                                  <li key={i}>
-                                    - [{w.rule}]{where} {w.detail}
-                                  </li>
-                                );
-                              }
-                              return (
-                                <li key={i}>
-                                  <button
-                                    type="button"
-                                    onClick={() => previewSegmentInSrtOnly(seg)}
-                                    className="text-left underline decoration-dotted hover:text-foreground"
-                                  >
-                                    - [{w.rule}]{where} {w.detail}
-                                  </button>
-                                </li>
-                              );
-                            })}
-                          </ul>
+                          {formatByRule.map(([rule, items]) => (
+                            <details key={rule} open={formatByRule.length === 1} className="rounded-lg border border-border">
+                              <summary className="cursor-pointer px-2 py-1.5 text-xs font-medium text-foreground">
+                                {RULE_LABELS[rule] ?? rule} {items.length}건
+                              </summary>
+                              <ul className="space-y-1 px-2 pb-2 text-xs text-muted-foreground">
+                                {items.map((w, i) => {
+                                  const seg = segments?.find((x) => x.id === w.segment_id);
+                                  const where = seg ? ` (${formatSrtTimestamp(seg.start)})` : "";
+                                  return (
+                                    <li key={i}>
+                                      {seg ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => previewSegmentInSrtOnly(seg)}
+                                          className="text-left underline decoration-dotted hover:text-foreground"
+                                        >
+                                          -{where} {w.detail}
+                                        </button>
+                                      ) : (
+                                        <>-{where} {w.detail}</>
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </details>
+                          ))}
                         </div>
                       )}
 
-                      {glossaryWarnings.length > 0 && (
-                        <div className={`space-y-2 ${formatWarnings.length > 0 ? "border-t border-border pt-3" : ""}`}>
+                      {activeTab === "glossary" && (
+                        <div className="space-y-2">
                           <p className="text-sm font-medium text-foreground">
                             용어집 표기 경고 {glossaryWarnings.length}건이 있습니다
                           </p>
+                          {glossarySections.map(([sectionLabel, sectionCount, sectionGroups]) => (
+                          <div key={sectionLabel} className="space-y-2">
+                          <p className="text-xs font-semibold text-muted-foreground">
+                            {sectionLabel} {sectionCount}건
+                          </p>
                           <ul className="space-y-2">
-                            {glossaryWarnings.map((w, i) => {
-                              const seg = segments?.find((s) => s.id === w.segment_id);
-                              const where = seg ? formatSrtTimestamp(seg.start) : "";
-                              const hasMatch = Boolean(w.matched_text);
-                              const finalText = seg
-                                ? resolvedTargetTextBySegment[seg.id] ?? seg.target_text ?? ""
-                                : "";
+                            {sectionGroups.map((group) => {
+                              const term = group[0].korean_term;
+                              const canonical = group[0].canonical;
+                              const rowKey = (g) => `${g.segment_id}|${g.korean_term}`;
+                              const applicable = group.filter((g) => g.matched_text && g.canonical);
+                              const selected = applicable.filter((g) => !rowSkipped[rowKey(g)]);
                               return (
-                                <li
-                                  key={i}
-                                  className={`rounded-lg border p-2 text-xs ${
-                                    hasMatch ? "border-amber-200 bg-amber-50" : "border-dashed border-border bg-muted/40"
-                                  }`}
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => seg && previewSegmentInSrtOnly(seg)}
-                                    disabled={!seg}
-                                    className="flex flex-wrap items-center gap-2 text-left disabled:cursor-default"
-                                  >
-                                    <span
-                                      className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${
-                                        hasMatch
-                                          ? "bg-amber-200 text-amber-900"
-                                          : "bg-muted text-muted-foreground"
-                                      }`}
+                                <li key={term} className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="font-medium text-foreground">
+                                      <span className="mr-1.5 rounded bg-amber-200 px-1.5 py-0.5 text-amber-900">
+                                        {group.length}줄
+                                      </span>
+                                      ‘{term}’ → 등록 표기 ‘{canonical}’
+                                    </p>
+                                    {applicable.length > 0 && (
+                                    <button
+                                      type="button"
+                                      disabled={glossaryBusy || selected.length === 0}
+                                      onClick={() => runGlossaryAction(() => applyGlossaryFixes(
+                                        targetVersionId,
+                                        selected.map((g) => ({
+                                          segment_id: g.segment_id,
+                                          replacements: [{ from_text: g.matched_text, to_text: g.canonical }],
+                                        }))))}
+                                      className={`${approveBtnClass} px-2 py-0.5 text-xs`}
                                     >
-                                      {hasMatch ? "다른 표기로 대체됨" : w.text_gloss ? "표기 반영 안 됨" : "확인 불가"}
-                                    </span>
-                                    {where && <span className="text-muted-foreground">{where}</span>}
-                                    <span className="text-foreground/80">{w.detail}</span>
-                                  </button>
-                                  {seg && (
-                                    <p className="mt-1 pl-0.5 text-foreground/70">원문: {seg.korean_text}</p>
-                                  )}
-                                  {hasMatch ? (
-                                    <p className="pl-0.5 text-foreground/70">
-                                      번역: {highlightMatch(finalText, w.matched_text, w.matched_meaning)}
+                                      {glossaryBusy && <Spinner />}
+                                      적용
+                                    </button>
+                                    )}
+                                  </div>
+                                  <ul className="space-y-1.5">
+                                    {group.map((g) => {
+                                      const seg = segments?.find((s) => s.id === g.segment_id);
+                                      const canApply = Boolean(g.matched_text && g.canonical);
+                                      const text = g.original_text
+                                        || (seg ? resolvedTargetTextBySegment[seg.id] ?? seg.target_text ?? "" : "");
+                                      return (
+                                        <li key={rowKey(g)} className="rounded border border-amber-200/70 bg-card p-1.5">
+                                          <div className="flex items-start gap-2">
+                                            {canApply ? (
+                                              <input
+                                                type="checkbox"
+                                                aria-label="이 줄에 적용"
+                                                checked={!rowSkipped[rowKey(g)]}
+                                                onChange={() => setRowSkipped((prev) => ({ ...prev, [rowKey(g)]: !prev[rowKey(g)] }))}
+                                                className="mt-1"
+                                              />
+                                            ) : <span className="w-4 shrink-0" />}
+                                            <div className="min-w-0 flex-1">
+                                              <button
+                                                type="button"
+                                                onClick={() => seg && previewSegmentInSrtOnly(seg)}
+                                                disabled={!seg}
+                                                className="flex flex-wrap items-center gap-2 text-left disabled:cursor-default"
+                                              >
+                                                <span
+                                                  className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${
+                                                    canApply ? "bg-amber-200 text-amber-900" : "bg-muted text-muted-foreground"
+                                                  }`}
+                                                >
+                                                  {canApply ? "다른 표기로 대체됨" : g.text_gloss ? "표기 반영 안 됨" : "확인 불가"}
+                                                </span>
+                                                {seg && <span className="text-muted-foreground">{formatSrtTimestamp(seg.start)}</span>}
+                                              </button>
+                                              <div className="mt-1.5 space-y-1 text-[13px] leading-relaxed">
+                                                {/* 카드가 뜬 이유를 맨 위에 — 그다음 원문, 번역, 요약 순서 */}
+                                                {canApply ? (
+                                                  <p className="font-medium text-foreground">
+                                                    <span className="text-muted-foreground line-through">{g.matched_text}</span>
+                                                    {" → "}
+                                                    <span className="font-semibold">{g.canonical}</span>
+                                                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                                                      ‘{g.korean_term}’ 등록 표기로 바꿈
+                                                    </span>
+                                                  </p>
+                                                ) : (
+                                                  <p className="font-medium text-foreground">{g.detail}</p>
+                                                )}
+                                                {seg && (
+                                                  <p className="flex gap-2">
+                                                    <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground">원문</span>
+                                                    <span className="text-foreground">{highlightMatch(seg.korean_text, g.korean_term)}</span>
+                                                  </p>
+                                                )}
+                                                {text && (
+                                                  <p className="flex gap-2">
+                                                    <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground">번역</span>
+                                                    <span className="text-foreground">
+                                                      {canApply ? highlightMatch(text, g.matched_text, g.matched_meaning) : text}
+                                                    </span>
+                                                  </p>
+                                                )}
+                                                {!canApply && (g.text_gloss ? (
+                                                  <p className="flex gap-2">
+                                                    <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground">요약</span>
+                                                    <span className="text-foreground">{g.text_gloss}</span>
+                                                  </p>
+                                                ) : (
+                                                  <p className="italic text-muted-foreground">
+                                                    번역문에서 대응 표현을 찾지 못했습니다 — 원문 맥락으로 필요성을 가늠하거나
+                                                    대상언어 가능자에게 확인을 요청하세요.
+                                                  </p>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                          </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {activeTab === "repeated" && (
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-foreground">
+                            같은 대사인데 번역이 다른 줄 {repeatedGroups.length}묶음이 있습니다
+                          </p>
+                          <ul className="space-y-2">
+                            {repeatedGroups.map((group) => {
+                              const groupKey = group.members[0].segment_id;
+                              const baseId = repeatedPick[groupKey] ?? groupKey;
+                              const base = group.members.find((m) => m.segment_id === baseId) ?? group.members[0];
+                              const rowKey = (m) => `rep|${m.segment_id}`;
+                              const targets = group.members.filter((m) => m !== base && !rowSkipped[rowKey(m)]);
+                              return (
+                                <li key={groupKey} className="space-y-2 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="font-medium text-foreground">
+                                      <span className="mr-1.5 rounded bg-sky-200 px-1.5 py-0.5 text-sky-900">
+                                        {group.members.length}줄
+                                      </span>
+                                      ‘{group.korean_text}’ — 기준 번역에 맞추기
                                     </p>
-                                  ) : w.text_gloss ? (
-                                    <p className="pl-0.5 text-foreground/70">
-                                      번역 요약: {w.text_gloss}
-                                    </p>
-                                  ) : (
-                                    <p className="pl-0.5 italic text-muted-foreground">
-                                      번역문에서 대응 표현을 찾지 못했습니다 — 대상언어를 모르면 이 화면만으로는
-                                      판단이 어려우니, 원문 맥락으로 필요성을 가늠하거나 대상언어 가능자에게
-                                      확인을 요청하세요.
-                                    </p>
-                                  )}
+                                    <button
+                                      type="button"
+                                      disabled={glossaryBusy || targets.length === 0}
+                                      onClick={() => runGlossaryAction(() => applyRepeatedFixes(
+                                        targetVersionId,
+                                        targets.map((m) => ({ segment_id: m.segment_id, new_text: base.text }))))}
+                                      className={`${approveBtnClass} px-2 py-0.5 text-xs`}
+                                    >
+                                      {glossaryBusy && <Spinner />}
+                                      적용
+                                    </button>
+                                  </div>
+                                  <ul className="space-y-1.5">
+                                    {group.members.map((m) => {
+                                      const seg = segments?.find((s) => s.id === m.segment_id);
+                                      const isBase = m === base;
+                                      return (
+                                        <li key={m.segment_id} className="rounded border border-sky-200/70 bg-card p-1.5">
+                                          <div className="flex items-start gap-2">
+                                            {isBase ? <span className="w-4 shrink-0" /> : (
+                                              <input
+                                                type="checkbox"
+                                                aria-label="이 줄에 적용"
+                                                checked={!rowSkipped[rowKey(m)]}
+                                                onChange={() => setRowSkipped((prev) => ({ ...prev, [rowKey(m)]: !prev[rowKey(m)] }))}
+                                                className="mt-1"
+                                              />
+                                            )}
+                                            <div className="min-w-0 flex-1 space-y-1 text-[13px] leading-relaxed">
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => seg && previewSegmentInSrtOnly(seg)}
+                                                  disabled={!seg}
+                                                  className="text-muted-foreground disabled:cursor-default"
+                                                >
+                                                  {formatSrtTimestamp(m.start)}
+                                                </button>
+                                                <label className="flex cursor-pointer items-center gap-1 text-muted-foreground">
+                                                  <input
+                                                    type="radio"
+                                                    name={`rep-base-${groupKey}`}
+                                                    checked={isBase}
+                                                    onChange={() => setRepeatedPick((prev) => ({ ...prev, [groupKey]: m.segment_id }))}
+                                                  />
+                                                  기준
+                                                </label>
+                                              </div>
+                                              <p className="flex gap-2">
+                                                <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground">원문</span>
+                                                <span className="text-foreground">{m.korean_text}</span>
+                                              </p>
+                                              <p className="flex gap-2">
+                                                <span className="w-9 shrink-0 text-xs font-medium text-muted-foreground">번역</span>
+                                                <span className="text-foreground">{m.text}</span>
+                                              </p>
+                                            </div>
+                                          </div>
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
                                 </li>
                               );
                             })}
@@ -2447,7 +2695,69 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                         </div>
                       )}
 
-                      <div className="flex gap-2">
+                      {activeTab === "applied" && repeatedFixes.length > 0 && (
+                        <div className="space-y-2 text-xs">
+                          <p className="text-sm font-medium text-foreground">
+                            적용한 반복 대사 수정 {repeatedFixes.length}건
+                          </p>
+                          <ul className="space-y-1">
+                            {repeatedFixes.map((fx) => {
+                              const seg = segments?.find((s) => s.id === fx.segment_id);
+                              return (
+                                <li key={fx.segment_id} className="rounded border border-border bg-muted/40 p-1.5">
+                                  {seg && <span className="text-muted-foreground">{formatSrtTimestamp(seg.start)}</span>}
+                                  <span className="block text-muted-foreground line-through">{fx.before_text}</span>
+                                  <span className="block text-foreground">{fx.after_text}</span>
+                                  <button
+                                    type="button"
+                                    disabled={glossaryBusy}
+                                    onClick={() => runGlossaryAction(() => undoRepeatedFix(targetVersionId, fx.segment_id))}
+                                    className={`${ghostBtnClass} mt-1 px-2 py-1`}
+                                  >
+                                    되돌리기
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      )}
+
+                      {activeTab === "applied" && appliedFixes.length > 0 && (
+                        <div className="space-y-2 text-xs">
+                          {appliedFixes.length > 0 && (
+                            <>
+                              <p className="text-sm font-medium text-foreground">
+                                적용한 용어집 수정 {appliedFixes.length}건
+                              </p>
+                              <ul className="space-y-1">
+                                {appliedFixes.map((fx) => {
+                                  const seg = segments?.find((s) => s.id === fx.segment_id);
+                                  return (
+                                    <li key={fx.segment_id} className="rounded border border-border bg-muted/40 p-1.5">
+                                      {seg && <span className="text-muted-foreground">{formatSrtTimestamp(seg.start)}</span>}
+                                      <span className="block text-muted-foreground line-through">{fx.before_text}</span>
+                                      <span className="block text-foreground">{fx.after_text}</span>
+                                      <button
+                                        type="button"
+                                        disabled={glossaryBusy}
+                                        onClick={() => runGlossaryAction(() => undoGlossaryFix(targetVersionId, fx.segment_id))}
+                                        className={`${ghostBtnClass} mt-1 px-2 py-1`}
+                                      >
+                                        되돌리기
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      </div>
+
+                      <div className="flex shrink-0 gap-2 border-t border-border p-3">
                         <button onClick={handleConfirmDownload} className={primaryBtnClass}>
                           다운로드
                         </button>
@@ -2721,6 +3031,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
           </div>
         </div>
       </main>
+      </div>
 
       {showScrollTop && (
         <button
@@ -2735,7 +3046,6 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               d="M10 17a.75.75 0 0 1-.75-.75V5.612L5.29 9.573a.75.75 0 1 1-1.08-1.04l5.25-5.5a.75.75 0 0 1 1.08 0l5.25 5.5a.75.75 0 1 1-1.08 1.04l-3.96-4.16V16.25A.75.75 0 0 1 10 17Z"
               clipRule="evenodd"
             />
-      </div>
           </svg>
         </button>
       )}

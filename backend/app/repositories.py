@@ -7,9 +7,11 @@ from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     FindingRow, Segment, SttCorrection, CharacterGenderFact, TargetVersion,
-    GlossaryEntry, GlossarySpelling, GlossarySuppression,
+    GlossaryEntry, GlossarySpelling, GlossarySuppression, Episode, GlossaryFix,
 )
 from app.core.cue_split import split_cue
+from app.core.export import resolved_text_by_segment
+from app.core.repeated_lines import match_references
 from app.core.format_rules import violates_line_length
 from app.schemas import Finding
 
@@ -628,4 +630,75 @@ async def auto_split_overlong_segments(session: AsyncSession, target_version_id:
         if new_seg is not None:
             count += 1
             work += [(seg, depth + 1), (new_seg, depth + 1)]
+    return count
+
+
+def _clock(seconds: float) -> str:
+    h, rest = divmod(int(seconds), 3600)
+    m, sec = divmod(rest, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
+
+
+async def _final_lines_of(session: AsyncSession, target_version_id: str) -> List[dict]:
+    """한 번역판의 줄별 최종 번역(검수 결과·적용한 수정 반영). 제외된 줄과 빈 번역은 뺀다."""
+    segs = (await session.execute(
+        select(Segment).where(Segment.target_version_id == target_version_id).order_by(Segment.start)
+    )).scalars().all()
+    findings = [
+        {"segment_id": f.segment_id, "status": f.status, "final_text": f.final_text, "reviewed_at": f.reviewed_at}
+        for f in (await session.execute(
+            select(FindingRow).where(FindingRow.target_version_id == target_version_id))).scalars().all()
+    ] + [
+        {"segment_id": fx.segment_id, "status": "approved", "final_text": fx.after_text, "reviewed_at": None, "_fix": True}
+        for fx in (await session.execute(
+            select(GlossaryFix).where(GlossaryFix.target_version_id == target_version_id)
+            .order_by(GlossaryFix.created_at))).scalars().all()
+    ]
+    resolved = resolved_text_by_segment(
+        [{"id": s.id, "text": s.target_text} for s in segs], findings)
+    return [{"id": s.id, "start": s.start, "korean": s.korean_text, "text": resolved[s.id]}
+            for s in segs if not s.excluded and resolved[s.id].strip()]
+
+
+async def add_cross_episode_findings(session: AsyncSession, target_version_id: str) -> int:
+    """같은 작품·같은 언어의 앞 회차에 한국어 원문이 같거나 비슷한 줄이 있는데 번역이 다르면
+    "앞 회차 번역으로 맞추기" finding(category "consistency")을 만든다. 만든 개수를 돌려준다."""
+    tv = await session.get(TargetVersion, target_version_id)
+    episode = await session.get(Episode, tv.episode_id)
+    if episode.episode_no is None:
+        return 0
+    prior = (await session.execute(
+        select(TargetVersion.id, Episode.episode_no)
+        .join(Episode, Episode.id == TargetVersion.episode_id)
+        .where(Episode.title_id == episode.title_id, Episode.episode_no.is_not(None),
+               Episode.episode_no < episode.episode_no,
+               TargetVersion.target_language == tv.target_language, TargetVersion.variant == tv.variant)
+        .order_by(Episode.episode_no.desc())
+    )).all()
+    if not prior:
+        return 0
+    references, ref_info = [], {}
+    for prior_tv_id, episode_no in prior:  # 최근 회차가 앞에 와서 같은 줄이면 최근 회차가 기준이 된다
+        for line in await _final_lines_of(session, prior_tv_id):
+            references.append({"id": line["id"], "text": line["korean"]})
+            ref_info[line["id"]] = (episode_no, line)
+    current = [l for l in await _final_lines_of(session, target_version_id)]
+    matches = match_references(
+        [{"id": l["id"], "text": l["korean"]} for l in current], references)
+    squash = lambda t: "".join(ch for ch in t.lower() if ch.isalnum())
+    count = 0
+    for line in current:
+        ref_id = matches.get(line["id"])
+        if ref_id is None:
+            continue
+        episode_no, ref = ref_info[ref_id]
+        if squash(ref["text"]) == squash(line["text"]):
+            continue
+        session.add(FindingRow(
+            id=f"{line['id']}:consistency", target_version_id=target_version_id, segment_id=line["id"],
+            category="consistency",
+            description=f"{episode_no}화 {_clock(ref['start'])}에서 같은 대사를 다르게 번역했습니다. 앞 회차 번역에 맞출지 확인하세요.",
+            original_text=line["text"], suggested_text=ref["text"], confidence=1.0, source="rule"))
+        count += 1
+    await session.flush()
     return count

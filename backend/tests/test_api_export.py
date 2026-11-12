@@ -385,3 +385,103 @@ async def test_export_warns_about_unconfirmed_amount_until_spelling_is_filled(mo
                            json={"spellings": {"es_LATAM": "10 mil millones de wones"}})
         body = (await client.get(f"/target-versions/{tv_id}/export")).json()
         assert not any("아직 비어 있음" in w["detail"] for w in body["format_warnings"])
+
+
+async def _make_glossary_warning_version():
+    async with async_session() as session:
+        title = Title(name="T", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="fr", variant="FR")
+        session.add(tv); await session.flush()
+        session.add(Segment(id="p1", target_version_id=tv.id, index=0, start=0.0, end=2.0,
+                            korean_text="야, 강오크.", target_text="Oye, Gang-ok."))
+        entry = GlossaryEntry(title_id=title.id, korean_term="강오크", category="person", aliases=[])
+        session.add(entry); await session.flush()
+        session.add(GlossarySpelling(entry_id=entry.id, language="fr", variant="FR", canonical="Kang-ok"))
+        await session.commit()
+        return tv.id
+
+
+def _glossary_warnings(body):
+    return [w for w in body["format_warnings"] if w["rule"] == "glossary_mismatch"]
+
+
+@pytest.mark.asyncio
+async def test_glossary_fix_apply_and_undo_flow():
+    tv_id = await _make_glossary_warning_version()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        warning = _glossary_warnings(body)[0]
+        assert (warning["korean_term"], warning["canonical"]) == ("강오크", "Kang-ok")
+        assert "Gang-ok" in body["srt"]
+
+        # 적용 → 최종 SRT가 등록 표기가 되고 경고가 사라진다
+        r = await client.post(f"/target-versions/{tv_id}/glossary-fixes", json={"items": [
+            {"segment_id": "p1", "replacements": [{"from_text": "Gang-ok", "to_text": "Kang-ok"}]}]})
+        assert r.json() == {"applied": 1, "skipped": []}
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        assert "Kang-ok" in body["srt"] and "Gang-ok" not in body["srt"]
+        assert _glossary_warnings(body) == []
+        assert body["glossary_fixes"] == [{"segment_id": "p1", "before_text": "Oye, Gang-ok.",
+                                           "after_text": "Oye, Kang-ok."}]
+        # 바꿀 표기가 이미 없으면 건너뛴다
+        r = await client.post(f"/target-versions/{tv_id}/glossary-fixes", json={"items": [
+            {"segment_id": "p1", "replacements": [{"from_text": "Gang-ok", "to_text": "Kang-ok"}]}]})
+        assert r.json()["skipped"] == ["p1"]
+
+        # 되돌리기 → 원래 문구와 경고가 돌아온다
+        await client.post(f"/target-versions/{tv_id}/glossary-fixes/undo", json={"segment_id": "p1"})
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        assert "Gang-ok" in body["srt"] and body["glossary_fixes"] == []
+        assert len(_glossary_warnings(body)) == 1
+
+
+async def _make_repeated_version():
+    async with async_session() as session:
+        title = Title(name="T", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="fr", variant="FR")
+        session.add(tv); await session.flush()
+        session.add(Segment(id="r1", target_version_id=tv.id, index=0, start=10.0, end=12.0,
+                            korean_text="아빠는 팔 안 아파", target_text="Papa n'a pas mal au bras"))
+        session.add(Segment(id="r2", target_version_id=tv.id, index=1, start=50.0, end=52.0,
+                            korean_text="아빠는 팔 안 아파!", target_text="Papa ne ressent rien"))
+        await session.commit()
+        return tv.id
+
+
+@pytest.mark.asyncio
+async def test_repeated_fix_apply_and_undo_flow():
+    tv_id = await _make_repeated_version()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        assert [m["segment_id"] for m in body["repeated_groups"][0]["members"]] == ["r1", "r2"]
+
+        # r2를 r1의 번역으로 맞춘다 → 묶음이 사라지고 최종 SRT에 반영된다
+        r = await client.post(f"/target-versions/{tv_id}/repeated-fixes", json={"items": [
+            {"segment_id": "r2", "new_text": "Papa n'a pas mal au bras"}]})
+        assert r.json() == {"applied": 1, "skipped": []}
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        assert body["repeated_groups"] == []
+        assert "Papa ne ressent rien" not in body["srt"]
+        assert body["repeated_fixes"] == [{"segment_id": "r2", "before_text": "Papa ne ressent rien",
+                                           "after_text": "Papa n'a pas mal au bras"}]
+        assert body["glossary_fixes"] == []  # 용어집 수정 목록과 섞이지 않는다
+
+        # 이미 같은 문구면 건너뛴다
+        r = await client.post(f"/target-versions/{tv_id}/repeated-fixes", json={"items": [
+            {"segment_id": "r2", "new_text": "Papa n'a pas mal au bras"}]})
+        assert r.json()["skipped"] == ["r2"]
+
+        await client.post(f"/target-versions/{tv_id}/repeated-fixes/undo", json={"segment_id": "r2"})
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        assert "Papa ne ressent rien" in body["srt"] and len(body["repeated_groups"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_reassemble_returns_same_payload_as_export():
+    tv_id = await _make_repeated_version()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        exported = (await client.get(f"/target-versions/{tv_id}/export")).json()
+        r = await client.get(f"/target-versions/{tv_id}/export/reassemble")
+    assert r.status_code == 200 and r.json() == exported

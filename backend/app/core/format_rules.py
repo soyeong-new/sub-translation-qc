@@ -2,6 +2,7 @@
 
 import re
 import textwrap
+from functools import lru_cache
 from typing import List, Optional, Tuple
 from app.schemas import AlignedPair, FormatViolation
 
@@ -237,6 +238,51 @@ def normalize_speaker_dash(text: str) -> str:
 def fix_ellipsis(text: str) -> Tuple[str, bool]:
     fixed = _ELLIPSIS_RE.sub("...", text)
     return fixed, fixed != text
+
+
+def fix_space_before_punct(text: str, chars: str) -> str:
+    """프랑스어처럼 chars(예: "?!:;") 앞에 공백을 두는 언어용 — 공백 없이 붙은
+    부호 앞에 한 칸을 넣는다. 이미 공백이 있거나 "?!" 같은 연속 부호의 둘째
+    이후, 말줄임표 뒤는 그대로 둔다. 시각("10:30")·주소("http://")·HTML
+    엔티티("&amp;")의 부호는 문장부호가 아니라 건드리지 않는다."""
+    if not chars:
+        return text
+    cls = re.escape(chars)
+
+    def _fix(m: "re.Match") -> str:
+        ch, before, after = m.group(1), text[:m.start()], text[m.end():m.end() + 1]
+        if ch == ":" and (after.isdigit() or after == "/"):
+            return ch
+        if ch == ";" and re.search(r"&#?\w+$", before):
+            return ch
+        return " " + ch
+
+    return re.sub(rf"(?<=[^\s{cls}.…])([{cls}])", _fix, text)
+
+
+@lru_cache(maxsize=4)
+def _ligature_pattern(words: Tuple[str, ...]):
+    by_oe = {w.replace("œ", "oe"): w for w in words}
+    alt = "|".join(re.escape(k) for k in sorted(by_oe, key=len, reverse=True))
+    # 앞뒤가 글자면 다른 단어의 일부("manoeuvre" 속 "oeuvre")라 건드리지 않는다.
+    return re.compile(rf"(?<![^\W\d_])(?:{alt})(?![^\W\d_])", re.IGNORECASE), by_oe
+
+
+def fix_ligatures(text: str, words: Optional[list]) -> str:
+    """프랑스어 합자 œ — words(예: "sœur")에 있는 단어를 "oe"로 풀어 쓴 철자(soeur)가
+    나오면 œ로 고친다. 목록에 없는 단어("poème", "coexister")는 oe가 맞으니 그대로 둔다.
+    대소문자는 유지한다(Soeur→Sœur, SOEUR→SŒUR)."""
+    if not words:
+        return text
+    pattern, by_oe = _ligature_pattern(tuple(words))
+
+    def _fix(m: "re.Match") -> str:
+        src, target = m.group(), by_oe[m.group().lower()]
+        if len(src) > 1 and src.isupper():
+            return target.upper()
+        return target[0].upper() + target[1:] if src[0].isupper() else target
+
+    return pattern.sub(_fix, text)
 
 
 def check_ellipsis(pairs: List[AlignedPair]) -> List[FormatViolation]:

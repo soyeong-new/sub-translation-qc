@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 FindingCategory = Literal[
     "mistranslation", "nuance_tone", "unnatural_style", "locale_convention",
-    "sensitivity", "formatting", "glossary", "cta",
+    "sensitivity", "formatting", "glossary", "cta", "consistency",
 ]
 FindingStatus = Literal["pending", "approved", "rejected", "modified"]
 
@@ -70,6 +70,9 @@ class FormatViolation(BaseModel):
     # 텍스트 전체의 한국어 요약 — 대상언어를 모르는 검수자도 그 줄에 실제로
     # 뭐라고 쓰여 있는지 알 수 있게 한다. matched_text가 있으면 빈 문자열.
     text_gloss: str = ""
+    # glossary_mismatch 전용 — 어느 등록 용어/표기에 대한 경고인지. 화면의 "적용"·"그대로 둠"이 쓴다.
+    korean_term: str = ""
+    canonical: str = ""
 
 
 class ExportStats(BaseModel):

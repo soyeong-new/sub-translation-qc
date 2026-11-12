@@ -185,6 +185,23 @@ export const exportTargetVersion = (targetVersionId) =>
 export const reassembleExport = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export/reassemble`);
 
+// 내보내기 창의 용어집 경고 처리 — 적용(줄별 교체)·되돌리기.
+const glossaryFixesUrl = (id, tail = "") => `/target-versions/${id}/glossary-fixes${tail}`;
+export const applyGlossaryFixes = (targetVersionId, items) =>
+  request(glossaryFixesUrl(targetVersionId), { method: "POST", body: JSON.stringify({ items }) });
+export const undoGlossaryFix = (targetVersionId, segmentId) =>
+  request(glossaryFixesUrl(targetVersionId, "/undo"), {
+    method: "POST", body: JSON.stringify({ segment_id: segmentId }),
+  });
+
+// 반복 대사(원문이 같은 줄) 번역 맞추기 — 적용(줄 전체 교체)·되돌리기.
+export const applyRepeatedFixes = (targetVersionId, items) =>
+  request(`/target-versions/${targetVersionId}/repeated-fixes`, { method: "POST", body: JSON.stringify({ items }) });
+export const undoRepeatedFix = (targetVersionId, segmentId) =>
+  request(`/target-versions/${targetVersionId}/repeated-fixes/undo`, {
+    method: "POST", body: JSON.stringify({ segment_id: segmentId }),
+  });
+
 export const confirmExport = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export/confirm`, { method: "POST" });
 

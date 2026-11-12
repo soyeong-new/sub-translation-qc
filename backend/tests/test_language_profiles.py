@@ -6,7 +6,7 @@ def test_load_es_latam_profile_has_expected_shape():
     profile = load_profile("es", "LATAM")
     assert profile["language"] == "es"
     assert profile["variant"] == "LATAM"
-    assert "naturalness_check" not in profile
+    assert "¿" in profile["naturalness_check"]["llm_instruction"]  # ¿¡ 짝 규칙
 
 
 def test_load_profile_raises_for_unknown_language():
@@ -79,7 +79,9 @@ def test_load_fr_fr_profile_has_expected_shape():
     profile = load_profile("fr", "FR")
     assert profile["language"] == "fr"
     assert profile["variant"] == "FR"
-    assert "naturalness_check" not in profile
+    assert "«" in profile["naturalness_check"]["llm_instruction"]  # « »를 쓰지 말라는 규칙
+    assert profile["space_before_punct"] == "?!:;"
+    assert "sœur" in profile["ligature_words"]
     assert "vous" in profile["formality_instruction"]
 
 

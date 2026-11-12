@@ -1,12 +1,15 @@
 """검수 완료된 내용을 최종 SRT로 조립해 내보내는 엔드포인트."""
 
+from typing import List
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import select, delete
 from app.db import async_session
-from app.models import TargetVersion, FindingRow, Segment, ExportRow, Episode, Title
+from app.models import TargetVersion, FindingRow, Segment, ExportRow, Episode, Title, GlossaryFix
 from app.core.export import (
     assemble_final_srt, compute_stats, safety_net_check, build_export_filename,
-    glossary_consistency_check, unconfirmed_amount_check,
+    glossary_consistency_check, unconfirmed_amount_check, apply_replacements,
+    resolved_text_by_segment, repeated_line_mismatches,
 )
 from app.language_profiles.loader import load_profile
 from app.providers.base import get_provider
@@ -47,6 +50,22 @@ async def _load_export_context(session, target_version_id: str):
     return tv, episode, title, segments, findings
 
 
+async def _load_fixes(session, target_version_id: str) -> List[GlossaryFix]:
+    return (await session.execute(
+        select(GlossaryFix).where(GlossaryFix.target_version_id == target_version_id)
+        .order_by(GlossaryFix.created_at)
+    )).scalars().all()
+
+
+def _with_applied_fixes(findings: list, fixes: List[GlossaryFix]) -> list:
+    """적용한 수정(용어집·반복 대사)을 최종 텍스트 계산용 finding처럼 덧붙인다(통계에는 쓰지 않는다)."""
+    return findings + [
+        {"segment_id": f.segment_id, "status": "approved", "final_text": f.after_text,
+         "reviewed_at": None, "_fix": True}
+        for f in fixes
+    ]
+
+
 async def _check_warnings(session, tv, episode, segments, findings):
     """줄 길이 안전망 + 용어집 일치 검사. 첫 검사와 재조립이 같이 쓴다.
     용어집은 호출 시점에 새로 읽는다 — 검수 중 추가된 용어도 잡히도록."""
@@ -65,8 +84,18 @@ async def _check_warnings(session, tv, episode, segments, findings):
     return warnings
 
 
-def _export_payload(srt, title, episode, tv, findings, warnings):
+def _fix_dicts(fixes, kind):
+    return [{"segment_id": f.segment_id, "before_text": f.before_text, "after_text": f.after_text}
+            for f in fixes if f.kind == kind]
+
+
+def _export_payload(srt, title, episode, tv, findings, warnings, fixes=(), repeated_groups=()):
     return {
+        # 한국어 원문이 같거나 비슷한데 번역이 다른 줄 묶음 + 적용한 수정(되돌리기용).
+        "repeated_groups": list(repeated_groups),
+        "repeated_fixes": _fix_dicts(fixes, "repeated"),
+        # 적용한 용어집 수정(되돌리기용) — 내보내기 창이 보여준다.
+        "glossary_fixes": _fix_dicts(fixes, "applied"),
         "srt": srt,
         "stats": compute_stats(findings).model_dump(),
         "format_warnings": [w.model_dump() for w in warnings],
@@ -81,17 +110,126 @@ async def export_target_version(target_version_id: str):
     async with async_session() as session:
         tv, episode, title, segments, findings = await _load_export_context(
             session, target_version_id)
-        warnings = await _check_warnings(session, tv, episode, segments, findings)
+        fixes = await _load_fixes(session, target_version_id)
+        effective = _with_applied_fixes(findings, fixes)
+        warnings = await _check_warnings(session, tv, episode, segments, effective)
     return _export_payload(
-        assemble_final_srt(segments, findings), title, episode, tv, findings, warnings)
+        assemble_final_srt(segments, effective, load_profile(tv.target_language, tv.variant)),
+        title, episode, tv, findings, warnings, fixes,
+        repeated_line_mismatches(segments, effective))
 
 
 @router.get("/target-versions/{target_version_id}/export/reassemble")
 async def reassemble_export(target_version_id: str):
-    """검수자가 export 팝업을 띄워둔 채로 findings/segments/용어집을 더 고쳤을 때,
-    "최신 내용으로 반영"을 누르면 SRT를 다시 조립하고 전체 세그먼트에 대해
-    용어집/포맷 검사도 다시 돌린다(LLM 호출 포함)."""
+    """검수자가 export 팝업을 띄워둔 채로 findings/segments/용어집을 더 고쳤을 때, "최신 내용으로
+    반영"을 누르면 SRT를 다시 조립하고 전체 세그먼트에 대해 용어집/포맷 검사도 다시 돌린다
+    (LLM 호출 포함)."""
     return await export_target_version(target_version_id)
+
+
+class ReplacementIn(BaseModel):
+    from_text: str
+    to_text: str
+
+
+class GlossaryFixItemIn(BaseModel):
+    segment_id: str
+    replacements: List[ReplacementIn]
+
+
+class GlossaryFixesIn(BaseModel):
+    items: List[GlossaryFixItemIn]
+
+
+class GlossaryFixUndoIn(BaseModel):
+    segment_id: str
+
+
+class RepeatedFixItemIn(BaseModel):
+    segment_id: str
+    new_text: str
+
+
+class RepeatedFixesIn(BaseModel):
+    items: List[RepeatedFixItemIn]
+
+
+@router.post("/target-versions/{target_version_id}/glossary-fixes")
+async def apply_glossary_fixes(target_version_id: str, payload: GlossaryFixesIn):
+    """경고 카드의 "적용"(여러 줄이면 "모두 적용") — 줄마다 틀린 표기를 등록 표기로 바꾼 문구를
+    기록한다. 지우면(undo) 되돌려진다. 바꿀 표기가 줄에 없으면 그 줄은 건너뛴다(skipped)."""
+    async with async_session() as session:
+        tv, _, _, segments, findings = await _load_export_context(session, target_version_id)
+        fixes = await _load_fixes(session, target_version_id)
+        current = resolved_text_by_segment(segments, _with_applied_fixes(findings, fixes))
+        applied_by_segment = {f.segment_id: f for f in fixes if f.kind == "applied"}
+        applied, skipped = 0, []
+        for item in payload.items:
+            if item.segment_id not in current:
+                skipped.append(item.segment_id)
+                continue
+            before = current[item.segment_id]
+            after = apply_replacements(before, [(r.from_text, r.to_text) for r in item.replacements])
+            if after == before:
+                skipped.append(item.segment_id)
+                continue
+            existing = applied_by_segment.get(item.segment_id)
+            if existing is None:
+                session.add(GlossaryFix(
+                    target_version_id=target_version_id, segment_id=item.segment_id,
+                    kind="applied", before_text=before, after_text=after))
+            else:  # 같은 줄에 또 적용하면 처음 문구는 그대로 두고 결과만 갱신
+                existing.after_text = after
+            applied += 1
+        await session.commit()
+    return {"applied": applied, "skipped": skipped}
+
+
+async def _undo_fix(target_version_id: str, segment_id: str, kind: str):
+    async with async_session() as session:
+        await session.execute(delete(GlossaryFix).where(
+            GlossaryFix.target_version_id == target_version_id,
+            GlossaryFix.segment_id == segment_id, GlossaryFix.kind == kind))
+        await session.commit()
+    return {"ok": True}
+
+
+@router.post("/target-versions/{target_version_id}/glossary-fixes/undo")
+async def undo_glossary_fix(target_version_id: str, payload: GlossaryFixUndoIn):
+    return await _undo_fix(target_version_id, payload.segment_id, "applied")
+
+
+@router.post("/target-versions/{target_version_id}/repeated-fixes")
+async def apply_repeated_fixes(target_version_id: str, payload: RepeatedFixesIn):
+    """반복 대사 카드의 "적용" — 체크한 줄의 번역을 고른 대표 번역으로 통째로 바꾼다.
+    지우면(undo) 되돌려진다. 이미 같은 문구인 줄은 건너뛴다(skipped)."""
+    async with async_session() as session:
+        _, _, _, segments, findings = await _load_export_context(session, target_version_id)
+        fixes = await _load_fixes(session, target_version_id)
+        current = resolved_text_by_segment(segments, _with_applied_fixes(findings, fixes))
+        existing_by_segment = {f.segment_id: f for f in fixes if f.kind == "repeated"}
+        applied, skipped = 0, []
+        for item in payload.items:
+            new_text = item.new_text.strip()
+            before = current.get(item.segment_id)
+            if before is None or not new_text or new_text == before:
+                skipped.append(item.segment_id)
+                continue
+            existing = existing_by_segment.get(item.segment_id)
+            if existing is None:
+                session.add(GlossaryFix(
+                    target_version_id=target_version_id, segment_id=item.segment_id,
+                    kind="repeated", before_text=before, after_text=new_text))
+            else:  # 같은 줄에 또 적용하면 처음 문구는 그대로 두고 결과만 갱신
+                existing.after_text = new_text
+            applied += 1
+        await session.commit()
+    return {"applied": applied, "skipped": skipped}
+
+
+@router.post("/target-versions/{target_version_id}/repeated-fixes/undo")
+async def undo_repeated_fix(target_version_id: str, payload: GlossaryFixUndoIn):
+    return await _undo_fix(target_version_id, payload.segment_id, "repeated")
 
 
 @router.post("/target-versions/{target_version_id}/export/confirm")

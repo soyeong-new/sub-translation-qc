@@ -5,7 +5,10 @@ import re
 from typing import List, Optional
 from app.core.glossary_guard import term_in
 from app.core.ingest import build_srt
-from app.core.format_rules import check_line_length, normalize_speaker_dash
+from app.core.repeated_lines import find_repeated_groups
+from app.core.format_rules import (
+    check_line_length, fix_ligatures, fix_space_before_punct, normalize_speaker_dash,
+)
 from app.providers.base import ModelProvider
 from app.schemas import AlignedPair, SegmentText, ExportStats, FormatViolation
 
@@ -45,11 +48,50 @@ def _final_text_by_segment(findings: List[dict]) -> dict:
         f for f in findings
         if f["status"] in ("approved", "modified") and f["final_text"]
     ]
-    reflected.sort(key=lambda f: f.get("reviewed_at") is not None)
+    # 용어집 적용(_fix)은 검수자 판단보다도 나중이라 맨 뒤에 둬서 이긴다.
+    reflected.sort(key=lambda f: (f.get("_fix", False), f.get("reviewed_at") is not None))
     return {f["segment_id"]: f["final_text"] for f in reflected}
 
 
-def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
+def apply_replacements(text: str, replacements: List[tuple]) -> str:
+    """(from, to) 쌍을 순서대로 한 번씩 바꾼다 — text에 from이 없으면 그 쌍은 건너뛴다."""
+    for old, new in replacements:
+        if old and old in text:
+            text = text.replace(old, new, 1)
+    return text
+
+
+def resolved_text_by_segment(segments: List[dict], findings: List[dict]) -> dict:
+    """세그먼트별 현재 최종 문구(검수 결과 반영, 없으면 원문)."""
+    final_by_segment = _final_text_by_segment(findings)
+    return {s["id"]: final_by_segment.get(s["id"], s["text"]) for s in segments}
+
+
+REPEATED_MIN_GAP_SECONDS = 10  # 이보다 가까이 붙은 반복(군중 구호, 연달아 같은 말)은 회상·반복 대사로 보지 않는다
+
+
+def repeated_line_mismatches(segments: List[dict], findings: List[dict]) -> List[dict]:
+    """한국어 원문이 같거나 비슷한 줄(회상·반복 대사)인데 최종 번역이 서로 다른 묶음.
+    대소문자·문장부호 차이는 같은 번역으로 본다. 제외된 줄과 번역이 빈 줄은 비교하지 않고,
+    묶음 안에서 가장 이른 줄과 늦은 줄이 REPEATED_MIN_GAP_SECONDS 이상 떨어진 묶음만 낸다."""
+    resolved = resolved_text_by_segment(segments, findings)
+    by_id = {s["id"]: s for s in segments if not s.get("excluded") and resolved[s["id"]].strip()}
+    groups = find_repeated_groups([{"id": i, "text": s["korean_text"]} for i, s in by_id.items()])
+    result = []
+    for ids in groups:
+        if len({re.sub(r"\W+", "", resolved[i].lower()) for i in ids}) < 2:
+            continue
+        starts = [by_id[i]["start"] for i in ids]
+        if max(starts) - min(starts) < REPEATED_MIN_GAP_SECONDS:
+            continue
+        members = [{"segment_id": i, "start": by_id[i]["start"], "korean_text": by_id[i]["korean_text"],
+                    "text": resolved[i]} for i in ids]
+        result.append({"korean_text": members[0]["korean_text"], "members": members})
+    return result
+
+
+def assemble_final_srt(segments: List[dict], findings: List[dict],
+                       profile: Optional[dict] = None) -> str:
     """최종 SRT를 조립한다.
 
     세 가지를 보정한다:
@@ -65,6 +107,16 @@ def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
        때문에 index 순서는 시간 순서와 일치하지 않는다.
     """
     final_by_segment = _final_text_by_segment(findings)
+    # 프랑스어처럼 ? ! : ; 앞에 공백을 두는 언어는 프로파일(space_before_punct)에
+    # 부호를 적어 두면 내보낼 때 기계적으로 맞춘다 — 원래 번역에서 빠진 것도 잡힌다.
+    space_chars = (profile or {}).get("space_before_punct", "")
+
+    ligature_words = (profile or {}).get("ligature_words")
+
+    def _tidy(text: str) -> str:
+        text = fix_ligatures(fix_space_before_punct(text, space_chars), ligature_words)
+        return normalize_speaker_dash(text)
+
     entries = []
     for seg in sorted(segments, key=lambda s: s["start"]):
         if seg.get("excluded"):
@@ -82,13 +134,13 @@ def assemble_final_srt(segments: List[dict], findings: List[dict]) -> str:
                 and seg["text"] == " ".join(c["text"] for c in cues)
                 and cues[0]["start"] == seg["start"] and max(c["end"] for c in cues) == seg["end"]):
             entries.extend({"start": c["start"], "end": c["end"],
-                            "text": normalize_speaker_dash(c["text"])} for c in cues)
+                            "text": _tidy(c["text"])} for c in cues)
             continue
         text = final_by_segment.get(seg["id"], seg["text"])
         if not text.strip():
             continue
         entries.append({"start": seg["start"], "end": seg["end"],
-                        "text": normalize_speaker_dash(text)})
+                        "text": _tidy(text)})
     return build_srt(entries)
 
 
@@ -122,17 +174,39 @@ def _find_glossary_candidates(segments: List[dict], findings: List[dict],
         text = final_by_segment.get(seg["id"], seg["text"])
         if not korean_text or not text:
             continue
+        terms = [e.get("korean_term") for e in glossary_entries if e.get("korean_term")]
         for entry in glossary_entries:
             canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
             if not canonical or not korean_term:
                 continue
-            if term_in(korean_term, korean_text) and canonical not in text:
+            # 더 긴 등록 용어에 포함된 짧은 용어("신화 그룹" 속 "신화")는 긴 용어가 그 자리를
+            # 이미 다루므로 따로 검사하지 않는다 — 같은 줄에 같은 경고가 두 장 뜨던 문제.
+            remainder = korean_text
+            for longer in sorted((t for t in terms if t != korean_term and korean_term in t),
+                                 key=len, reverse=True):
+                remainder = remainder.replace(longer, " ")
+            if term_in(korean_term, remainder) and canonical not in text:
                 candidates.append({
                     "id": f"{seg['id']}:{entry.get('entry_id')}",
                     "segment_id": seg["id"], "korean_term": korean_term,
                     "canonical": canonical, "korean_text": korean_text, "text": text,
                 })
     return candidates
+
+
+_GLOSSARY_JUDGMENT_CACHE: dict = {}
+_GLOSSARY_CACHE_MAX = 5000
+
+
+def _glossary_cache_key(c: dict) -> tuple:
+    return (c["korean_term"], c["canonical"], c["korean_text"], c["text"])
+
+
+def _cache_glossary_judgment(candidate: dict, result: dict) -> None:
+    # ponytail: 프로세스 메모리 캐시 — 서버를 다시 띄우면 비워진다(DB 저장은 필요해지면).
+    if len(_GLOSSARY_JUDGMENT_CACHE) >= _GLOSSARY_CACHE_MAX:
+        _GLOSSARY_JUDGMENT_CACHE.clear()
+    _GLOSSARY_JUDGMENT_CACHE[_glossary_cache_key(candidate)] = result
 
 
 async def glossary_consistency_check(segments: List[dict], findings: List[dict],
@@ -151,12 +225,25 @@ async def glossary_consistency_check(segments: List[dict], findings: List[dict],
     candidates = _find_glossary_candidates(segments, findings, glossary_entries)
     if not candidates:
         return []
+    # 같은 (용어, 표기, 원문, 번역문)이면 판정이 같으므로 한 번 받은 결과를 재사용한다 —
+    # "반영하기"를 다시 눌러도 바뀐 줄만 LLM에 묻는다(속도, 판정이 매번 달라지는 문제).
+    results_by_id = {}
+    pending = []
+    for c in candidates:
+        hit = _GLOSSARY_JUDGMENT_CACHE.get(_glossary_cache_key(c))
+        if hit is not None:
+            results_by_id[c["id"]] = hit
+        else:
+            pending.append(c)
     try:
-        results = await provider.check_glossary_reflection(candidates, profile)
-        violation_by_id = {r["id"]: r["violation"] for r in results}
-        matched_text_by_id = {r["id"]: r.get("matched_text", "") for r in results}
-        matched_meaning_by_id = {r["id"]: r.get("matched_meaning", "") for r in results}
-        text_gloss_by_id = {r["id"]: r.get("text_gloss", "") for r in results}
+        if pending:
+            for r in await provider.check_glossary_reflection(pending, profile):
+                results_by_id[r["id"]] = r
+                _cache_glossary_judgment(next(c for c in pending if c["id"] == r["id"]), r)
+        violation_by_id = {i: r["violation"] for i, r in results_by_id.items()}
+        matched_text_by_id = {i: r.get("matched_text", "") for i, r in results_by_id.items()}
+        matched_meaning_by_id = {i: r.get("matched_meaning", "") for i, r in results_by_id.items()}
+        text_gloss_by_id = {i: r.get("text_gloss", "") for i, r in results_by_id.items()}
     except Exception:
         logger.exception("용어집 반영 확인(LLM) 실패, 후보 전부 경고로 처리")
         violation_by_id = {}
@@ -185,6 +272,7 @@ async def glossary_consistency_check(segments: List[dict], findings: List[dict],
             segment_id=c["segment_id"], rule="glossary_mismatch",
             detail=detail, original_text=c["text"], matched_text=matched,
             matched_meaning=meaning, text_gloss=gloss,
+            korean_term=c["korean_term"], canonical=c["canonical"],
         ))
     return violations
 
