@@ -306,10 +306,10 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           </div>
         </div>
       )}
-      <table className="w-full border-collapse text-xs">
+      <table className="w-max min-w-full border-collapse text-xs">
         <thead>
           <tr className="divide-x divide-border/30 border-b border-border bg-card text-foreground">
-            <th className="sticky left-0 z-10 bg-card px-4 py-2 text-left font-bold">한국어 용어</th>
+            <th className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card px-4 py-2 text-left font-bold">한국어 용어</th>
             {columns.map((col) => (
               <th key={col} className="min-w-[11rem] px-4 py-2 text-left font-bold">
                 {col}
@@ -328,7 +328,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           )}
           {[...pending, ...rest].map((entry) => (
             <tr key={entry.id} className="group divide-x divide-border/30 even:bg-muted/30 hover:bg-accent/40">
-              <td className="sticky left-0 z-10 bg-card px-4 py-2 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
+              <td className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card px-4 py-2 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
                 {entry.korean_term}
                 {entry.category === "amount" && (
                   <span className="ml-1.5 rounded bg-muted px-1 text-[10px] font-normal text-muted-foreground">금액</span>

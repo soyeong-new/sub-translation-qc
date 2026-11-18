@@ -1452,6 +1452,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 참고할 수 있게 한다 — 무거운 GET /titles 전체 대신 이 작품 것만 조회.
   const [glossary, setGlossary] = useState(null);
   const [showGlossary, setShowGlossary] = useState(false);
+  const [glossaryRefLang, setGlossaryRefLang] = useState(() => localStorage.getItem("qc_glossary_ref_lang") || "");
   const [glossaryError, setGlossaryError] = useState(null);
   // segment.start/end는 대상언어 SRT 시계다 — 영상을 잘라 올려 SRT와 영상
   // 파일 시계가 어긋나 있으면(detect_global_offset이 감지) seek 시 이 값을
@@ -2143,10 +2144,13 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 어긋난다("Findings (56)"인데 탭 합은 52 같은 불일치, 사용자 재현).
   const totalFindingsCount = reviewRequiredItems.length;
   const processedFindingsCount = reviewRequiredItems.filter((it) => !itemStatuses(it).includes("pending")).length;
-  const glossarySpellingColumns = orderColumns(
-    Array.from(new Set((glossary ?? []).flatMap((e) => Object.keys(e.spellings ?? {})))),
-    targetColumnKey
-  );
+  const allGlossaryColumns = Array.from(new Set((glossary ?? []).flatMap((e) => Object.keys(e.spellings ?? {}))));
+  // 한국어 다음에 대상언어, 그 다음에 사용자가 고른 참고 언어, 나머지는 원래 순서.
+  const glossarySpellingColumns = orderColumns(orderColumns(allGlossaryColumns, glossaryRefLang), targetColumnKey);
+  function changeGlossaryRefLang(lang) {
+    setGlossaryRefLang(lang);
+    localStorage.setItem("qc_glossary_ref_lang", lang);
+  }
   const statusCounts = { all: displayItems.length };
   for (const status of Object.keys(STATUS_LABELS)) {
     statusCounts[status] = displayItems.filter((it) => itemStatuses(it).includes(status)).length;
@@ -2316,6 +2320,21 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               <span className="text-sm font-semibold text-foreground">
                 용어집 <span className="font-normal text-muted-foreground">· {glossary.length}개</span>
               </span>
+              {allGlossaryColumns.length > 2 && (
+                <label className="ml-auto mr-3 flex items-center gap-1.5 text-xs text-muted-foreground">
+                  참고
+                  <select
+                    value={glossaryRefLang}
+                    onChange={(e) => changeGlossaryRefLang(e.target.value)}
+                    className="rounded-md border border-input bg-background px-1.5 py-1 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="">선택 안 함</option>
+                    {allGlossaryColumns.filter((c) => c !== targetColumnKey).map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <button
                 type="button"
                 onClick={() => setShowGlossary(false)}
