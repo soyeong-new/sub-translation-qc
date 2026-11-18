@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getFlaggedSegments, getTargetVersion, resolveGender, resolveGenderGroup,
-  resolveFormality, confirmRegisters, setVideoOffset,
+  resolveFormality, confirmRegisters, setVideoOffset, getCharacterMergeCandidates,
 } from "../api.js";
 import FlaggedSegmentStepper, { isSegmentResolved } from "./FlaggedSegmentStepper.jsx";
 
@@ -25,6 +25,11 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
   const [versionDisplayName, setVersionDisplayName] = useState(null);
   const [error, setError] = useState(null);
   const [completePending, setCompletePending] = useState(false);
+  // AI 검증을 시작하기 전에 "같은 인물인가요?"를 묻는다(금잔디/잔디처럼 이름이 겹친 경우).
+  // null = 아직 안 물음, 배열 = 사용자에게 보여주는 후보. mergeChecked는 한 번만 묻게 한다.
+  const [mergeCandidates, setMergeCandidates] = useState(null);
+  const [mergeChoice, setMergeChoice] = useState({}); // 쌍 key → "same" | "diff" (없으면 모르겠음)
+  const mergeChecked = useRef(false);
   // 확인을 다 마쳤는데(성별/격식 답변 완료) "AI 검증 시작하기" 버튼을 그
   // 자리에서 안 누르고 나가면, target_version이 "awaiting_confirmation"
   // 상태로 남아 이 화면에 "누르면 실제 검증이 도는" 버튼만 덩그러니 걸려
@@ -76,11 +81,23 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
     setVideoOffsetSeconds(next);
   }
 
-  async function handleComplete() {
-    setCompletePending(true);
+  async function handleComplete(sameCharacters = [], differentCharacters = []) {
     setError(null);
+    if (!mergeChecked.current) {
+      mergeChecked.current = true;
+      try {
+        const candidates = await getCharacterMergeCandidates(targetVersionId);
+        if (candidates.length > 0) {
+          setMergeCandidates(candidates);
+          return;
+        }
+      } catch {
+        // 후보 조회 실패는 검증을 막지 않는다 — 그냥 묻지 않고 진행.
+      }
+    }
+    setCompletePending(true);
     try {
-      await confirmRegisters(targetVersionId);
+      await confirmRegisters(targetVersionId, sameCharacters, differentCharacters);
       await pollUntilReview();
       onDone();
     } catch (err) {
@@ -160,10 +177,63 @@ export default function RegisterConfirmationView({ targetVersionId, onDone, onEx
         onResolveGender={handleResolveGender}
         onResolveGenderGroup={handleResolveGenderGroup}
         onResolveFormality={handleResolveFormality}
-        onComplete={handleComplete}
+        onComplete={() => handleComplete()}
         completePending={completePending}
         onExit={onExit}
       />
+      {mergeCandidates && (() => {
+        const namesOf = (choice) => mergeCandidates.filter((c) => mergeChoice[c.names.join("|")] === choice).map((c) => c.names);
+        const OPTIONS = [["same", "같은 인물"], ["diff", "다른 인물"], [undefined, "모르겠음"]];
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-md rounded-xl border border-border/50 bg-card p-5 shadow-lg">
+              <p className="text-sm font-medium text-foreground">같은 인물인가요?</p>
+              <ul className="mt-3 divide-y divide-border">
+                {mergeCandidates.map((c) => {
+                  const key = c.names.join("|");
+                  return (
+                    <li key={key} className="flex items-center justify-between gap-3 py-2">
+                      <span className="whitespace-nowrap text-sm font-semibold text-foreground">
+                        {c.names[0]} = {c.names[1]}
+                      </span>
+                      <div className="flex overflow-hidden rounded-lg border border-input text-xs">
+                        {OPTIONS.map(([value, label]) => (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={() => setMergeChoice((prev) => ({ ...prev, [key]: value }))}
+                            className={`border-l border-input px-2.5 py-1 first:border-l-0 ${
+                              mergeChoice[key] === value
+                                ? "bg-primary/10 font-semibold text-primary"
+                                : "bg-background text-muted-foreground hover:bg-accent"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="mt-4 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const same = namesOf("same");
+                    const different = namesOf("diff");
+                    setMergeCandidates(null);
+                    handleComplete(same, different);
+                  }}
+                  className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent"
+                >
+                  AI 검증 시작하기
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {error && (
         <p role="status" aria-live="polite"
           className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">

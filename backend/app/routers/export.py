@@ -8,7 +8,7 @@ from app.db import async_session
 from app.models import TargetVersion, FindingRow, Segment, ExportRow, Episode, Title, GlossaryFix
 from app.core.export import (
     assemble_final_srt, compute_stats, safety_net_check, build_export_filename,
-    glossary_consistency_check, unconfirmed_amount_check, apply_replacements,
+    glossary_consistency_check, name_variant_groups, unconfirmed_amount_check, apply_replacements,
     resolved_text_by_segment, repeated_line_mismatches,
 )
 from app.language_profiles.loader import load_profile
@@ -89,8 +89,10 @@ def _fix_dicts(fixes, kind):
             for f in fixes if f.kind == kind]
 
 
-def _export_payload(srt, title, episode, tv, findings, warnings, fixes=(), repeated_groups=()):
+def _export_payload(srt, title, episode, tv, findings, warnings, fixes=(), repeated_groups=(), name_groups=()):
     return {
+        # 같은 이름이 철자만 달리 쓰인 묶음 — 사용자가 쓸 표기를 고른다(표기 통일 탭).
+        "name_variant_groups": list(name_groups),
         # 한국어 원문이 같거나 비슷한데 번역이 다른 줄 묶음 + 적용한 수정(되돌리기용).
         "repeated_groups": list(repeated_groups),
         "repeated_fixes": _fix_dicts(fixes, "repeated"),
@@ -105,6 +107,18 @@ def _export_payload(srt, title, episode, tv, findings, warnings, fixes=(), repea
     }
 
 
+@router.get("/target-versions/{target_version_id}/applied-fixes")
+async def applied_fixes(target_version_id: str):
+    """적용한 용어집·반복 대사 수정 전체(적용 순서대로) — 검수 화면이 전체 자막에 바로 보여주려고 쓴다.
+    내보내기 검사(LLM 포함)를 거치지 않는 가벼운 조회다."""
+    async with async_session() as session:
+        if await session.get(TargetVersion, target_version_id) is None:
+            raise HTTPException(404, "target version not found")
+        fixes = await _load_fixes(session, target_version_id)
+    return [{"segment_id": f.segment_id, "kind": f.kind,
+             "before_text": f.before_text, "after_text": f.after_text} for f in fixes]
+
+
 @router.get("/target-versions/{target_version_id}/export")
 async def export_target_version(target_version_id: str):
     async with async_session() as session:
@@ -113,10 +127,12 @@ async def export_target_version(target_version_id: str):
         fixes = await _load_fixes(session, target_version_id)
         effective = _with_applied_fixes(findings, fixes)
         warnings = await _check_warnings(session, tv, episode, segments, effective)
+        name_groups = name_variant_groups(segments, effective, await get_glossary_prompt_entries(
+            session, episode.title_id, tv.target_language, tv.variant))
     return _export_payload(
         assemble_final_srt(segments, effective, load_profile(tv.target_language, tv.variant)),
         title, episode, tv, findings, warnings, fixes,
-        repeated_line_mismatches(segments, effective))
+        repeated_line_mismatches(segments, effective), name_groups)
 
 
 @router.get("/target-versions/{target_version_id}/export/reassemble")

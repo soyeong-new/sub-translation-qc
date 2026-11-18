@@ -8,10 +8,11 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 from app.db import async_session
-from app.models import Episode, TargetVersion, Segment, Title
+from app.models import Episode, TargetVersion, Segment, Title, CharacterMergeRejection
 from app.core.uploads import MEDIA_ROOT
 from app.repositories import (
     delete_target_version_results, upsert_character_gender_facts, normalize_character_name,
+    get_character_gender_facts,
 )
 from app.background import analyze_and_save, _run_phase2_and_save
 from app.providers.base import get_provider
@@ -155,8 +156,87 @@ async def rerun_analysis(target_version_id: str, request: Request):
     return await _start_analysis(target_version_id, target_srt_path, request)
 
 
+def _confirmed_new_facts(candidates, target_version_id: str) -> dict:
+    """이번 배치에서 사람이 확정한 {캐릭터 이름: 성별}. 같은 이름이 서로 다른 성별로 확인되면 건너뛴다."""
+    confirmed_by_name: dict = {}
+    for seg in candidates:
+        for group in (seg.resolved_gender_groups_raw or []):
+            name = group.get("character_name")
+            gender = group.get("gender")
+            if name and gender in ("male", "female") and group.get("human_confirmed"):
+                confirmed_by_name.setdefault(normalize_character_name(name), set()).add((name, gender))
+    new_facts: dict = {}
+    for entries in confirmed_by_name.values():
+        genders = {gender for _, gender in entries}
+        if len(genders) == 1:
+            name = next(iter(entries))[0]
+            new_facts[name] = genders.pop()
+        else:
+            logger.warning(
+                "캐릭터 성별 확인 충돌, title 단위 fact 저장 건너뜀 (target_version_id=%s, entries=%s)",
+                target_version_id, entries,
+            )
+    return new_facts
+
+
+def _pair_key(a: str, b: str) -> tuple:
+    return tuple(sorted((normalize_character_name(a), normalize_character_name(b))))
+
+
+def find_merge_candidates(new_facts: dict, known: dict, rejected: set = frozenset()) -> list:
+    """같은 인물일 수 있는 이름 쌍 [(짧은 이름, 긴 이름, 성별)] — 한 이름이 다른 이름의 일부이고
+    성별이 같으며, 이번에 새로 확정된 이름이 하나 이상 있고, 둘 다 이미 저장된 쌍과
+    사용자가 "다른 인물"이라고 답한 쌍(rejected)은 뺀다.
+    # ponytail: 부분 문자열만 본다 — "민지"/"오민지"처럼 동명이인도 후보로 올라오니 사람이 가른다."""
+    names = {normalize_character_name(n): (n, g) for n, g in known.items()}
+    names.update({normalize_character_name(n): (n, g) for n, g in new_facts.items()})
+    new_keys = {normalize_character_name(n) for n in new_facts}
+    pairs = []
+    for short, (short_name, short_gender) in names.items():
+        for long, (long_name, long_gender) in names.items():
+            if (len(short) >= 2 and short != long and short in long and short_gender == long_gender
+                    and (short in new_keys or long in new_keys)
+                    and not (short in known and long in known)
+                    and _pair_key(short, long) not in rejected):
+                pairs.append((short_name, long_name, short_gender))
+    return pairs
+
+
+class ConfirmRegistersIn(BaseModel):
+    same_characters: list[list[str]] = []   # 사용자가 "같은 인물"이라고 답한 이름 쌍
+    different_characters: list[list[str]] = []   # "다른 인물"이라고 답한 쌍 — 다시 묻지 않는다
+
+
+@router.get("/target-versions/{target_version_id}/character-merge-candidates")
+async def character_merge_candidates(target_version_id: str):
+    """AI 검증 시작 전에 사용자에게 물을 "같은 인물인가요?" 후보 — 대사 한 줄씩을 함께 돌려준다."""
+    async with async_session() as session:
+        tv = await session.get(TargetVersion, target_version_id)
+        if tv is None:
+            raise HTTPException(404, "target version not found")
+        episode = await session.get(Episode, tv.episode_id)
+        segs = (await session.execute(
+            select(Segment).where(Segment.target_version_id == target_version_id)
+        )).scalars().all()
+        new_facts = _confirmed_new_facts(segs, target_version_id)
+        known = await get_character_gender_facts(session, episode.title_id)
+        rejected = {(r.name_a, r.name_b) for r in (await session.execute(
+            select(CharacterMergeRejection).where(CharacterMergeRejection.title_id == episode.title_id)
+        )).scalars()}
+    example_by_name: dict = {}
+    for seg in segs:
+        for group in (seg.resolved_gender_groups_raw or []):
+            name = group.get("character_name")
+            if name and name not in example_by_name:
+                example_by_name[name] = seg.korean_text
+    return [{"names": [a, b], "gender": g,
+             "examples": [example_by_name.get(a), example_by_name.get(b)]}
+            for a, b, g in find_merge_candidates(new_facts, known, rejected)]
+
+
 @router.post("/target-versions/{target_version_id}/confirm-registers")
-async def confirm_registers(target_version_id: str, request: Request):
+async def confirm_registers(target_version_id: str, request: Request,
+                            payload: ConfirmRegistersIn | None = None):
     """성별/격식 확인 페이지에서 사람이 답을 다 마친 뒤 호출한다 — 확인이
     끝나지 않은 줄이 남아 있으면 거부하고(추측으로 AI 검증을 시작하면 안
     되므로), 다 끝났으면 S2(AI 검증)를 새 백그라운드 태스크로 시작한다."""
@@ -204,24 +284,26 @@ async def confirm_registers(target_version_id: str, request: Request):
         # 다른 회차/언어판까지 자동 전파되는 것이 반반의 확률로 맞는 값을
         # 저장하는 것보다 더 나쁘다.
         episode = await session.get(Episode, tv.episode_id)
-        confirmed_by_name: dict = {}
-        for seg in candidates:
-            for group in (seg.resolved_gender_groups_raw or []):
-                name = group.get("character_name")
-                gender = group.get("gender")
-                if name and gender in ("male", "female") and group.get("human_confirmed"):
-                    confirmed_by_name.setdefault(normalize_character_name(name), set()).add((name, gender))
-        new_facts: dict = {}
-        for entries in confirmed_by_name.values():
-            genders = {gender for _, gender in entries}
-            if len(genders) == 1:
-                name = next(iter(entries))[0]
-                new_facts[name] = genders.pop()
-            else:
-                logger.warning(
-                    "캐릭터 성별 확인 충돌, title 단위 fact 저장 건너뜀 (target_version_id=%s, entries=%s)",
-                    target_version_id, entries,
-                )
+        new_facts = _confirmed_new_facts(candidates, target_version_id)
+        # 사용자가 "같은 인물"이라고 답한 이름 쌍은 한쪽 성별을 다른 쪽에도 저장한다
+        # (이후 "잔디"만 나오는 줄도 "금잔디"의 성별을 쓰게).
+        if payload and payload.same_characters:
+            known = await get_character_gender_facts(session, episode.title_id)
+            for a, b in payload.same_characters:
+                ga = new_facts.get(a) or known.get(normalize_character_name(a))
+                gb = new_facts.get(b) or known.get(normalize_character_name(b))
+                if ga and gb and ga != gb:
+                    continue
+                if ga or gb:
+                    new_facts[a] = new_facts[b] = ga or gb
+        if payload and payload.different_characters:
+            saved = {(r.name_a, r.name_b) for r in (await session.execute(
+                select(CharacterMergeRejection).where(CharacterMergeRejection.title_id == episode.title_id)
+            )).scalars()}
+            for a, b in payload.different_characters:
+                key = _pair_key(a, b)
+                if key not in saved:
+                    session.add(CharacterMergeRejection(title_id=episode.title_id, name_a=key[0], name_b=key[1]))
         if new_facts:
             await upsert_character_gender_facts(session, episode.title_id, new_facts)
 

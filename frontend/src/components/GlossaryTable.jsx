@@ -4,6 +4,7 @@ import {
 } from "../api.js";
 import { collectNewIds } from "./glossaryNew.js";
 import { orderGlossaryEntries } from "./glossaryOrder.js";
+import { findSpellingConflicts, planUnify } from "./glossarySpelling.js";
 
 const deleteBtnClass =
   "inline-flex h-6 w-6 items-center justify-center text-muted-foreground leading-none " +
@@ -103,6 +104,34 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
     }
   }
 
+  // 같은 이름이 철자만 달리 섞여 있으면 고른 표기로 그 부분만 통일한다.
+  // 직전 통일은 화면을 열어 둔 동안 되돌릴 수 있다.
+  const conflicts = findSpellingConflicts(entries, columns);
+  const [lastUnify, setLastUnify] = useState([]);
+
+  async function saveSpellings(items, field) {
+    try {
+      for (const it of items) {
+        await patchGlossaryEntry(it.entryId, { spellings: { [it.column]: it[field] } });
+      }
+    } catch (err) {
+      onError?.(err.message ?? "표기 통일 중 오류가 발생했습니다.");
+    }
+    onChanged();
+  }
+
+  async function unify(conflict, surface) {
+    const plan = planUnify(entries, conflict, surface);
+    setLastUnify(plan);
+    await saveSpellings(plan, "after");
+  }
+
+  async function undoUnify() {
+    const plan = lastUnify;
+    setLastUnify([]);
+    await saveSpellings(plan, "before");
+  }
+
   async function submitNewTerm() {
     const koreanTerm = newTerm.trim();
     if (!koreanTerm) return;
@@ -148,6 +177,37 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
             >
               다시 표시
             </button>
+          )}
+        </div>
+      )}
+      {(conflicts.length > 0 || lastUnify.length > 0) && (
+        <div className="mb-2 space-y-1.5 rounded border border-input bg-card px-3 py-2 text-xs">
+          {conflicts.map((c) => (
+            <div key={`${c.column}:${c.key}`} className="flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground">{c.column} · 같은 이름의 표기가 섞여 있습니다. 통일할 표기를 고르세요</span>
+              {c.variants.map((v) => (
+                <button
+                  key={v.surface}
+                  type="button"
+                  onClick={() => unify(c, v.surface)}
+                  className="rounded border border-input px-2 py-0.5 text-foreground hover:bg-accent/60"
+                >
+                  {v.surface} ({v.entryIds.length})
+                </button>
+              ))}
+            </div>
+          ))}
+          {lastUnify.length > 0 && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              {lastUnify.length}개 항목을 통일했습니다.
+              <button
+                type="button"
+                onClick={undoUnify}
+                className="rounded border border-input px-2 py-0.5 text-foreground hover:bg-accent/60"
+              >
+                되돌리기
+              </button>
+            </div>
           )}
         </div>
       )}

@@ -326,6 +326,85 @@ def test_glossary_candidates_skip_term_contained_in_longer_registered_term():
     assert {c["korean_term"] for c in _find_glossary_candidates([seg2], [], entries)} == {"신화 그룹", "신화"}
 
 
+def test_glossary_candidates_skip_term_partly_overlapping_a_longer_registered_term():
+    from app.core.export import _find_glossary_candidates
+    entries = [{"entry_id": "e1", "korean_term": "금잔디", "canonical": "Geum Jan-Di"},
+               {"entry_id": "e2", "korean_term": "잔디 세탁소", "canonical": "Pressing Jan Di"}]
+    seg = {"id": "p1", "start": 0.0, "end": 2.0, "text": "Pressing de Jan Di, fighting !",
+           "korean_text": "금잔디 세탁소 파이팅!"}
+    assert [c["korean_term"] for c in _find_glossary_candidates([seg], [], entries)] == ["잔디 세탁소"]
+    # 겹치지 않는 자리에 따로 나오면 그대로 검사한다.
+    seg2 = {**seg, "korean_text": "금잔디 세탁소, 금잔디!"}
+    assert {c["korean_term"] for c in _find_glossary_candidates([seg2], [], entries)} == {"금잔디", "잔디 세탁소"}
+
+
+def test_glossary_candidates_ignore_first_letter_case_only():
+    from app.core.export import _find_glossary_candidates
+    entries = [{"entry_id": "e1", "korean_term": "회장님", "canonical": "madame la présidente"},
+               {"entry_id": "e2", "korean_term": "잔디", "canonical": "Jan-Di"}]
+    seg = {"id": "p1", "start": 0.0, "end": 2.0, "korean_text": "회장님, 잔디야",
+           "text": "Madame la présidente, Jan-Di"}
+    assert _find_glossary_candidates([seg], [], entries) == []
+    # 두 번째 글자부터 다르면 다른 표기다.
+    seg2 = {**seg, "text": "Madame la présidente, Jan-di"}
+    assert [c["korean_term"] for c in _find_glossary_candidates([seg2], [], entries)] == ["잔디"]
+
+
+def _groups(texts, entries=(), korean=None):
+    from app.core.export import name_variant_groups
+    segs = [{"id": f"p{i}", "start": float(i), "end": i + 1.0, "text": t,
+             "korean_text": (korean or {}).get(i, "")} for i, t in enumerate(texts)]
+    return name_variant_groups(segs, [], list(entries))
+
+
+def _surfaces(group):
+    return {v["surface"]: v["count"] for v in group["variants"]}
+
+
+def test_name_groups_same_key_spacing_hyphen_and_inner_case():
+    [g] = _groups(["Où est Jan Di ?", "Jan-Di, viens.", "Salut, Jan-di !", "Ça va, Jan-Di ?"])
+    assert _surfaces(g) == {"Jan-Di": 2, "Jan Di": 1, "Jan-di": 1}
+    assert g["recommended"] == "Jan-Di"  # 용어집에 없으면 가장 많이 쓰인 표기
+    # 줄은 모든 표기가 쓰인 줄 전부 — 추천이 아닌 표기를 골라도 바꿀 줄을 알 수 있다.
+    assert {l["segment_id"] for l in g["lines"]} == {"p0", "p1", "p2", "p3"}
+
+
+def test_name_groups_ignore_first_letter_case_all_caps_and_plain_words():
+    assert _groups(["Sunbaenim est là", "ce sunbaenim"]) == []  # 첫 글자만 다름
+    assert _groups(["Maman !", "MAMAN !!", "Quelle joie", "Quelles joies"]) == []
+    assert _groups(["Il a dit Korea", "Il a dit Korean"]) == []  # 한 단어 이름은 키가 같을 때만
+
+
+def test_name_groups_fuzzy_multiword_names_but_not_partial_names():
+    [g] = _groups(["Joon Pyo !", "Joon Pyo ?", "Où est Jun-Pyo ?"])
+    assert set(_surfaces(g)) == {"Joon Pyo", "Jun-Pyo"}
+    assert _groups(["Lee Min est là", "Lee Min Ha est là"]) == []  # 이름의 일부와 전체
+    assert _groups(["Gu Jung part", "Yi Jung part"]) == []  # 첫 글자가 다른 서로 다른 이름
+
+
+def test_name_groups_drop_a_partial_name_chained_in_through_a_third_spelling():
+    groups = _groups(["Yoon Ji Hoo est là", "Yoon Ji Hoo ?", "Yoon Ji part", "Yoon Joo part"])
+    assert all("Yoon Ji" not in _surfaces(g) for g in groups)
+
+
+def test_name_groups_registered_spelling_is_recommended_even_if_unused():
+    entries = [{"entry_id": "e1", "korean_term": "신화", "canonical": "Shinhwa", "category": "place"}]
+    [g] = _groups(["Le lycée Shin Hwa !"], entries)
+    assert g["recommended"] == "Shinhwa" and g["has_registered"] and g["suggested_korean_term"] == ""
+    assert [l["surfaces"] for l in g["lines"]] == [["Shin Hwa"]]
+    # 금액 항목은 이름이 아니다.
+    amount = [{"entry_id": "e2", "korean_term": "10억", "canonical": "1 Milliard", "category": "amount"}]
+    assert _groups(["1 Milliard", "1 Milliards"], amount) == []
+
+
+def test_name_groups_suggest_korean_term_from_lines_and_skip_covered_short_groups():
+    korean = {0: "준표가 왔어", 1: "준표야, 어디 가", 2: "그 준표가", 3: "준표"}
+    [g] = _groups(["Joon Pyo !", "Joon Pyo ?", "Jun-Pyo", "Joon-Pyo"], korean=korean)
+    assert g["suggested_korean_term"] == "준표"
+    # 긴 이름 묶음이 이미 바꾸는 줄이면 짧은 이름 묶음은 따로 내지 않는다.
+    assert len(_groups(["Gu Jun Pyo", "Gu Jung Pyo", "Gu Jun Pyo"])) == 1
+
+
 def test_applied_glossary_fix_wins_over_reviewer_finding_and_undo_restores():
     from datetime import datetime, timezone
     seg = [{"id": "p1", "start": 0.0, "end": 2.0, "text": "original"}]
@@ -379,3 +458,10 @@ def test_repeated_line_within_10_seconds_is_not_listed():
     assert repeated_line_mismatches(segs, []) == []
     segs[1]["start"] = 110.0
     assert len(repeated_line_mismatches(segs, [])) == 1
+
+
+def test_name_groups_ignore_name_inside_registered_shop_term():
+    shop = [{"canonical": "Pressing Jan Di", "category": "business"}]
+    [g] = _groups(["Pressing Jan Di, 30 €.", "Où est Jan-Di ?", "Jan Di, viens.", "Jan-Di !"], shop)
+    assert {l["segment_id"] for l in g["lines"]} == {"p1", "p2", "p3"}  # 상호 줄(p0)은 빠진다
+    assert "Jan Di" in _surfaces(g)

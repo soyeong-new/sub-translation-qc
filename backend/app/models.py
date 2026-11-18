@@ -163,6 +163,16 @@ class CharacterGenderFact(Base):
     gender: Mapped[str] = mapped_column(String)  # "male" | "female"
 
 
+class CharacterMergeRejection(Base):
+    """사용자가 "다른 인물"이라고 답한 이름 쌍 — 같은 인물이냐는 질문을 다시 하지 않는다(이름은 정규화해 정렬 저장)."""
+    __tablename__ = "character_merge_rejections"
+    __table_args__ = (UniqueConstraint("title_id", "name_a", "name_b"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
+    name_a: Mapped[str] = mapped_column(String)
+    name_b: Mapped[str] = mapped_column(String)
+
+
 class GlossaryEntry(Base):
     __tablename__ = "glossary_entries"
     __table_args__ = (UniqueConstraint("title_id", "korean_term"),)

@@ -185,6 +185,10 @@ export const exportTargetVersion = (targetVersionId) =>
 export const reassembleExport = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/export/reassemble`);
 
+// 적용한 용어집·반복 대사 수정 전체 — 전체 자막에 바로 보여주려고 검사 없이 가볍게 받는다.
+export const getAppliedFixes = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/applied-fixes`);
+
 // 내보내기 창의 용어집 경고 처리 — 적용(줄별 교체)·되돌리기.
 const glossaryFixesUrl = (id, tail = "") => `/target-versions/${id}/glossary-fixes${tail}`;
 export const applyGlossaryFixes = (targetVersionId, items) =>
@@ -208,8 +212,14 @@ export const confirmExport = (targetVersionId) =>
 export const getTargetVersion = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}`);
 
-export const confirmRegisters = (targetVersionId) =>
-  request(`/target-versions/${targetVersionId}/confirm-registers`, { method: "POST" });
+export const confirmRegisters = (targetVersionId, sameCharacters = [], differentCharacters = []) =>
+  request(`/target-versions/${targetVersionId}/confirm-registers`, {
+    method: "POST",
+    body: JSON.stringify({ same_characters: sameCharacters, different_characters: differentCharacters }),
+  });
+
+export const getCharacterMergeCandidates = (targetVersionId) =>
+  request(`/target-versions/${targetVersionId}/character-merge-candidates`);
 
 export const rerunAnalysis = (targetVersionId) =>
   request(`/target-versions/${targetVersionId}/rerun`, { method: "POST" });

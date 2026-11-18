@@ -26,7 +26,7 @@ from app.knowledge.loader import load_knowledge
 from app.core.grammar_necessity import (
     check_grammar_necessity, _strip_html_tags, _detect_korean_gender, _resolve_model,
 )
-from app.core.gender_check import find_gender_mismatches, only_inflection_changed
+from app.core.gender_check import find_gender_mismatches, only_inflection_changed, revert_orphan_changes
 from app.schemas import SegmentText, AlignedPair, Finding
 
 logger = logging.getLogger(__name__)
@@ -801,10 +801,15 @@ async def _extract_glossary_terms_pass(
         {"id": p.id, "korean_text": p.korean.text, "target_text": p.target.text}
         for p in filtered_pairs
     ]
-    return await _safe_call(
+    extractions = await _safe_call(
         provider.extract_glossary_terms(items, profile),
         "작품 용어집 추출", "이번 회차에서는 새 용어를 추출하지 못했습니다",
         target_version_id, warnings)
+    # 이 회차 한국어 원문에 나온 횟수(한 줄에 두 번 나오면 두 번) — 저장 단계가 드문 용어를 거른다.
+    # 띄어쓰기는 무시하고 센다("잔디 세탁"과 "잔디세탁"은 같은 용어).
+    korean = ["".join(i["korean_text"].split()) for i in items]
+    return [{**e, "occurrences": sum(t.count("".join(e["korean_term"].split())) for t in korean)}
+            if isinstance(e, dict) and e.get("korean_term") else e for e in extractions]
 
 
 def _drop_malformed_corrections(corrections: list, label: str, target_version_id: str, warnings: list) -> list:
@@ -1258,9 +1263,14 @@ async def _reapply_resolved_gender_to_corrections(
     if group_items:
         results = await provider.apply_gender_groups(group_items, profile)
         corrected_by_idx.update({r["id"]: r["corrected_text"] for r in results})
+    try:
+        nlp = _resolve_model(profile.get("language"))
+    except ValueError:
+        nlp = None   # spaCy 모델이 없는 언어는 되돌림 검사를 지원하지 않는다
     for idx, entry in enumerate(entries):
         if idx in corrected_by_idx:
-            entry[0]["corrected_text"] = corrected_by_idx[idx]
+            before, after = entry[0]["corrected_text"], corrected_by_idx[idx]
+            entry[0]["corrected_text"] = revert_orphan_changes(nlp, before, after) if nlp else after
 
 
 async def _run_dual_verification_pass(

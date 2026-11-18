@@ -17,18 +17,33 @@ _TRAILING_PUNCT_RE = re.compile(r"[.,!?;:\"')\]]*$")
 _MAX_SPAN_WORDS = 3
 
 
-def term_in(term: str, text: str) -> bool:
-    """용어가 text에 들어 있는지 — 숫자로 시작/끝나는 용어(금액)는 더 긴 숫자의 일부로
-    걸리지 않게 한다("10억"이 "110억"·"1,100억"에, "200"이 "2000원"에 걸리면 안 됨).
-    이름 같은 일반 용어는 단순 부분 문자열 일치를 그대로 쓴다."""
-    if not term or not text:
-        return False
-    pattern = re.escape(term)
+def term_pattern(term: str) -> str:
+    """term_in이 쓰는 정규식 — 띄어쓰기만 다른 표기("잔디 세탁"/"잔디세탁")는 같은 용어로 본다.
+    숫자로 시작/끝나는 용어(금액)는 더 긴 숫자의 일부로 걸리지 않게 한다("10억"이 "110억"에, "200"이 "2000원"에)."""
+    pattern = r"\s*".join(re.escape(c) for c in term if not c.isspace())
+    if not pattern:
+        return ""
     if term[0].isdigit():
         pattern = r"(?<!\d)(?<!\d[.,])" + pattern
     if term[-1].isdigit():
         pattern = pattern + r"(?!\d)(?![.,]\d)"
+    return pattern
+
+
+def term_in(term: str, text: str) -> bool:
+    """용어가 text에 들어 있는지. 이름 같은 일반 용어는 단순 부분 문자열 일치를 그대로 쓴다."""
+    pattern = term_pattern(term)
+    if not pattern or not text:
+        return False
     return re.search(pattern, text) is not None
+
+
+def canonical_in(canonical: str, text: str) -> bool:
+    """표준 표기가 text에 들어 있는지 — 첫 글자 대소문자만 다른 건 같은 표기로 본다
+    (문장 맨 앞이라 대문자가 된 경우). 두 번째 글자부터의 차이(Jan-di/Jan-Di)는 다른 표기."""
+    if not canonical:
+        return False
+    return canonical in text or canonical[0].swapcase() + canonical[1:] in text
 
 
 def _split_preserve_ws(text: str) -> list:

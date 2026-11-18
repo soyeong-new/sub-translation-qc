@@ -11,15 +11,52 @@ import re
 from typing import Optional
 
 _SPACY_GENDER = {"male": "Masc", "female": "Fem"}
+from app.core.grammar_necessity import _strip_html_tags
+
 _WORD_RE = re.compile(r"\w+")
 _MAX_CHANGED_WORDS = 3   # 성 어미가 바뀌는 단어 + 그 단어와 일치해야 하는 한두 단어
 
 
+def _agreeing_nouns(token) -> list:
+    """이 단어가 성을 맞춘 명사들 — head 명사("mi última oportunidad"의 oportunidad), 또는
+    서술어 자리("La personne est respectée")는 head가 동사라서 주어(nsubj) 명사."""
+    gender = token.morph.get("Gender")
+    if not gender:   # 영어처럼 성 정보가 없는 언어는 빈 값끼리 같다고 보면 안 된다
+        return []
+    nouns = [token.head] if token.head.pos_ in ("NOUN", "PROPN") and token.head.morph.get("Gender") == gender else []
+    return nouns + [c for c in token.children
+                    if c.dep_.split(":")[0] == "nsubj" and c.pos_ == "NOUN" and c.morph.get("Gender") == gender]
+
+
 def _agrees_with_noun(token) -> bool:
-    """사람이 아니라 앞뒤 명사에 성을 맞춘 형용사("mi última oportunidad"의 última)는
-    화자 성별이 바뀌어도 그대로라 어긋남으로 보면 오탐이다."""
-    head = token.head
-    return head.pos_ in ("NOUN", "PROPN") and head.morph.get("Gender") == token.morph.get("Gender")
+    """사람이 아니라 앞뒤 명사에 성을 맞춘 형용사는 화자 성별이 바뀌어도 그대로라
+    어긋남으로 보면 오탐이다."""
+    return bool(_agreeing_nouns(token))
+
+
+def revert_orphan_changes(nlp, before: str, after: str) -> str:
+    """성별 재적용(LLM)이 바꾼 문장에서, 일치 대상 명사는 그대로인데 그 명사에 맞춘 단어만
+    바뀐 변경을 되돌린다. personne/persona처럼 성별이 고정된 명사는 LLM이 명사를 두고 형용사·
+    분사만 남성형으로 바꾸는 오류가 실측으로 잦았다(75번 중 37번). 사람 성별을 따르는 명사
+    (amiga→amigo)는 명사도 같이 바뀌므로 영향이 없다. 단어 수가 달라 짝을 못 맞추면 건드리지 않는다.
+    ponytail: LLM이 명사까지 바꾸면(personne→homme) 못 잡는다 — 실측 3/75."""
+    pieces_b, pieces_a = re.findall(r"\w+|\W+", before), re.findall(r"\w+|\W+", after)
+    idx_b = [i for i, p in enumerate(pieces_b) if _WORD_RE.fullmatch(p)]
+    idx_a = [i for i, p in enumerate(pieces_a) if _WORD_RE.fullmatch(p)]
+    if len(idx_b) != len(idx_a):
+        return after
+    old, new = [pieces_b[i] for i in idx_b], [pieces_a[i] for i in idx_a]
+    doc = nlp(_strip_html_tags(before))
+    for k, (a, b) in enumerate(zip(old, new)):
+        if a == b:
+            continue
+        token = next((t for t in doc if t.text == a), None)
+        for noun in _agreeing_nouns(token) if token is not None else []:
+            j = next((m for m, w in enumerate(old) if w.lower() == noun.text.lower()), None)
+            if j is not None and new[j].lower() == old[j].lower():
+                pieces_a[idx_a[k]] = a
+                break
+    return "".join(pieces_a)
 
 
 def find_gender_mismatches(pairs: list, resolved_registers: dict, nlp, skip_ids=()) -> dict:

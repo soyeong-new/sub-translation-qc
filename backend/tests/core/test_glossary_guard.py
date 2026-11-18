@@ -63,3 +63,9 @@ def test_patch_and_overrides_do_not_fire_on_longer_number_containing_the_term():
     entries = [{"korean_term": "10억", "canonical": "mil millones de wones", "entry_id": "e1"}]
     assert patch_missing_canonical("110억 짜리", "Cuesta Mil", "Cuesta Mil", entries) == "Cuesta Mil"
     assert find_canonical_overrides("110억 짜리", "x", "y", entries) == []
+
+
+def test_term_in_ignores_spacing_differences():
+    from app.core.glossary_guard import term_in
+    assert term_in("잔디 세탁", "저기 잔디세탁 사장님") and term_in("잔디세탁", "잔디 세탁소")
+    assert not term_in("잔디 세탁", "잔디는 세탁")

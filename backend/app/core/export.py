@@ -3,7 +3,7 @@
 import logging
 import re
 from typing import List, Optional
-from app.core.glossary_guard import term_in
+from app.core.glossary_guard import canonical_in, term_in, term_pattern
 from app.core.ingest import build_srt
 from app.core.repeated_lines import find_repeated_groups
 from app.core.format_rules import (
@@ -160,6 +160,10 @@ def safety_net_check(segments: List[dict], findings: List[dict]) -> list:
     return check_line_length(pairs)
 
 
+def _squash(term: str) -> str:
+    return "".join(term.split())
+
+
 def _find_glossary_candidates(segments: List[dict], findings: List[dict],
                                glossary_entries: List[dict]) -> list:
     """1차 필터 — 문자열 매칭으로 값싸게 후보만 추린다. 대명사로 자연스럽게
@@ -179,13 +183,15 @@ def _find_glossary_candidates(segments: List[dict], findings: List[dict],
             canonical, korean_term = entry.get("canonical"), entry.get("korean_term")
             if not canonical or not korean_term:
                 continue
-            # 더 긴 등록 용어에 포함된 짧은 용어("신화 그룹" 속 "신화")는 긴 용어가 그 자리를
-            # 이미 다루므로 따로 검사하지 않는다 — 같은 줄에 같은 경고가 두 장 뜨던 문제.
+            # 더 긴 등록 용어가 이미 차지한 자리는 짧은 용어가 다시 걸리지 않게 가린다 —
+            # "신화 그룹" 속 "신화", 그리고 "금잔디 세탁소"에서 "잔디 세탁소"와 겹치는 "금잔디"
+            # (부분만 겹쳐도 같다). 같은 줄에 같은 경고가 두 장 뜨거나 엉뚱한 표기로 바꾸라는
+            # 카드가 뜨던 문제.
             remainder = korean_text
-            for longer in sorted((t for t in terms if t != korean_term and korean_term in t),
-                                 key=len, reverse=True):
-                remainder = remainder.replace(longer, " ")
-            if term_in(korean_term, remainder) and canonical not in text:
+            for longer in sorted((t for t in terms if len(_squash(t)) > len(_squash(korean_term))),
+                                 key=lambda t: len(_squash(t)), reverse=True):
+                remainder = re.sub(term_pattern(longer), " ", remainder)
+            if term_in(korean_term, remainder) and not canonical_in(canonical, text):
                 candidates.append({
                     "id": f"{seg['id']}:{entry.get('entry_id')}",
                     "segment_id": seg["id"], "korean_term": korean_term,
@@ -275,6 +281,175 @@ async def glossary_consistency_check(segments: List[dict], findings: List[dict],
             korean_term=c["korean_term"], canonical=c["canonical"],
         ))
     return violations
+
+
+_NAME_MAX_WORDS = 3
+_NAME_MIN_KEY = 4
+_WORD_RE = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*")
+_HANGUL_RUN = re.compile(r"[가-힣]+")
+
+
+def _name_key(surface: str) -> str:
+    return "".join(ch for ch in surface.lower() if ch.isalnum())
+
+
+def _fold_first(surface: str) -> str:
+    # 줄바꿈과 공백은 같은 것으로 본다 — 줄이 꺾인 자리("pressing\nJan Di")는 철자 차이가 아니다.
+    surface = " ".join(surface.split())
+    return surface[:1].lower() + surface[1:]
+
+
+def _edit_distance(a: str, b: str) -> int:
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _word_spans(text: str):
+    """공백·하이픈으로만 이어진 연속 단어 묶음 (start, end) — 문장부호를 건너지 않는다."""
+    words = [(m.start(), m.end()) for m in _WORD_RE.finditer(text)]
+    for i in range(len(words)):
+        for j in range(i, min(len(words), i + _NAME_MAX_WORDS)):
+            if j > i and not re.fullmatch(r"[\s-]+", text[words[j - 1][1]:words[j][0]]):
+                break
+            yield words[i][0], words[j][1]
+
+
+def _similar_names(a: str, b: str) -> bool:
+    """같은 이름의 철자 차이로 볼 만한가 — 글자만 이은 키가 같거나(Jan Di/Jan-Di/Jan-di),
+    여러 단어로 된 이름끼리 첫 글자가 같고 한두 글자만 다르다(Joon Pyo/Jun-Pyo).
+    이름의 일부와 전체(Lee Min/Lee Min Ha)는 철자 차이가 아니므로 묶지 않는다."""
+    ka, kb = _name_key(a), _name_key(b)
+    if ka == kb:
+        return True
+    multi = lambda f: len(_WORD_RE.findall(f)) > 1 or "-" in f
+    if not (multi(a) and multi(b)) or ka[0] != kb[0]:
+        return False
+    if ka.startswith(kb) or kb.startswith(ka) or ka.endswith(kb) or kb.endswith(ka):
+        return False
+    shortest = min(len(ka), len(kb))
+    limit = 2 if shortest >= 6 else 1 if shortest >= 5 else 0
+    return _edit_distance(ka, kb) <= limit
+
+
+def _suggest_korean_term(korean_lines: List[str]) -> str:
+    """묶음에 속한 줄들의 한국어에서 가장 여러 줄에 공통으로 나오는 말(2~5글자) — 용어집에
+    등록할 한국어 용어를 미리 채워 주는 추측이다(사용자가 고친다). 못 찾으면 빈 문자열."""
+    if len(korean_lines) < 2:
+        return ""
+    coverage: dict = {}
+    for line in korean_lines:
+        grams = set()
+        for run in _HANGUL_RUN.findall(line):
+            for n in range(2, 6):
+                grams.update(run[i:i + n] for i in range(len(run) - n + 1))
+        for g in grams:
+            coverage[g] = coverage.get(g, 0) + 1
+    best = max(coverage.values(), default=0)
+    if best < 2 or best < 0.6 * len(korean_lines):
+        return ""
+    return max((g for g, c in coverage.items() if c == best), key=lambda g: (len(g), g))
+
+
+def name_variant_groups(segments: List[dict], findings: List[dict], glossary_entries: List[dict]) -> list:
+    """최종 번역문에서 같은 이름이 철자만 달리 쓰인 묶음(Joon Pyo / Jun-Pyo / Joon-Pyo)을 찾는다.
+    용어집 표기와 비교하지 않고 자막끼리 비교하므로 이름만 쓴 줄이나 한국어 줄에 용어가 없는 줄도
+    잡힌다. 용어집 표기가 묶음에 있으면 함께 묶어 그것을 추천한다. LLM 호출 없음 — 어느 표기를 쓸지는
+    사용자가 고르고, 다른 이름이면 넘긴다(오탐은 사용자가 거른다). 한 단어짜리 이름의 철자 차이는
+    키가 같을 때만 묶는다(Quelle/Quelles 같은 일반 단어를 묶지 않으려고)."""
+    final_by_segment = _final_text_by_segment(findings)
+    lines = [(s, final_by_segment.get(s["id"], s["text"])) for s in segments if not s.get("excluded")]
+    lines = [(s, t) for s, t in lines if t]
+    lower_words = {w.lower() for _, t in lines for w in _WORD_RE.findall(t) if w[0].islower()}
+    registered = {_fold_first(e["canonical"]): e["canonical"] for e in glossary_entries
+                  if e.get("canonical") and e.get("category") != "amount"
+                  and len(_name_key(e["canonical"])) >= _NAME_MIN_KEY}
+    forms: dict = {}  # 첫 글자를 접은 표기 → {surface, segs: {segment_id: {실제 표기, ...}}}
+    def form(surface):
+        return forms.setdefault(_fold_first(surface), {"surface": surface, "segs": {}})
+    for canonical in registered.values():
+        form(canonical)
+    for seg, text in lines:
+        # 등록된 용어 표기(Pressing Jan Di)의 안쪽 조각(Jan Di)은 그 용어의 일부이므로 이름으로 세지 않는다.
+        claimed = [m.span() for c in registered.values() for m in re.finditer(term_pattern(c), text)]
+        for start, end in _word_spans(text):
+            if any(cs <= start and end <= ce and (end - start) < (ce - cs) for cs, ce in claimed):
+                continue
+            surface = re.sub(r"['’]s$", "", text[start:end])
+            if not surface[:1].isupper() or surface.isupper() or len(_name_key(surface)) < _NAME_MIN_KEY:
+                continue
+            if _fold_first(surface) not in registered and any(
+                    w.lower() in lower_words for w in _WORD_RE.findall(surface)):
+                continue  # 소문자로도 쓰인 일반 단어는 이름이 아니다
+            form(surface)["segs"].setdefault(seg["id"], set()).add(" ".join(surface.split()))
+    keys = list(forms)
+    parent = list(range(len(keys)))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            if _similar_names(forms[keys[i]]["surface"], forms[keys[j]]["surface"]):
+                parent[find(i)] = find(j)
+    clusters: dict = {}
+    for i, k in enumerate(keys):
+        clusters.setdefault(find(i), []).append(k)
+    korean_by_segment = {s["id"]: s.get("korean_text", "") for s, _ in lines}
+    text_by_segment = {s["id"]: t for s, t in lines}
+    groups = []
+    for members in clusters.values():
+        # 다른 구성원의 앞/뒷부분인 이름(Yoon Ji ⊂ Yoon Ji Hoo)은 철자 변형이 아니라 일부 — 연쇄로 묶였어도
+        # 빼야 한다(바꾸면 "Yoon Ji Hoo Hoo"가 된다).
+        names = {k: _name_key(forms[k]["surface"]) for k in members}
+        members = [k for k in members if not any(
+            len(names[o]) > len(names[k]) and (names[o].startswith(names[k]) or names[o].endswith(names[k]))
+            for o in members)]
+        if len(members) < 2:
+            continue
+        variants = []
+        for k in members:
+            segs = forms[k]["segs"]
+            variants.append({"surface": forms[k]["surface"], "count": sum(len(v) for v in segs.values()),
+                             "registered": k in registered})
+        variants.sort(key=lambda v: (not v["registered"], -v["count"], v["surface"]))
+        recommended = variants[0]["surface"]
+        rec_key = _fold_first(recommended)
+        # 줄은 묶음의 모든 표기가 쓰인 줄 전부다 — 사용자가 추천이 아닌 표기를 골라도 바꿀 줄을 알아야 한다.
+        merged: dict = {}
+        for k in members:
+            for sid, surfaces in forms[k]["segs"].items():
+                merged.setdefault(sid, set()).update(surfaces)
+        rec_key = _fold_first(recommended)
+        if not any(_fold_first(sf) != rec_key for surfaces in merged.values() for sf in surfaces):
+            continue  # 추천 표기뿐이면 바꿀 것이 없다
+        order = {s["id"]: i for i, (s, _) in enumerate(lines)}
+        group_lines = [{"segment_id": sid, "text": text_by_segment[sid], "korean_text": korean_by_segment[sid],
+                        "surfaces": sorted(merged[sid])}
+                       for sid in sorted(merged, key=order.get)]
+        groups.append({
+            "id": "|".join(sorted(members)), "variants": variants, "recommended": recommended,
+            "has_registered": any(v["registered"] for v in variants), "lines": group_lines,
+            "suggested_korean_term": "" if any(v["registered"] for v in variants)
+            else _suggest_korean_term([l["korean_text"] for l in group_lines if l["korean_text"]]),
+        })
+    # 긴 이름 묶음이 이미 바꾸는 줄이면 그 안의 짧은 이름 묶음(Gu Jun Pyo ⊃ Jun Pyo)은 따로 내지 않는다.
+    groups.sort(key=lambda g: -max(len(_name_key(v["surface"])) for v in g["variants"]))
+    covered: set = set()
+    result = []
+    for g in groups:
+        rec_key = _fold_first(g["recommended"])
+        ids = {l["segment_id"] for l in g["lines"] if any(_fold_first(sf) != rec_key for sf in l["surfaces"])}
+        if ids <= covered:
+            continue
+        covered |= ids
+        result.append(g)
+    return result
 
 
 def unconfirmed_amount_check(segments: List[dict], unconfirmed_terms: List[str]) -> list:

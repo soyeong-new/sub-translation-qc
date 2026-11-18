@@ -116,3 +116,63 @@ async def test_pass_leaves_existing_card_alone_when_its_suggestion_has_the_right
     created = await _run_gender_mismatch_pass(
         [pair], _StubProvider({}), {"language": "es"}, "tv", _regs("p1", "experto", "female"), [card], [])
     assert created == [] and card.description == "d"
+
+
+@pytest.mark.parametrize("lang,text,word", [
+    ("fr", "La personne est respectée.", "respectée"),
+    ("fr", "La victime est blessée.", "blessée"),
+    ("es", "La persona es respetada.", "respetada"),
+    ("es", "La víctima fue herida.", "herida"),
+    ("pt", "A pessoa é respeitada.", "respeitada"),
+    ("pt", "A vítima foi ferida.", "ferida"),
+])
+def test_ignores_predicate_that_agrees_with_subject_noun_not_the_person(lang, text, word):
+    """서술어 자리의 분사는 head가 동사라도 주어 명사(성별 고정 명사 personne/persona/pessoa)에 맞춘 것이라
+    사람이 남성이어도 어긋남이 아니다(사용자는 문법을 몰라 남성을 누른다)."""
+    assert find_gender_mismatches([_pair("p1", text)], _regs("p1", word, "male"), _resolve_model(lang)) == {}
+
+
+@pytest.mark.parametrize("lang,text,word", [
+    ("fr", "Elle est fatiguée.", "fatiguée"),
+    ("es", "Estoy cansada.", "cansada"),
+    ("es", "Ella está cansada.", "cansada"),
+    ("pt", "Ela está cansada.", "cansada"),
+])
+def test_still_finds_predicate_when_subject_is_not_a_noun(lang, text, word):
+    """주어가 대명사이거나 생략이면 맞춘 명사가 없으니 기존처럼 어긋남으로 잡는다."""
+    found = find_gender_mismatches([_pair("p1", text)], _regs("p1", word, "male"), _resolve_model(lang))
+    assert found["p1"][0]["words"] == [word]
+
+
+@pytest.mark.parametrize("lang,before,after,expected", [
+    # 성별 고정 명사는 그대로인데 분사만 바뀜 → 되돌린다
+    ("fr", "Je suis une personne très respectée.", "Je suis une personne très respecté.",
+     "Je suis une personne très respectée."),
+    ("es", "La persona es respetada.", "La persona es respetado.", "La persona es respetada."),
+    ("pt", "Ele é a vítima ferida dessa história.", "Ele é a vítima ferido dessa história.",
+     "Ele é a vítima ferida dessa história."),
+    # 사람 성별을 따르는 명사는 명사도 같이 바뀐다 → 그대로 둔다
+    ("es", "Mi amiga está cansada.", "Mi amigo está cansado.", "Mi amigo está cansado."),
+    ("es", "Soy una enfermera dedicada.", "Soy un enfermero dedicado.", "Soy un enfermero dedicado."),
+    # 일치 명사가 없는 단어는 그대로 둔다
+    ("es", "Estoy cansada.", "Estoy cansado.", "Estoy cansado."),
+    # 단어 수가 달라 짝을 못 맞추면 건드리지 않는다
+    ("es", "Estoy cansada.", "Estoy muy cansado.", "Estoy muy cansado."),
+])
+def test_revert_orphan_changes(lang, before, after, expected):
+    from app.core.gender_check import revert_orphan_changes
+    assert revert_orphan_changes(_resolve_model(lang), before, after) == expected
+
+
+def test_revert_orphan_changes_keeps_html_tags():
+    from app.core.gender_check import revert_orphan_changes
+    assert revert_orphan_changes(
+        _resolve_model("fr"), "<i>La personne est respectée.</i>", "<i>La personne est respecté.</i>"
+    ) == "<i>La personne est respectée.</i>"
+
+
+def test_revert_orphan_changes_does_nothing_for_language_without_gender():
+    """영어는 Gender 정보가 없어 빈 값끼리 '일치'로 보면 멀쩡한 변경이 되돌려진다."""
+    from app.core.gender_check import revert_orphan_changes
+    assert revert_orphan_changes(
+        _resolve_model("en"), "He is a tall man.", "He is a short man.") == "He is a short man."

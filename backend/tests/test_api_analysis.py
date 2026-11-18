@@ -1,10 +1,11 @@
 import pytest
+from sqlalchemy import select
 from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db import engine, async_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import Base, Title, Episode, TargetVersion, Segment
+from app.models import Base, Title, Episode, TargetVersion, Segment, CharacterGenderFact
 from app.repositories import get_character_gender_facts
 
 TARGET_SRT = """1
@@ -684,3 +685,104 @@ async def test_flagged_segments_marks_groups_that_likely_are_not_a_person():
     assert flags == [True, False, False]
     assert by_index["s1"]["resolved_gender_groups_raw"] is None   # 그룹이 없으면 그대로 None
     assert "likely_not_person" not in groups[0]                   # 저장된 값에는 영향 없음
+
+
+def test_find_merge_candidates_rules():
+    from app.routers.analysis import find_merge_candidates
+    # 짧은 이름이 긴 이름의 일부 + 같은 성별 + 한쪽이 이번에 새로 확정 → 후보
+    assert find_merge_candidates({"잔디": "female"}, {"금잔디": "female"}) == [("잔디", "금잔디", "female")]
+    # 성별이 다르면 후보가 아니다
+    assert find_merge_candidates({"잔디": "male"}, {"금잔디": "female"}) == []
+    # 둘 다 이미 저장돼 있고 이번에 새로 확정된 게 없으면 합칠 게 없다
+    assert find_merge_candidates({}, {"금잔디": "female", "잔디": "female"}) == []
+    # 한 글자 이름은 부분 문자열이 너무 흔해서 제외
+    assert find_merge_candidates({"현": "male"}, {"김현": "male"}) == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_registers_saves_both_names_when_user_says_same_character(monkeypatch):
+    """"같은 인물"로 답한 이름 쌍은 한쪽에만 확정된 성별이 다른 이름에도 저장된다."""
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+
+    async with async_session() as session:
+        title = Title(name="Merge Drama", type="series"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        session.add(CharacterGenderFact(title_id=title.id, character_name="금잔디", gender="female"))
+        tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                           status="awaiting_confirmation"); session.add(tv)
+        await session.flush()
+        session.add(Segment(
+            target_version_id=tv.id, index=0, start=0.0, end=1.0,
+            korean_text="잔디가 왔어.", target_text="Llegó Jandi.", gender_check_needed=True,
+            resolved_gender_groups_raw=[{
+                "group_index": 0, "referent": "특정 인물의 이름", "character_name": "잔디",
+                "words": ["Jandi"], "target_word_lemmas": ["jandi"], "candidate_indices": [0],
+                "gender": "female", "suggested_gender": None, "human_confirmed": True,
+            }]))
+        await session.commit()
+        tv_id, title_id = tv.id, title.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/target-versions/{tv_id}/character-merge-candidates")
+        assert r.json() == [{"names": ["잔디", "금잔디"], "gender": "female",
+                             "examples": ["잔디가 왔어.", None]}]
+        r = await client.post(f"/target-versions/{tv_id}/confirm-registers",
+                              json={"same_characters": [["잔디", "금잔디"]]})
+        assert r.status_code == 200
+        if app.state.background_tasks:
+            await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+    async with async_session() as session:
+        assert await get_character_gender_facts(session, title_id) == {"잔디": "female", "금잔디": "female"}
+
+
+@pytest.mark.asyncio
+async def test_different_character_answer_is_remembered_and_not_asked_again(monkeypatch):
+    """"다른 인물"로 답한 쌍은 저장되어 다음 후보 조회에서 빠진다. 답하지 않은(모르겠음) 쌍은 계속 나온다."""
+    import asyncio
+    monkeypatch.setenv("QC_PROVIDER", "mock")
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "x")
+
+    async def _make_tv(title_id=None):
+        async with async_session() as session:
+            if title_id is None:
+                title = Title(name="Reject Drama", type="series"); session.add(title); await session.flush()
+                title_id = title.id
+                session.add(CharacterGenderFact(title_id=title_id, character_name="오민지", gender="female"))
+            episode = Episode(title_id=title_id, video_path="/x.mp4"); session.add(episode); await session.flush()
+            tv = TargetVersion(episode_id=episode.id, target_language="es", variant="LATAM",
+                               status="awaiting_confirmation"); session.add(tv)
+            await session.flush()
+            session.add(Segment(
+                target_version_id=tv.id, index=0, start=0.0, end=1.0,
+                korean_text="민지야.", target_text="Minji.", gender_check_needed=True,
+                resolved_gender_groups_raw=[{
+                    "group_index": 0, "referent": "특정 인물의 이름", "character_name": "민지",
+                    "words": ["Minji"], "target_word_lemmas": ["minji"], "candidate_indices": [0],
+                    "gender": "female", "suggested_gender": None, "human_confirmed": True}]))
+            await session.commit()
+            return tv.id, title_id
+
+    tv1, title_id = await _make_tv()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        assert len((await client.get(f"/target-versions/{tv1}/character-merge-candidates")).json()) == 1
+        r = await client.post(f"/target-versions/{tv1}/confirm-registers",
+                              json={"different_characters": [["민지", "오민지"]]})
+        assert r.status_code == 200
+        if app.state.background_tasks:
+            await asyncio.gather(*list(app.state.background_tasks), return_exceptions=True)
+
+    from app.models import CharacterMergeRejection
+    from app.routers.analysis import find_merge_candidates, _pair_key
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(CharacterMergeRejection).where(CharacterMergeRejection.title_id == title_id))).scalars().all()
+        rejected = {(r.name_a, r.name_b) for r in rows}
+    assert rejected == {_pair_key("민지", "오민지")}
+    # 저장된 "다른 인물" 쌍은 후보에서 빠지고, 저장 안 된 쌍은 그대로 나온다
+    assert find_merge_candidates({"민지": "female"}, {"오민지": "female"}, rejected) == []
+    assert find_merge_candidates({"민지": "female"}, {"오민지": "female"}) == [("민지", "오민지", "female")]

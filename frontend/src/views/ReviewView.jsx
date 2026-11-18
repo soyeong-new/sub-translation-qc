@@ -10,7 +10,10 @@ import {
   rejectFindingPair,
   exportTargetVersion,
   reassembleExport,
+  getAppliedFixes,
   applyGlossaryFixes,
+  postGlossaryEntry,
+  patchGlossaryEntry,
   undoGlossaryFix,
   applyRepeatedFixes,
   undoRepeatedFix,
@@ -31,6 +34,7 @@ import {
 import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PAD_END_SECONDS } from "./FlaggedSegmentStepper.jsx";
 import QQLogo from "../components/QQLogo.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
+import NameVariantGroups from "../components/NameVariantGroups.jsx";
 import VideoSyncControl from "../components/VideoSyncControl.jsx";
 import { orderColumns } from "../components/glossaryOrder.js";
 import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
@@ -435,10 +439,10 @@ function InlineGenderQuestion({ segment, pending, error, onResolveGender, onReso
           {groups.map((group, index) => (
             <div key={index} className="rounded-md border border-border bg-background p-2">
               <GenderQuestion
-                heading={group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`}
+                heading={`인물 ${index + 1}`}
                 words={group.words}
                 wordMeanings={group.word_meanings}
-                referent={null}
+                referent={group.referent}
                 resolvedGender={group.gender}
                 pending={pending}
                 onSelect={(gender) => onResolveGenderGroup(segment.id, index, gender)}
@@ -1430,6 +1434,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 잠가 중복 호출을 막고, 실패하면 이유를 팝업에 보여준다(안 보이면 눌러도 반응 없는 것처럼 보인다).
   const [reassembling, setReassembling] = useState(false);
   const [glossaryBusy, setGlossaryBusy] = useState(false);
+  const [dismissedNameGroups, setDismissedNameGroups] = useState([]); // '다른 이름'으로 넘긴 묶음 — 창을 열어 둔 동안만
+  const [nameGroupError, setNameGroupError] = useState(null);
   const [exportTab, setExportTab] = useState(null); // 내보내기 창에서 보고 있는 탭(없는 탭이면 첫 탭)
   const [repeatedPick, setRepeatedPick] = useState({}); // 반복 대사 카드에서 고른 기준 줄(카드 첫 줄 id → segment_id)
   const [rowSkipped, setRowSkipped] = useState({}); // 용어 카드에서 체크를 끈 줄("segment_id|용어")
@@ -1593,6 +1599,17 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
       cancelled = true;
     };
   }, [targetVersionId]);
+
+  // 적용한 용어집·반복 대사 수정 — 전체 자막/영상 자막이 적용 결과를 바로 보여주는 데 쓴다.
+  const [appliedFixList, setAppliedFixList] = useState([]);
+  function refreshAppliedFixes() {
+    return getAppliedFixes(targetVersionId)
+      .then((data) => setAppliedFixList(data))
+      .catch(() => {
+        // 참고용 표시라 실패해도 화면 전체를 막지 않는다.
+      });
+  }
+  useEffect(() => { refreshAppliedFixes(); }, [targetVersionId]);
 
   function refreshGlossary() {
     if (!titleId) return;
@@ -2014,12 +2031,30 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     setReassembleError(null);
     try {
       await action();
+      await refreshAppliedFixes();   // 전체 자막에 바로 보이게 — 반영(검사)이 실패해도 먼저 갱신한다
       await handleReassemble();
     } catch (err) {
       setReassembleError(err.message ?? "처리하지 못했습니다.");
     } finally {
       setGlossaryBusy(false);
     }
+  }
+
+  // 표기 통일 카드의 [적용] — 체크한 줄을 고른 표기로 바꾸고, 원하면 용어집에도 등록한다.
+  // 등록이 실패해도(이미 등록된 용어 등) 줄 변경은 유지되므로 이유만 카드에 알린다.
+  async function applyNameVariants({ items, surface, koreanTerm }) {
+    setNameGroupError(null);
+    await runGlossaryAction(async () => {
+      await applyGlossaryFixes(targetVersionId, items);
+      if (!koreanTerm) return;
+      try {
+        const entry = await postGlossaryEntry(titleId, { korean_term: koreanTerm, category: "person", aliases: [] });
+        await patchGlossaryEntry(entry.id, { spellings: { [targetColumnKey]: surface } });
+        refreshGlossary();
+      } catch (err) {
+        setNameGroupError(`줄은 바뀌었지만 용어집에는 등록하지 못했습니다: ${err.message ?? "오류"}`);
+      }
+    });
   }
 
   // SRT를 최신 findings/segments/용어집으로 다시 조립하고, 전체 세그먼트에 대한
@@ -2075,6 +2110,10 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
     .forEach((f) => {
       resolvedTargetTextBySegment[f.segment_id] = f.final_text;
     });
+  // 적용한 수정은 검수 결과보다 나중에 덮어쓴다(서버 export._final_text_by_segment와 같은 규칙).
+  appliedFixList.forEach((fx) => {
+    resolvedTargetTextBySegment[fx.segment_id] = fx.after_text;
+  });
 
   // 겹치는 짝이 없는 반쪽짜리 Segment(한국어만 있거나 대상언어만 있는
   // 경우) — 시간 순으로 보여준다.
@@ -2365,6 +2404,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               ].filter(([, items]) => items.length > 0)
                 .map(([label, items]) => [label, items.length, groupGlossaryWarnings(items)]);
               const appliedFixes = exportStatus.result?.glossary_fixes ?? [];
+              const nameGroups = (exportStatus.result?.name_variant_groups ?? [])
+                .filter((g) => !dismissedNameGroups.includes(g.id));
               const repeatedGroups = exportStatus.result?.repeated_groups ?? [];
               const repeatedFixes = exportStatus.result?.repeated_fixes ?? [];
               const formatWarnings = exportStatus.warnings.filter((w) => w.rule !== "glossary_mismatch");
@@ -2372,6 +2413,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
               const tabs = [
                 ["format", "포맷", formatWarnings.length],
                 ["glossary", "용어집", glossaryWarnings.length],
+                ["names", "표기 통일", nameGroups.length],
                 ["repeated", "반복 대사", repeatedGroups.length],
                 ["applied", "적용 내역", appliedFixes.length + repeatedFixes.length],
               ].filter(([, , count]) => count > 0);
@@ -2471,6 +2513,20 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                             </details>
                           ))}
                         </div>
+                      )}
+
+                      {activeTab === "names" && (
+                        <NameVariantGroups
+                          groups={nameGroups}
+                          error={nameGroupError}
+                          busy={glossaryBusy}
+                          timeOf={(id) => {
+                            const seg = segments?.find((x) => x.id === id);
+                            return seg ? formatSrtTimestamp(seg.start) : "";
+                          }}
+                          onApply={applyNameVariants}
+                          onDismiss={(id) => setDismissedNameGroups((prev) => [...prev, id])}
+                        />
                       )}
 
                       {activeTab === "glossary" && (

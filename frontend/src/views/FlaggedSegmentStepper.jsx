@@ -150,7 +150,7 @@ export function GenderQuestion({
       )}
       {referent && (
         <p className="mb-3 rounded-md bg-muted/60 px-3 py-2 text-sm text-foreground">
-          이 성별은 <strong>{referent}</strong>의 성별입니다.
+          위 단어는 <strong>{referent}</strong>을(를) 가리킵니다.
         </p>
       )}
       {isReused && (
@@ -524,14 +524,10 @@ export default function FlaggedSegmentStepper({
                       genderGroups.map((group, index) => (
                         <div key={index} className={genderGroups.length > 1 ? "rounded-md border border-border bg-card p-3" : ""}>
                           <GenderQuestion
-                            heading={
-                              genderGroups.length > 1
-                                ? (group.referent ? `인물 ${index + 1} (${group.referent})` : `인물 ${index + 1}`)
-                                : null
-                            }
+                            heading={genderGroups.length > 1 ? `인물 ${index + 1}` : null}
                             words={group.words}
                             wordMeanings={group.word_meanings}
-                            referent={genderGroups.length > 1 ? null : group.referent}
+                            referent={group.referent}
                             resolvedGender={group.gender}
                             suggestedGender={group.suggested_gender}
                             likelyNotPerson={group.likely_not_person}

@@ -352,6 +352,11 @@ async def get_glossary_prompt_entries(session: AsyncSession, title_id: str,
     ]
 
 
+def _squash(term: str) -> str:
+    return "".join(term.split())
+
+
+GLOSSARY_MIN_OCCURRENCES = 3   # 인물·금액 외 용어를 새로 등록하는 최소 등장 횟수
 _MAX_CANDIDATES = 5   # 언어(열)마다의 참고 후보 상한
 
 
@@ -368,8 +373,9 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
     existing_entries = (await session.execute(
         select(GlossaryEntry).where(GlossaryEntry.title_id == title_id)
     )).scalars().all()
-    entry_by_term = {e.korean_term: e for e in existing_entries}
-    suppressed_terms = set((await session.execute(
+    # 띄어쓰기만 다른 용어("잔디 세탁"/"잔디세탁")는 같은 항목으로 본다.
+    entry_by_term = {_squash(e.korean_term): e for e in existing_entries}
+    suppressed_terms = set(_squash(t) for t in (await session.execute(
         select(GlossarySuppression.korean_term).where(
             GlossarySuppression.title_id == title_id)
     )).scalars().all())
@@ -390,9 +396,14 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
         canonical = extraction.get("canonical")
         # amount는 모델이 정한 표기(자릿수·통화 오류가 확인됨)를 자동 확정하지 않는다
         # — 항목만 만들고 표기는 사람이 채운다(표기 행이 없으면 프롬프트에서도 빠진다).
-        if not term or term in suppressed_terms:
+        if not term or _squash(term) in suppressed_terms:
             continue
-        entry = entry_by_term.get(term)
+        entry = entry_by_term.get(_squash(term))
+        # 인물·금액 외 새 항목은 이 회차에서 GLOSSARY_MIN_OCCURRENCES번 이상 나온 것만 등록한다
+        # (이미 등록된 용어는 이 언어판 표기를 남겨야 하므로 횟수와 무관). occurrences가 없으면 통과.
+        if (entry is None and extraction.get("category") not in ("person", "amount")
+                and extraction.get("occurrences", GLOSSARY_MIN_OCCURRENCES) < GLOSSARY_MIN_OCCURRENCES):
+            continue
         # 이미 있는 항목은 저장된 카테고리를 따른다 — 모델이 같은 용어를 다른
         # 카테고리로 라벨링해도 amount 항목에 표기가 자동 확정되면 안 된다.
         is_amount = (entry.category if entry is not None else extraction.get("category")) == "amount"
@@ -403,7 +414,7 @@ async def upsert_glossary_extraction(session: AsyncSession, title_id: str,
                                    category=extraction.get("category", "person"), aliases=[])
             session.add(entry)
             await session.flush()
-            entry_by_term[term] = entry
+            entry_by_term[_squash(term)] = entry
 
         if is_amount:
             # 표기는 확정하지 않고, 번역문에서 쓰인 표기만 후보로 모은다(중복 제외, 최대 5개).

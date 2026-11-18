@@ -44,6 +44,29 @@ async def test_export_returns_srt_and_stats():
         assert "texto bueno" in body["srt"]
         assert body["stats"]["finding_count"] == 1
         assert body["stats"]["reflection_rate"] == 1.0
+        assert body["name_variant_groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_export_returns_name_variant_groups():
+    async with async_session() as session:
+        title = Title(name="T", type="movie"); session.add(title); await session.flush()
+        episode = Episode(title_id=title.id, video_path="/x.mp4"); session.add(episode); await session.flush()
+        tv = TargetVersion(episode_id=episode.id, target_language="fr", variant="FR")
+        session.add(tv); await session.flush()
+        for i, text in enumerate(["Où est Jan Di ?", "Jan-Di, viens.", "Ça va, Jan-Di ?"]):
+            session.add(Segment(target_version_id=tv.id, index=i, start=float(i), end=i + 1.0,
+                                korean_text="잔디야", target_text=text))
+        await session.commit()
+        tv_id = tv.id
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        body = (await client.get(f"/target-versions/{tv_id}/export")).json()
+    [group] = body["name_variant_groups"]
+    assert group["recommended"] == "Jan-Di"
+    assert [v["surface"] for v in group["variants"]] == ["Jan-Di", "Jan Di"]
+    assert sum(1 for l in group["lines"] if "Jan Di" in l["surfaces"]) == 1
 
 
 @pytest.mark.asyncio
@@ -429,8 +452,14 @@ async def test_glossary_fix_apply_and_undo_flow():
             {"segment_id": "p1", "replacements": [{"from_text": "Gang-ok", "to_text": "Kang-ok"}]}]})
         assert r.json()["skipped"] == ["p1"]
 
+        # 가벼운 조회(내보내기 검사 없이)로도 적용 내역이 보인다 — 화면의 전체 자막이 바로 쓴다
+        r = await client.get(f"/target-versions/{tv_id}/applied-fixes")
+        assert r.json() == [{"segment_id": "p1", "kind": "applied", "before_text": "Oye, Gang-ok.",
+                             "after_text": "Oye, Kang-ok."}]
+
         # 되돌리기 → 원래 문구와 경고가 돌아온다
         await client.post(f"/target-versions/{tv_id}/glossary-fixes/undo", json={"segment_id": "p1"})
+        assert (await client.get(f"/target-versions/{tv_id}/applied-fixes")).json() == []
         body = (await client.get(f"/target-versions/{tv_id}/export")).json()
         assert "Gang-ok" in body["srt"] and body["glossary_fixes"] == []
         assert len(_glossary_warnings(body)) == 1

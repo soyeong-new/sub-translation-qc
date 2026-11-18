@@ -2802,7 +2802,8 @@ def test_extract_glossary_terms_pass_calls_provider_with_filtered_pairs():
     result = asyncio.run(_extract_glossary_terms_pass(
         pairs, SpyProvider(), {"target_language": "es", "variant": "LATAM"}, "tv1", warnings))
 
-    assert result == [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+    # 한국어 원문에 나온 횟수가 함께 붙는다(저장 단계가 드문 용어를 거르는 데 쓴다)
+    assert result == [{"korean_term": "김현", "category": "person", "canonical": "Kim Hyun", "occurrences": 1}]
     assert captured["items"] == [{"id": "p1", "korean_text": "김현아 밥 먹었어?",
                                    "target_text": "Kim Hyun, comiste?"}]
     assert warnings == []
@@ -2840,7 +2841,7 @@ def test_run_pipeline_phase2_passes_glossary_entries_to_correct_primary_and_retu
 
     assert captured["correct_primary_glossary_entries"] == glossary_entries
     assert result["glossary_extractions"] == [
-        {"korean_term": "김현", "category": "person", "canonical": "Kim Hyun"}]
+        {"korean_term": "김현", "category": "person", "canonical": "Kim Hyun", "occurrences": 1}]
 
 
 def test_gender_groups_for_ai_drops_values_the_user_did_not_confirm():

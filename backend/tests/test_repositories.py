@@ -1065,3 +1065,49 @@ async def test_candidates_are_kept_per_language_with_independent_cap():
         entry = (await session.execute(
             select(GlossaryEntry).where(GlossaryEntry.title_id == title_id))).scalar_one()
         assert entry.candidates == {"es_LATAM": ["a", "b", "c", "d", "e"], "fr_FR": ["dix milliards"]}
+
+
+@pytest.mark.asyncio
+async def test_upsert_glossary_extraction_skips_rare_non_person_terms():
+    """인물·금액 외 새 용어는 이 회차에서 3번 미만 나오면 등록하지 않는다. 인물은 1번이어도 등록하고,
+    이미 등록된 용어는 횟수와 무관하게 이 언어판 표기를 남긴다."""
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        title_id = title.id
+        await upsert_glossary_extraction(
+            session, title_id, "es", "LATAM",
+            [{"korean_term": "청와대", "category": "place", "canonical": "Casa Azul", "occurrences": 3}])
+        await session.commit()
+
+    async with async_session() as session:
+        await upsert_glossary_extraction(
+            session, title_id, "fr", "FR",
+            [{"korean_term": "청와대", "category": "place", "canonical": "Maison Bleue", "occurrences": 1},
+             {"korean_term": "독일", "category": "place", "canonical": "Allemagne", "occurrences": 2},
+             {"korean_term": "송우빈", "category": "person", "canonical": "Song Woo-bin", "occurrences": 1}])
+        await session.commit()
+
+    async with async_session() as session:
+        fr = {e["korean_term"] for e in await get_glossary_prompt_entries(session, title_id, "fr", "FR")}
+        assert fr == {"청와대", "송우빈"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_glossary_extraction_treats_spacing_variants_as_one_entry():
+    """띄어쓰기만 다른 용어("잔디 세탁"/"잔디세탁")는 새 항목을 또 만들지 않고 기존 항목을 쓴다."""
+    async with async_session() as session:
+        title = Title(name="Test Drama", type="series", created_at=datetime.now())
+        session.add(title)
+        await session.flush()
+        title_id = title.id
+        await upsert_glossary_extraction(
+            session, title_id, "fr", "FR",
+            [{"korean_term": "잔디 세탁", "category": "business", "canonical": "Pressing Jan-Di", "occurrences": 3},
+             {"korean_term": "잔디세탁", "category": "business", "canonical": "Pressing Jandi", "occurrences": 1}])
+        await session.commit()
+
+    async with async_session() as session:
+        entries = await get_glossary_prompt_entries(session, title_id, "fr", "FR")
+        assert [(e["korean_term"], e["canonical"]) for e in entries] == [("잔디 세탁", "Pressing Jan-Di")]
