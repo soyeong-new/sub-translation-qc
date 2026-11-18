@@ -229,7 +229,12 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
                         <button
                           key={v.surface}
                           type="button"
-                          onClick={() => setPicked({ ...picked, [conflictId(c)]: v.surface })}
+                          onClick={() => {
+                            setPicked({ ...picked, [conflictId(c)]: v.surface });
+                            // 표기를 바꾸면 바뀔 항목이 달라지므로 이 충돌의 체크 해제는 처음 상태(모두 체크)로 돌린다.
+                            const own = new Set(c.variants.flatMap((x) => x.entryIds));
+                            setUnchecked(unchecked.filter((id) => !own.has(id)));
+                          }}
                           className={"rounded-full border px-2.5 py-0.5 " + (v.surface === surface
                             ? "border-primary bg-primary/10 font-bold text-primary"
                             : "border-transparent text-muted-foreground hover:bg-accent/60")}
