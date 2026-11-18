@@ -326,6 +326,13 @@ export const postGlossaryEntry = (titleId, data) =>
 export const patchGlossaryEntry = (entryId, data) =>
   request(`/glossary/${entryId}`, { method: "PATCH", body: JSON.stringify(data) });
 
+export const getDismissedConflicts = (titleId) => request(`/titles/${titleId}/dismissed-conflicts`);
+
+export const postDismissedConflict = (titleId, kind, key) =>
+  request(`/titles/${titleId}/dismissed-conflicts`, { method: "POST", body: JSON.stringify({ kind, key }) });
+
+export const deleteDismissedConflict = (id) => request(`/dismissed-conflicts/${id}`, { method: "DELETE" });
+
 export const deleteGlossaryEntry = (entryId) =>
   request(`/glossary/${entryId}`, { method: "DELETE" });
 

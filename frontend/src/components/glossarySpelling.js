@@ -56,6 +56,9 @@ export function findSpellingConflicts(entries, columns) {
   return conflicts;
 }
 
+// "이대로 두기" 기억용 식별자 — 언어 칸 + 표기들(첫 글자 접음, 정렬). 같은 이름에 새 표기가 생기면 달라져서 다시 묻는다.
+export const conflictKey = (c) => [c.column, ...c.variants.map((v) => foldFirst(v.surface)).sort()].join("|");
+
 // text 안에서 key에 해당하는 부분을 surface로 바꾼다. 원래 자리의 첫 글자 대소문자는 유지.
 export function unifySpelling(text, key, surface) {
   let out = "";

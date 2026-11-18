@@ -4,7 +4,9 @@ import {
 } from "../api.js";
 import { collectNewIds } from "./glossaryNew.js";
 import { orderGlossaryEntries } from "./glossaryOrder.js";
-import { findSpellingConflicts, planUnify } from "./glossarySpelling.js";
+import { findSpellingConflicts, planUnify, conflictKey } from "./glossarySpelling.js";
+import { useDismissed } from "./useDismissed.js";
+import DismissedConflicts from "./DismissedConflicts.jsx";
 
 const deleteBtnClass =
   "inline-flex h-6 w-6 items-center justify-center text-muted-foreground leading-none " +
@@ -106,8 +108,8 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
 
   // 같은 이름이 철자만 달리 섞여 있으면 고른 표기로 그 부분만 통일한다.
   // 직전 통일은 화면을 열어 둔 동안 되돌릴 수 있다.
-  const [dismissed, setDismissed] = useState([]); // "이대로 두기"한 충돌 — 화면을 연 동안만 기억
-  const conflicts = findSpellingConflicts(entries, columns).filter((c) => !dismissed.includes(`${c.column}:${c.key}`));
+  const dismissed = useDismissed(titleId, "glossary_spelling", onError); // "이대로 두기" — 작품 단위로 서버에 기억
+  const conflicts = findSpellingConflicts(entries, columns).filter((c) => !dismissed.keys.includes(conflictKey(c)));
   const [lastUnify, setLastUnify] = useState([]);
   const [unifyOpen, setUnifyOpen] = useState(false);
   const [picked, setPicked] = useState({}); // 충돌 키 → 고른 표기
@@ -191,6 +193,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           )}
         </div>
       )}
+      <DismissedConflicts items={dismissed.items} onRestore={dismissed.restore} />
       {conflicts.length > 0 && (
         <div className="mb-2 flex items-center justify-between rounded border border-input bg-card px-3 py-1.5 text-xs">
           <span className="text-muted-foreground">같은 이름의 표기가 섞여 있습니다 ({conflicts.length}건)</span>
@@ -269,7 +272,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
                     <div className="flex items-center justify-end gap-3">
                       <button
                         type="button"
-                        onClick={() => setDismissed([...dismissed, conflictId(c)])}
+                        onClick={() => dismissed.dismiss(conflictKey(c))}
                         className="text-muted-foreground hover:text-foreground"
                       >
                         이대로 두기

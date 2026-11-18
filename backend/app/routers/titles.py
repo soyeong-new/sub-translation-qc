@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import async_session
 from app.models import (
     Title, Episode, TargetVersion, FindingRow, CharacterGenderFact,
-    GlossaryEntry, GlossarySpelling,
+    GlossaryEntry, GlossarySpelling, DismissedConflict,
 )
 from app.core.validation import validate_korean_srt_path
 from app.core.ingest import delete_original_video
@@ -354,6 +354,50 @@ async def mark_new_spellings(payload: SpellingIdsIn):
         count = await set_spelling_new(session, payload.spelling_ids, True)
         await session.commit()
         return {"count": count}
+
+
+class DismissedConflictIn(BaseModel):
+    kind: Literal["glossary_spelling", "name_variant"]
+    key: str
+
+
+@router.get("/titles/{title_id}/dismissed-conflicts")
+async def list_dismissed_conflicts(title_id: str):
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(DismissedConflict).where(DismissedConflict.title_id == title_id)
+            .order_by(DismissedConflict.kind, DismissedConflict.key)
+        )).scalars().all()
+        return [{"id": r.id, "kind": r.kind, "key": r.key} for r in rows]
+
+
+@router.post("/titles/{title_id}/dismissed-conflicts")
+async def create_dismissed_conflict(title_id: str, payload: DismissedConflictIn):
+    """이미 숨긴 충돌을 다시 숨겨도 오류 없이 기존 항목을 돌려준다(두 화면에서 동시에 눌러도 안전)."""
+    async with async_session() as session:
+        if await session.get(Title, title_id) is None:
+            raise HTTPException(404, "title not found")
+        row = (await session.execute(
+            select(DismissedConflict).where(
+                DismissedConflict.title_id == title_id, DismissedConflict.kind == payload.kind,
+                DismissedConflict.key == payload.key)
+        )).scalar_one_or_none()
+        if row is None:
+            row = DismissedConflict(title_id=title_id, kind=payload.kind, key=payload.key)
+            session.add(row)
+            await session.commit()
+        return {"id": row.id, "kind": row.kind, "key": row.key}
+
+
+@router.delete("/dismissed-conflicts/{conflict_id}")
+async def delete_dismissed_conflict(conflict_id: str):
+    async with async_session() as session:
+        row = await session.get(DismissedConflict, conflict_id)
+        if row is None:
+            raise HTTPException(404, "dismissed conflict not found")
+        await session.delete(row)
+        await session.commit()
+        return {"deleted": True}
 
 
 @router.delete("/glossary/{entry_id}")

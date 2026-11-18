@@ -35,6 +35,8 @@ import { GenderQuestion, isGenderResolved, PREVIEW_PAD_START_SECONDS, PREVIEW_PA
 import QQLogo from "../components/QQLogo.jsx";
 import GlossaryTable from "../components/GlossaryTable.jsx";
 import NameVariantGroups from "../components/NameVariantGroups.jsx";
+import DismissedConflicts from "../components/DismissedConflicts.jsx";
+import { useDismissed } from "../components/useDismissed.js";
 import VideoSyncControl from "../components/VideoSyncControl.jsx";
 import { orderColumns } from "../components/glossaryOrder.js";
 import { btnBase, primaryBtnClass, ghostBtnClass } from "../utils/buttonStyles.js";
@@ -1434,7 +1436,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 잠가 중복 호출을 막고, 실패하면 이유를 팝업에 보여준다(안 보이면 눌러도 반응 없는 것처럼 보인다).
   const [reassembling, setReassembling] = useState(false);
   const [glossaryBusy, setGlossaryBusy] = useState(false);
-  const [dismissedNameGroups, setDismissedNameGroups] = useState([]); // '다른 이름'으로 넘긴 묶음 — 창을 열어 둔 동안만
+  const dismissedNames = useDismissed(titleId, "name_variant"); // '다른 이름'으로 넘긴 묶음 — 작품 단위로 서버에 기억
   const [nameGroupError, setNameGroupError] = useState(null);
   const [exportTab, setExportTab] = useState(null); // 내보내기 창에서 보고 있는 탭(없는 탭이면 첫 탭)
   const [repeatedPick, setRepeatedPick] = useState({}); // 반복 대사 카드에서 고른 기준 줄(카드 첫 줄 id → segment_id)
@@ -2424,7 +2426,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                 .map(([label, items]) => [label, items.length, groupGlossaryWarnings(items)]);
               const appliedFixes = exportStatus.result?.glossary_fixes ?? [];
               const nameGroups = (exportStatus.result?.name_variant_groups ?? [])
-                .filter((g) => !dismissedNameGroups.includes(g.id));
+                .filter((g) => !dismissedNames.keys.includes(g.id));
               const repeatedGroups = exportStatus.result?.repeated_groups ?? [];
               const repeatedFixes = exportStatus.result?.repeated_fixes ?? [];
               const formatWarnings = exportStatus.warnings.filter((w) => w.rule !== "glossary_mismatch");
@@ -2435,7 +2437,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                 ["names", "표기 통일", nameGroups.length],
                 ["repeated", "반복 대사", repeatedGroups.length],
                 ["applied", "적용 내역", appliedFixes.length + repeatedFixes.length],
-              ].filter(([, , count]) => count > 0);
+              ].filter(([id, , count]) => count > 0 || (id === "names" && dismissedNames.items.length > 0)); // 숨긴 항목을 다시 볼 수 있게
               const activeTab = tabs.find(([id]) => id === exportTab)?.[0] ?? tabs[0]?.[0];
               const RULE_LABELS = { line_length: "줄 길이", ellipsis: "온점", reading_speed: "읽기 속도" };
               const formatByRule = Object.entries(formatWarnings.reduce((acc, w) => {
@@ -2535,6 +2537,8 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                       )}
 
                       {activeTab === "names" && (
+                        <>
+                        <DismissedConflicts items={dismissedNames.items} onRestore={dismissedNames.restore} />
                         <NameVariantGroups
                           groups={nameGroups}
                           error={nameGroupError}
@@ -2544,8 +2548,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
                             return seg ? formatSrtTimestamp(seg.start) : "";
                           }}
                           onApply={applyNameVariants}
-                          onDismiss={(id) => setDismissedNameGroups((prev) => [...prev, id])}
+                          onDismiss={dismissedNames.dismiss}
                         />
+                        </>
                       )}
 
                       {activeTab === "glossary" && (

@@ -173,6 +173,17 @@ class CharacterMergeRejection(Base):
     name_b: Mapped[str] = mapped_column(String)
 
 
+class DismissedConflict(Base):
+    """사용자가 "이대로 두기"/"다른 이름"으로 넘긴 표기 충돌 — 같은 작품의 다른 회차에서도 다시 묻지 않는다.
+    kind는 "glossary_spelling"(용어집 항목끼리) | "name_variant"(자막 안의 이름 묶음), key는 그 충돌의 식별 문자열."""
+    __tablename__ = "dismissed_conflicts"
+    __table_args__ = (UniqueConstraint("title_id", "kind", "key"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    title_id: Mapped[str] = mapped_column(ForeignKey("titles.id"))
+    kind: Mapped[str] = mapped_column(String)
+    key: Mapped[str] = mapped_column(String)
+
+
 class GlossaryEntry(Base):
     __tablename__ = "glossary_entries"
     __table_args__ = (UniqueConstraint("title_id", "korean_term"),)

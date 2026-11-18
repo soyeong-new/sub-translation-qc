@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findSpellingConflicts, unifySpelling, planUnify } from "./glossarySpelling.js";
+import { findSpellingConflicts, unifySpelling, planUnify, conflictKey } from "./glossarySpelling.js";
 
 const e = (id, spellings, category = "person") => ({ id, korean_term: id, category, spellings });
 const COL = ["fr_FR"];
@@ -48,4 +48,13 @@ test("planUnify lists only entries that change", () => {
   const [conflict] = findSpellingConflicts(entries, COL);
   assert.deepEqual(planUnify(entries, conflict, "Jan-Di"),
     [{ entryId: "잔디 세탁", column: "fr_FR", before: "Pressing Jan Di", after: "Pressing Jan-Di" }]);
+});
+
+test("conflictKey is stable but changes when a new spelling appears", () => {
+  const base = [e("a", { fr_FR: "Geum Jan-Di" }), e("b", { fr_FR: "Pressing Jan Di" })];
+  const [c] = findSpellingConflicts(base, COL);
+  const same = findSpellingConflicts([...base].reverse(), COL)[0];
+  assert.equal(conflictKey(c), conflictKey(same)); // 항목 순서와 무관
+  const [more] = findSpellingConflicts([...base, e("c", { fr_FR: "Jan-di" })], COL);
+  assert.notEqual(conflictKey(c), conflictKey(more)); // 새 표기가 생기면 다시 묻는다
 });

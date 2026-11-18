@@ -552,3 +552,25 @@ async def test_glossary_lists_expose_new_candidates_and_confirm_mark_round_trip(
         entry_id = by_term["세나"]["id"]
         patched = await client.patch(f"/glossary/{entry_id}", json={"spellings": {"es_LATAM": "Sena!"}})
         assert patched.json()["new"] == {}
+
+
+@pytest.mark.asyncio
+async def test_dismissed_conflicts_are_scoped_to_title_and_idempotent():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        a = (await client.post("/titles", json={"name": "A", "type": "series"})).json()["id"]
+        b = (await client.post("/titles", json={"name": "B", "type": "series"})).json()["id"]
+        body = {"kind": "name_variant", "key": "jan di|jan-di"}
+        first = await client.post(f"/titles/{a}/dismissed-conflicts", json=body)
+        again = await client.post(f"/titles/{a}/dismissed-conflicts", json=body)
+        assert first.status_code == again.status_code == 200
+        assert first.json()["id"] == again.json()["id"]  # 같은 충돌을 또 숨겨도 한 건
+        assert [r["key"] for r in (await client.get(f"/titles/{a}/dismissed-conflicts")).json()] == ["jan di|jan-di"]
+        assert (await client.get(f"/titles/{b}/dismissed-conflicts")).json() == []  # 다른 작품엔 영향 없음
+        assert (await client.delete(f"/dismissed-conflicts/{first.json()['id']}")).status_code == 200
+        assert (await client.get(f"/titles/{a}/dismissed-conflicts")).json() == []
+        assert (await client.delete(f"/dismissed-conflicts/{first.json()['id']}")).status_code == 404
+        bad = await client.post(f"/titles/{a}/dismissed-conflicts", json={"kind": "x", "key": "k"})
+        assert bad.status_code == 422
+        missing = await client.post("/titles/nope/dismissed-conflicts", json=body)
+        assert missing.status_code == 404
