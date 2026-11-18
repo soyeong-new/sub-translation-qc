@@ -2250,9 +2250,9 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
         </div>
       </header>
 
-      {/* 용어집이 열리면 경고 배너·본문 전체를 크기 그대로 왼쪽으로만 민다(lg 이상).
-          폭이 모자라면 오른쪽 여백(패널 폭) 때문에 페이지가 가로 스크롤된다. */}
-      <div className={showGlossary ? "lg:mr-[32rem] lg:w-[min(1360px,100vw)]" : ""}>
+      {/* 용어집이 열리면 패널 폭만큼 오른쪽 여백을 두고 본문을 남는 폭 안에 맞춘다(lg 이상).
+          예전엔 폭을 고정해 패널 밑으로 파인딩 카드가 잘렸다. */}
+      <div className={showGlossary ? "lg:mr-[32rem]" : ""}>
       <div className="px-6 pt-1.5">
         <button
           type="button"
@@ -2386,7 +2386,7 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
             />
           </div>
 
-          <div className="space-y-8">
+          <div className="min-w-0 space-y-8">
             {/* 본문 흐름에 끼워넣으면 등장/소실 때마다 아래 Findings가 밀렸다
                 (회귀: 사용자 재현 — "지저분해 보인다"). 흐름 밖(fixed)으로 빼서
                 화면 중앙에 띄운다 — 전체 화면 딤은 두지 않는다(영상/SRT/내보내기

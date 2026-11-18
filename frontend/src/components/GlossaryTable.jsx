@@ -106,8 +106,12 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
 
   // 같은 이름이 철자만 달리 섞여 있으면 고른 표기로 그 부분만 통일한다.
   // 직전 통일은 화면을 열어 둔 동안 되돌릴 수 있다.
-  const conflicts = findSpellingConflicts(entries, columns);
+  const [dismissed, setDismissed] = useState([]); // "이대로 두기"한 충돌 — 화면을 연 동안만 기억
+  const conflicts = findSpellingConflicts(entries, columns).filter((c) => !dismissed.includes(`${c.column}:${c.key}`));
   const [lastUnify, setLastUnify] = useState([]);
+  const [unifyOpen, setUnifyOpen] = useState(false);
+  const [picked, setPicked] = useState({}); // 충돌 키 → 고른 표기
+  const [unchecked, setUnchecked] = useState([]); // 이번에 바꾸지 않을 항목 id
 
   async function saveSpellings(items, field) {
     try {
@@ -120,8 +124,15 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
     onChanged();
   }
 
-  async function unify(conflict, surface) {
-    const plan = planUnify(entries, conflict, surface);
+  const conflictId = (c) => `${c.column}:${c.key}`;
+  // 아직 고르지 않았으면 가장 많은 항목이 쓰는 표기가 기본값이다.
+  const pickedSurface = (c) => picked[conflictId(c)]
+    ?? [...c.variants].sort((a, b) => b.entryIds.length - a.entryIds.length)[0].surface;
+  const entryById = new Map(entries.map((e) => [e.id, e]));
+  const categoryLabel = { person: "인물", place: "장소", business: "상호", title: "작품명" };
+
+  async function unify(conflict) {
+    const plan = planUnify(entries, conflict, pickedSurface(conflict)).filter((p) => !unchecked.includes(p.entryId));
     setLastUnify(plan);
     await saveSpellings(plan, "after");
   }
@@ -180,35 +191,119 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           )}
         </div>
       )}
-      {(conflicts.length > 0 || lastUnify.length > 0) && (
-        <div className="mb-2 space-y-1.5 rounded border border-input bg-card px-3 py-2 text-xs">
-          {conflicts.map((c) => (
-            <div key={`${c.column}:${c.key}`} className="flex flex-wrap items-center gap-1.5">
-              <span className="text-muted-foreground">{c.column} · 같은 이름의 표기가 섞여 있습니다. 통일할 표기를 고르세요</span>
-              {c.variants.map((v) => (
-                <button
-                  key={v.surface}
-                  type="button"
-                  onClick={() => unify(c, v.surface)}
-                  className="rounded border border-input px-2 py-0.5 text-foreground hover:bg-accent/60"
-                >
-                  {v.surface} ({v.entryIds.length})
-                </button>
-              ))}
+      {conflicts.length > 0 && (
+        <div className="mb-2 flex items-center justify-between rounded border border-input bg-card px-3 py-1.5 text-xs">
+          <span className="text-muted-foreground">같은 이름의 표기가 섞여 있습니다 ({conflicts.length}건)</span>
+          <button
+            type="button"
+            onClick={() => setUnifyOpen(true)}
+            className="rounded border border-input px-2 py-0.5 font-semibold text-foreground hover:bg-accent/60"
+          >
+            확인하기
+          </button>
+        </div>
+      )}
+      {unifyOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+          <div className="flex max-h-[88vh] w-full max-w-lg flex-col rounded-xl border border-border bg-card text-xs shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-3 text-sm font-bold">
+              표기 통일
+              <button type="button" aria-label="닫기" onClick={() => { setUnifyOpen(false); setLastUnify([]); }}
+                className="text-muted-foreground hover:text-foreground">✕</button>
             </div>
-          ))}
-          {lastUnify.length > 0 && (
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              {lastUnify.length}개 항목을 통일했습니다.
-              <button
-                type="button"
-                onClick={undoUnify}
-                className="rounded border border-input px-2 py-0.5 text-foreground hover:bg-accent/60"
-              >
-                되돌리기
+            <div className="space-y-4 overflow-y-auto px-4 py-3">
+              {conflicts.map((c) => {
+                const surface = pickedSurface(c);
+                const plan = planUnify(entries, c, surface);
+                const changing = new Map(plan.map((p) => [p.entryId, p]));
+                const checkedCount = plan.filter((p) => !unchecked.includes(p.entryId)).length;
+                const affected = [...new Set(c.variants.flatMap((v) => v.entryIds))];
+                return (
+                  <div key={conflictId(c)} className="space-y-2">
+                    <div className="text-muted-foreground">{c.column} · 같은 이름이 다르게 등록되어 있습니다. 쓸 표기를 고르세요</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {c.variants.map((v) => (
+                        <button
+                          key={v.surface}
+                          type="button"
+                          onClick={() => setPicked({ ...picked, [conflictId(c)]: v.surface })}
+                          className={"rounded-full border px-2.5 py-0.5 " + (v.surface === surface
+                            ? "border-primary bg-primary/10 font-bold text-primary"
+                            : "border-transparent text-muted-foreground hover:bg-accent/60")}
+                        >
+                          {v.surface} <span className="opacity-60">{v.entryIds.length}개 항목</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="text-muted-foreground">바뀌는 항목 {checkedCount}개</div>
+                    <div className="divide-y divide-border/40">
+                      {affected.map((id) => {
+                        const e = entryById.get(id);
+                        const change = changing.get(id);
+                        return (
+                          <div key={id} className="flex items-baseline gap-2 py-1.5">
+                            {change ? (
+                              <input
+                                type="checkbox"
+                                checked={!unchecked.includes(id)}
+                                onChange={() => setUnchecked(unchecked.includes(id)
+                                  ? unchecked.filter((x) => x !== id) : [...unchecked, id])}
+                              />
+                            ) : <span className="w-3.5" />}
+                            <span className="w-28 shrink-0 font-semibold text-foreground">
+                              {e.korean_term}
+                              <span className="ml-1 font-normal text-muted-foreground">{categoryLabel[e.category] ?? ""}</span>
+                            </span>
+                            {change ? (
+                              <span>
+                                <del className="text-muted-foreground">{change.before}</del>
+                                {" → "}<span className="rounded bg-green-100 px-1 font-semibold text-green-800">{change.after}</span>
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">{e.spellings?.[c.column]} (그대로)</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setDismissed([...dismissed, conflictId(c)])}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        이대로 두기
+                      </button>
+                      <button
+                        type="button"
+                        disabled={checkedCount === 0}
+                        onClick={() => unify(c)}
+                        className="rounded bg-green-700 px-3 py-1 font-bold text-white hover:bg-green-800 disabled:opacity-50"
+                      >
+                        적용
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {conflicts.length === 0 && <div className="text-muted-foreground">섞인 표기가 없습니다.</div>}
+              {lastUnify.length > 0 && (
+                <div className="flex items-center justify-between rounded-lg bg-muted px-3 py-2 text-muted-foreground">
+                  {lastUnify.length}개 항목을 통일했습니다.
+                  <button type="button" onClick={undoUnify}
+                    className="rounded border border-input bg-card px-2 py-0.5 text-foreground hover:bg-accent/60">
+                    되돌리기
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end border-t border-border px-4 py-2.5">
+              <button type="button" onClick={() => { setUnifyOpen(false); setLastUnify([]); }}
+                className="rounded border border-input px-3 py-1 font-semibold text-foreground hover:bg-accent/60">
+                닫기
               </button>
             </div>
-          )}
+          </div>
         </div>
       )}
       <table className="w-full border-collapse text-xs">
