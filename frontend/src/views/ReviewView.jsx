@@ -2130,14 +2130,18 @@ export default function ReviewView({ targetVersionId, titleId, onBack }) {
   // 카운트 둘 다 이 기준을 공유한다.
   const itemStatuses = (item) => (item.type === "single" ? [item.finding.status] : [item.a.status, item.b.status]);
   const itemCategories = (item) => (item.type === "single" ? [item.finding.category] : [item.a.category, item.b.category]);
-  const displayItems = groupFindingsForDisplay(findings ?? []);
+  // 자동 해결된 포맷팅 카드(온점/줄바꿈 재배치)는 이미 텍스트에 반영됐고 판단할 게 없어
+  // 카드로 띄우지 않는다. DB에는 그대로 남는다. pending이거나 사람이 처리한 포맷팅은 계속 보인다.
+  const isAutoResolved = (f) => f.status !== "pending" && !f.reviewed_at;
+  const displayItems = groupFindingsForDisplay(
+    (findings ?? []).filter((f) => !(f.category === "formatting" && isAutoResolved(f)))
+  );
   // 온점/줄 길이 자동보정처럼 판단 여지 없는 규칙은 사람 승인 없이 자동
   // 반영·자동 승인된다(reviewed_at이 안 채워짐 — review-action 엔드포인트만
   // 이 값을 채운다, export.py의 _final_text_by_segment와 같은 신호). 진행률
   // 카운팅은 실제 검수 대상만 세야 하므로 이런 자동보정 finding은 제외한다 —
   // 다만 findings 목록/탭에는 그대로 남아 감사할 수 있어야 한다(그래서
   // displayItems/statusCounts/filteredDisplayItems는 건드리지 않는다).
-  const isAutoResolved = (f) => f.status !== "pending" && !f.reviewed_at;
   const reviewRequiredItems = displayItems.filter(
     (it) => it.type !== "single" || !isAutoResolved(it.finding)
   );
