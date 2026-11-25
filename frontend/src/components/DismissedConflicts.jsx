@@ -5,7 +5,7 @@ export default function DismissedConflicts({ items, onRestore }) {
   const [open, setOpen] = useState(false);
   if (items.length === 0) return null;
   return (
-    <div className="mb-2 text-xs">
+    <div className="mb-2 px-4 pt-2 text-xs">
       <button type="button" onClick={() => setOpen(!open)} className="text-muted-foreground underline decoration-dotted hover:text-foreground">
         숨긴 항목 {items.length}건 {open ? "▴" : "▾"}
       </button>

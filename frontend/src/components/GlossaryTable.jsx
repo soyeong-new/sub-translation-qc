@@ -9,7 +9,7 @@ import { useDismissed } from "./useDismissed.js";
 import DismissedConflicts from "./DismissedConflicts.jsx";
 
 const deleteBtnClass =
-  "inline-flex h-6 w-6 items-center justify-center text-muted-foreground leading-none " +
+  "inline-flex h-5 w-5 items-center justify-center rounded border border-input text-muted-foreground leading-none " +
   "transition-all hover:text-destructive active:scale-90 focus-visible:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100";
 
@@ -169,9 +169,9 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
   }
 
   return (
-    <div className="overflow-x-auto">
+    <div>
       {(newIds.length > 0 || justConfirmed.length > 0) && (
-        <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="mb-2 flex items-center gap-2 px-4 pt-2 text-xs text-muted-foreground">
           {newIds.length > 0 && (
             <button
               type="button"
@@ -195,7 +195,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
       )}
       <DismissedConflicts items={dismissed.items} onRestore={dismissed.restore} />
       {conflicts.length > 0 && (
-        <div className="mb-2 flex items-center justify-between rounded border border-input bg-card px-3 py-1.5 text-xs">
+        <div className="mx-4 mb-2 flex items-center justify-between rounded border border-input bg-card px-3 py-1.5 text-xs">
           <span className="text-muted-foreground">같은 이름의 표기가 섞여 있습니다 ({conflicts.length}건)</span>
           <button
             type="button"
@@ -314,10 +314,12 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           </div>
         </div>
       )}
+      {/* 가로 스크롤은 표에만 건다 — 바깥 배너까지 같이 밀려 왼쪽이 잘리던 문제 */}
+      <div className="overflow-x-auto">
       <table className="w-max min-w-full border-collapse text-xs">
         <thead>
           <tr className="divide-x divide-border/30 border-b border-border bg-card text-foreground">
-            <th className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card px-4 py-2 text-left font-bold">한국어 용어</th>
+            <th className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card py-2 pl-2 pr-4 text-left font-bold">한국어 용어</th>
             {columns.map((col) => (
               <th key={col} className="min-w-[11rem] px-4 py-2 text-left font-bold">
                 {col}
@@ -335,7 +337,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           )}
           {[...pending, ...rest].map((entry) => (
             <tr key={entry.id} className="group divide-x divide-border/30 even:bg-muted/30 hover:bg-accent/40">
-              <td className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card px-4 py-2 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
+              <td className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card py-2 pl-2 pr-4 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
                 <button
                   type="button"
                   aria-label={`${entry.korean_term} 삭제`}
@@ -380,6 +382,7 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
