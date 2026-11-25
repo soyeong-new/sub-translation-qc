@@ -34,6 +34,18 @@ def _agrees_with_noun(token) -> bool:
     return bool(_agreeing_nouns(token))
 
 
+def _agrees_with_subject_structure(token, be_lemmas) -> bool:
+    """사람의 성에 일치하는 게 확실한 구조(be 동사 + 형용사/분사/술어 명사)인가. have류
+    조동사(haber/avoir/avere) 뒤 분사는 불변이거나 목적어에 일치하고("Hai capito", "ce l'ha
+    fatta"), 호격·계사류 동사 구조는 일치 대상이 불확실하다 — 이런 구조는 비교하지 않는다
+    (모르면 건너뜀). 조동사 표제어를 못 읽어도(문장 첫머리 "Hai"의 lemma 오류 등) 목록에
+    없으니 자동으로 건너뛴다. be_lemmas가 없는 프로파일은 기존처럼 전부 비교한다."""
+    if not be_lemmas:
+        return True
+    return any(c.dep_.split(":")[0] in ("cop", "aux") and c.lemma_.lower() in be_lemmas
+               for c in token.children)
+
+
 def revert_orphan_changes(nlp, before: str, after: str) -> str:
     """성별 재적용(LLM)이 바꾼 문장에서, 일치 대상 명사는 그대로인데 그 명사에 맞춘 단어만
     바뀐 변경을 되돌린다. personne/persona처럼 성별이 고정된 명사는 LLM이 명사를 두고 형용사·
@@ -59,7 +71,7 @@ def revert_orphan_changes(nlp, before: str, after: str) -> str:
     return "".join(pieces_a)
 
 
-def find_gender_mismatches(pairs: list, resolved_registers: dict, nlp, skip_ids=()) -> dict:
+def find_gender_mismatches(pairs: list, resolved_registers: dict, nlp, skip_ids=(), be_lemmas=None) -> dict:
     """{pair_id: [{"words": [어긋난 단어], "referent", "gender"}]}. gender_groups가 있는
     줄만 본다(단일 gender만 확정된 줄은 어느 단어에 적용할지 정보가 없다).
     그룹의 words 중 번역문에서 spaCy가 읽은 성이 확정된 성별과 다른 것만 담는다 —
@@ -79,7 +91,7 @@ def find_gender_mismatches(pairs: list, resolved_registers: dict, nlp, skip_ids=
             bad = [t.text for t in doc
                    if expected and t.text.lower() in words
                    and t.morph.get("Gender") and expected not in t.morph.get("Gender")
-                   and not _agrees_with_noun(t)]
+                   and not _agrees_with_noun(t) and _agrees_with_subject_structure(t, be_lemmas)]
             if bad:
                 bad_groups.append({**group, "words": list(dict.fromkeys(bad))})
         if bad_groups:

@@ -7,6 +7,8 @@ formality_instruction: >
 # 번역문의 인칭 표지 — 카드 설명이 "화자 자신"인데 2인칭 표지만 있으면 청자로 바로잡는 데 쓴다.
 second_person_markers: [tú, usted, ustedes, vos]
 first_person_markers: [yo, soy, estoy]
+# 성별 어긋남 검사는 be 동사(cop/aux)에 매달린 형용사·분사·술어 명사만 비교한다 — have류·호격·계사류 동사 구조는 일치 대상이 불확실해 건너뜀. 목록이 없으면 전부 비교.
+be_verb_lemmas: [ser, estar]
 # 제안문(corrected_text) 작성 시 스페인어 표기 규칙 — 프롬프트의 "자연스러움 지침"으로 들어간다.
 naturalness_check:
   llm_instruction: >

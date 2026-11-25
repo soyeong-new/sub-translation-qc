@@ -1861,15 +1861,18 @@ async def _run_gender_mismatch_pass(
     except ValueError:
         return []   # spaCy 모델이 없는 언어는 이 검사를 지원하지 않는다
     pair_by_id = {p.id: p for p in pairs}
+    be_lemmas = {l.lower() for l in profile.get("be_verb_lemmas") or []}
     mismatches = find_gender_mismatches(
-        pairs, resolved_registers, nlp, skip_ids={f.segment_id for f in existing_findings})
+        pairs, resolved_registers, nlp, skip_ids={f.segment_id for f in existing_findings},
+        be_lemmas=be_lemmas)
     # 이미 카드가 있는 줄은 새 카드를 만들지 않고(한 줄에 카드 한 장) 카드의 제안문을 검사한다 —
     # 검증기가 오역만 고치고 성별은 그대로 둔 제안을 승인하면 성별 오류가 반영된다.
     card_by_id = {f.id: f for f in existing_findings if f.segment_id in resolved_registers}
     card_mismatches = find_gender_mismatches(
         [AlignedPair(id=fid, target=SegmentText(start=0, end=1, text=f.suggested_text))
          for fid, f in card_by_id.items()],
-        {fid: resolved_registers[f.segment_id] for fid, f in card_by_id.items()}, nlp)
+        {fid: resolved_registers[f.segment_id] for fid, f in card_by_id.items()}, nlp,
+        be_lemmas=be_lemmas)
     if not mismatches and not card_mismatches:
         return []
     all_mismatches = {**mismatches, **card_mismatches}

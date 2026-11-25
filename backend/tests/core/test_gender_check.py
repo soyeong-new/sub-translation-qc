@@ -3,6 +3,7 @@ import pytest
 from app.core.gender_check import find_gender_mismatches, only_inflection_changed
 from app.core.grammar_necessity import _resolve_model
 from app.core.pipeline import _run_gender_mismatch_pass
+from app.language_profiles.loader import load_profile
 from app.schemas import AlignedPair, Finding, SegmentText
 
 
@@ -142,6 +143,54 @@ def test_still_finds_predicate_when_subject_is_not_a_noun(lang, text, word):
     """주어가 대명사이거나 생략이면 맞춘 명사가 없으니 기존처럼 어긋남으로 잡는다."""
     found = find_gender_mismatches([_pair("p1", text)], _regs("p1", word, "male"), _resolve_model(lang))
     assert found["p1"][0]["words"] == [word]
+
+
+def _be(lang, variant):
+    return {l.lower() for l in load_profile(lang, variant)["be_verb_lemmas"]}
+
+
+@pytest.mark.parametrize("lang,variant,text,word,gender", [
+    ("it", "IT", "Hai mai sentito parlare degli F4?!", "sentito", "female"),   # avere + 분사는 불변
+    ("it", "IT", "Hai capito?", "capito", "female"),
+    ("it", "IT", "Ma ce l'ha fatta per tre giorni.", "fatta", "male"),        # 관용구 farcela, la 고정
+    ("it", "IT", "Non l'ho spinto io.", "spinto", "female"),
+    ("fr", "FR", "Tu as mangé.", "mangé", "female"),
+    ("es", "LATAM", "¿Has visto eso?", "visto", "female"),
+    ("es", "LATAM", "Ya tengo decididos algunos elementos.", "decididos", "female"),  # tener + 분사는 목적어에 일치
+])
+def test_skips_participle_not_agreeing_with_person_when_profile_lists_be_verbs(lang, variant, text, word, gender):
+    """have류 조동사 뒤 분사는 화자·청자의 성에 일치하지 않는다 — 목록이 없을 때만 잡히던 오탐."""
+    nlp = _resolve_model(lang)
+    assert find_gender_mismatches([_pair("p1", text)], _regs("p1", word, gender), nlp) != {}  # 목록 없으면 전부 비교(기존 동작)
+    assert find_gender_mismatches(
+        [_pair("p1", text)], _regs("p1", word, gender), nlp, be_lemmas=_be(lang, variant)) == {}
+
+
+@pytest.mark.parametrize("lang,variant,text,word,gender", [
+    ("it", "IT", "Sono stanco.", "stanco", "female"),
+    ("it", "IT", "Sono andato a casa.", "andato", "female"),
+    ("it", "IT", "Sono innamorata di lui.", "innamorata", "male"),
+    ("it", "IT", "Tu sei stato bravo.", "bravo", "female"),       # spaCy가 sei/stato의 lemma를 못 읽어 야믈에 따로 넣음
+    ("it", "IT", "Sei andato via.", "andato", "female"),
+    ("fr", "FR", "Je suis fatigué.", "fatigué", "female"),
+    ("fr", "FR", "Elle est allée au marché.", "allée", "male"),
+    ("fr", "FR", "Tu es tombé hier.", "tombé", "female"),
+    ("es", "LATAM", "Estoy cansado.", "cansado", "female"),
+    ("es", "LATAM", "Fue invitado a la fiesta.", "invitado", "female"),
+    ("pt", "BR", "Estou cansado.", "cansado", "female"),
+    ("pt", "BR", "Ela foi convidado.", "convidado", "female"),
+])
+def test_still_finds_be_verb_structures_with_profile_be_verbs(lang, variant, text, word, gender):
+    """be 동사 구조는 목록이 있어도 계속 잡아야 한다 — 언어별로 놓치는 게 없는지 확인."""
+    found = find_gender_mismatches(
+        [_pair("p1", text)], _regs("p1", word, gender), _resolve_model(lang), be_lemmas=_be(lang, variant))
+    assert found["p1"][0]["words"] == [word]
+
+
+@pytest.mark.parametrize("lang,variant", [("es", "LATAM"), ("pt", "BR"), ("fr", "FR"), ("it", "IT")])
+def test_gendered_language_profiles_list_be_verbs(lang, variant):
+    """목록이 비면 그 언어의 모든 구조를 비교하는 옛 동작으로 돌아간다 — 새 언어를 추가할 때 빠뜨리지 않게."""
+    assert _be(lang, variant)
 
 
 @pytest.mark.parametrize("lang,before,after,expected", [
