@@ -323,13 +323,12 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
                 {col}
               </th>
             ))}
-            <th className="w-8"></th>
           </tr>
         </thead>
         <tbody className="divide-y divide-border/40">
           {pending.length > 0 && (
             <tr>
-              <td className="bg-muted/50 px-4 py-1.5 text-muted-foreground" colSpan={columns.length + 2}>
+              <td className="bg-muted/50 px-4 py-1.5 text-muted-foreground" colSpan={columns.length + 1}>
                 표기를 정해야 하는 금액 {pending.length}건
               </td>
             </tr>
@@ -337,6 +336,14 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
           {[...pending, ...rest].map((entry) => (
             <tr key={entry.id} className="group divide-x divide-border/30 even:bg-muted/30 hover:bg-accent/40">
               <td className="sticky left-0 z-10 min-w-[6rem] whitespace-nowrap bg-card px-4 py-2 font-medium text-foreground group-even:bg-muted/30 group-hover:bg-accent/40">
+                <button
+                  type="button"
+                  aria-label={`${entry.korean_term} 삭제`}
+                  onClick={() => handleDelete(entry.id)}
+                  className={`${deleteBtnClass} mr-1 align-middle`}
+                >
+                  ×
+                </button>
                 {entry.korean_term}
                 {entry.category === "amount" && (
                   <span className="ml-1.5 rounded bg-muted px-1 text-[10px] font-normal text-muted-foreground">금액</span>
@@ -347,20 +354,10 @@ export default function GlossaryTable({ titleId, entries, columns, onChanged, on
                   <GlossarySpellingCell entry={entry} columnKey={col} onSaved={onChanged} onError={onError} onConfirmNew={confirmNew} />
                 </td>
               ))}
-              <td className="px-4 py-2">
-                <button
-                  type="button"
-                  aria-label={`${entry.korean_term} 삭제`}
-                  onClick={() => handleDelete(entry.id)}
-                  className={deleteBtnClass}
-                >
-                  ×
-                </button>
-              </td>
             </tr>
           ))}
           <tr>
-            <td className="px-4 py-2" colSpan={columns.length + 2}>
+            <td className="px-4 py-2" colSpan={columns.length + 1}>
               <input
                 type="text"
                 value={newTerm}
