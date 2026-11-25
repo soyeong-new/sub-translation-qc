@@ -32,6 +32,7 @@ LANGUAGE_TO_SPACY_MODEL = {
     "pt": "pt_core_news_md",
     "en": "en_core_web_sm",
     "fr": "fr_core_news_lg",
+    "it": "it_core_news_md",
 }
 
 # 한국어 존댓말/성별 단서는 형태소 분석기(kiwipiepy)로 판단한다. 정규식으로

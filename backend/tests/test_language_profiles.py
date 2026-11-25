@@ -90,6 +90,20 @@ def test_list_profiles_includes_fr_fr():
     assert any(p["language"] == "fr" and p["variant"] == "FR" for p in profiles)
 
 
+def test_load_it_it_profile_has_expected_shape():
+    profile = load_profile("it", "IT")
+    assert profile["language"] == "it"
+    assert profile["variant"] == "IT"
+    assert "«" in profile["naturalness_check"]["llm_instruction"]  # « »를 쓰지 말라는 규칙
+    assert "Lei" in profile["formality_instruction"]
+    assert "Lei" in profile["second_person_markers"]
+
+
+def test_list_profiles_includes_it_it():
+    profiles = list_profiles()
+    assert any(p["language"] == "it" and p["variant"] == "IT" for p in profiles)
+
+
 def test_list_profiles_ignores_non_yaml_files(tmp_path, monkeypatch):
     import app.language_profiles.loader as loader_module
     monkeypatch.setattr(loader_module, "_DIR", tmp_path)
